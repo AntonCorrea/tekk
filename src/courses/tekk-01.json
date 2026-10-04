@@ -1,0 +1,69 @@
+{
+  "id": "tekk-01",
+  "name": "Lane 01",
+  "spawn": [0, 1, 14],
+  "killY": -30,
+  "goal": {
+    "id": "finish",
+    "position": [0, 2, -36],
+    "size": [8, 4, 4]
+  },
+  "solids": [
+    {
+      "id": "start-pad",
+      "kind": "box",
+      "position": [0, -1, 9],
+      "size": [12, 2, 18],
+      "color": "#4f7f4a"
+    },
+    {
+      "id": "mid-pad",
+      "kind": "box",
+      "position": [0, -1, -8],
+      "size": [12, 2, 10],
+      "color": "#4a7a52"
+    },
+    {
+      "id": "high-pad",
+      "kind": "box",
+      "position": [0, 0, -20],
+      "size": [12, 2, 8],
+      "color": "#5c8a4a"
+    },
+    {
+      "id": "goal-pad",
+      "kind": "box",
+      "position": [0, -1, -33],
+      "size": [14, 2, 12],
+      "color": "#42704f"
+    },
+    {
+      "id": "start-rail-left",
+      "kind": "box",
+      "position": [-6.5, 1, 9],
+      "size": [1, 2, 18],
+      "color": "#6b6f5c"
+    },
+    {
+      "id": "start-rail-right",
+      "kind": "box",
+      "position": [6.5, 1, 9],
+      "size": [1, 2, 18],
+      "color": "#6b6f5c"
+    },
+    {
+      "id": "goal-rail-left",
+      "kind": "box",
+      "position": [-7.5, 1, -33],
+      "size": [1, 2, 12],
+      "color": "#6b6f5c"
+    },
+    {
+      "id": "goal-rail-right",
+      "kind": "box",
+      "position": [7.5, 1, -33],
+      "size": [1, 2, 12],
+      "color": "#6b6f5c"
+    }
+  ]
+}

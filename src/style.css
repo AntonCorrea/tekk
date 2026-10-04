@@ -1,0 +1,136 @@
+:root {
+  --hud-bg: rgba(0, 0, 0, 0.45);
+  --hud-fg: #e8f0e8;
+  --accent: #2ecc71;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #8fc7ec;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+}
+
+#app canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.hud {
+  position: fixed;
+  z-index: 10;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--hud-bg);
+  color: var(--hud-fg);
+  font-size: 13px;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  white-space: pre;
+}
+
+.hud-course {
+  top: 12px;
+  left: 12px;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  opacity: 0.8;
+}
+
+.hud-timer {
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 26px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.hud-timer.is-finished {
+  color: var(--accent);
+}
+
+.hud-readout {
+  left: 12px;
+  bottom: 12px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.banner {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 20;
+  transform: translate(-50%, -50%);
+  padding: 28px 44px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  text-align: center;
+  pointer-events: none;
+}
+
+.banner-title {
+  font-size: 13px;
+  letter-spacing: 0.32em;
+  opacity: 0.7;
+}
+
+.banner-time {
+  margin: 6px 0 10px;
+  color: var(--accent);
+  font-size: 44px;
+  font-variant-numeric: tabular-nums;
+}
+
+.banner-hint {
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.warning {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 15;
+  transform: translate(-50%, -50%);
+  color: #ff5b5b;
+  font-size: 15px;
+  letter-spacing: 0.3em;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+}
+
+.warning::after {
+  content: 'FALLING';
+}
+
+.fatal {
+  position: fixed;
+  inset: 24px;
+  z-index: 100;
+  padding: 16px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #2b0d0d;
+  color: #ffd7d7;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
