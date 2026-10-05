@@ -31,6 +31,22 @@ export default defineConfig({
     // next free port instead of failing. That is the safer failure mode, but it
     // means the URL can move, so read the printed address rather than assuming.
     port: 5173,
+
+    /**
+     * Accept requests whose Host header is any hostname.
+     *
+     * Vite 6+ rejects unknown hosts by default, as DNS-rebinding protection: a
+     * public site could otherwise resolve its own name to localhost and drive
+     * this dev server. That protection assumes a fixed hostname, which a
+     * `trycloudflare.com` tunnel URL is not -- it is randomly assigned per
+     * restart, so there is no value worth allow-listing. Hence `true` rather
+     * than an array.
+     *
+     * Dev server only. `server.allowedHosts` is not read by `vite build`, so
+     * this has no effect on the deployed output. Safe because the dev server
+     * binds loopback unless `--host` is passed.
+     */
+    allowedHosts: true,
   },
   build: {
     target: 'es2023',
