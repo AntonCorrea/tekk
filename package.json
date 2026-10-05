@@ -9,6 +9,7 @@
     "dev:server": "tsx watch server/index.ts",
     "server": "tsx server/index.ts",
     "typecheck": "tsc --noEmit",
+    "harness": "tsx scripts/harness.ts",
     "smoke": "tsx scripts/smoke.ts",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"

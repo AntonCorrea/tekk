@@ -11,7 +11,7 @@
 
 import * as THREE from 'three/webgpu';
 import type { Stage } from '../core/stage.ts';
-import { CAMERA, FIXED_TIMESTEP, PLAYER } from '../constants.ts';
+import { CAMERA, PLAYER } from '../constants.ts';
 import type { Pose } from '../physics/player.ts';
 
 /**
@@ -26,9 +26,44 @@ export interface LocalPose extends Pose {
 }
 
 export interface SceneVisuals {
-  /** Copy the predicted state into meshes. Call once per rendered frame. */
-  sync(pose: LocalPose): void;
+  /**
+   * Copy the predicted state into meshes. Call once per rendered frame.
+   *
+   * `dt` is the real frame delta in seconds. It is required, not optional:
+   * cosmetic smoothing that takes a frame delta must be told what it was, or it
+   * falls back to assuming a fixed refresh rate.
+   */
+  sync(pose: LocalPose, dt: number): void;
+
+  /**
+   * Point the camera at a yaw/pitch, in radians.
+   *
+   * Yaw 0 looks down -Z, which is the course's start direction, so the default
+   * frame matches the world-Z-locked view this replaced. Purely client-side:
+   * nothing here is sent to the server.
+   */
+  orbit(yaw: number, pitch: number): void;
+
   dispose(): void;
+}
+
+const clamp = (value: number, lo: number, hi: number): number =>
+  value < lo ? lo : value > hi ? hi : value;
+
+/**
+ * Camera offset from the focus point for a given yaw and pitch.
+ *
+ * Yaw 0 places the camera on +Z, looking toward -Z. Pitch rotates the offset up
+ * from there. Out-parameter rather than a returned Vector3 to keep this free of
+ * per-frame allocation.
+ */
+function orbitOffset(out: THREE.Vector3, yaw: number, pitch: number): THREE.Vector3 {
+  const horizontal = Math.cos(pitch) * CAMERA.distance;
+  return out.set(
+    Math.sin(yaw) * horizontal,
+    Math.sin(pitch) * CAMERA.distance,
+    Math.cos(yaw) * horizontal,
+  );
 }
 
 export function buildScene(stage: Stage): SceneVisuals {
@@ -58,14 +93,22 @@ export function buildScene(stage: Stage): SceneVisuals {
   marker.rotation.x = -Math.PI / 2;
   scene.add(marker);
 
-  const cameraTarget = new THREE.Vector3();
-  const lookTarget = new THREE.Vector3();
   const tint = new THREE.Color();
   const baseColor = new THREE.Color(0xff6b3d);
   const airborneColor = new THREE.Color(0x8fd4ff);
 
+  const followTarget = new THREE.Vector3();
+  const followPoint = new THREE.Vector3();
+  const cameraOffset = new THREE.Vector3();
+
+  let yaw = 0;
+  // Annotated because CAMERA is `as const`; without it this narrows to the
+  // literal 0.5 and `orbit()` cannot assign to it.
+  let pitch: number = CAMERA.pitch;
+  let snapping = true;
+
   return {
-    sync(pose) {
+    sync(pose, dt) {
       playerMesh.position.set(pose.x, pose.y, pose.z);
 
       // The ring stays at ground level rather than following the capsule, so it
@@ -76,15 +119,36 @@ export function buildScene(stage: Stage): SceneVisuals {
       tint.copy(pose.grounded ? baseColor : airborneColor);
       (playerMesh.material as THREE.MeshStandardMaterial).color.lerp(tint, 0.25);
 
-      // Smooth follow camera, locked to the world Z axis for now.
-      cameraTarget.set(pose.x, pose.y + CAMERA.height, pose.z + CAMERA.distance);
-      stage.camera.position.lerp(
-        cameraTarget,
-        1 - Math.exp(-CAMERA.smoothing * FIXED_TIMESTEP),
-      );
+      // --- follow camera ---------------------------------------------------
+      // Position is offset from the racer by a fixed spherical rig (see
+      // `orbitOffset`), so it only ever has to chase the racer's motion.
+      //
+      // The smoothing factor is built from the REAL frame delta. The previous
+      // version passed FIXED_TIMESTEP here, which silently assumed 60fps: at
+      // 144Hz it applied 2.5x the intended stiffness, pinning the camera to the
+      // raw predicted pose and exposing every reconciliation rollback as a
+      // visible twitch. The racer's predicted position is corrected ~20x/sec,
+      // so an under-filtered camera reads as jitter rather than lag.
+      const k = 1 - Math.exp(-CAMERA.smoothing * dt);
 
-      lookTarget.set(pose.x, pose.y + CAMERA.lookAtHeight, pose.z);
-      stage.camera.lookAt(lookTarget);
+      followTarget.set(pose.x, pose.y + CAMERA.lookAtHeight, pose.z);
+      // Snap on the first frame, otherwise the camera flies in from wherever
+      // core/stage.ts seeded it.
+      if (snapping) {
+        followPoint.copy(followTarget);
+        snapping = false;
+      } else {
+        followPoint.lerp(followTarget, k);
+      }
+
+      orbitOffset(cameraOffset, yaw, pitch);
+      stage.camera.position.copy(followPoint).add(cameraOffset);
+      stage.camera.lookAt(followPoint);
+    },
+
+    orbit(y, p) {
+      yaw = y;
+      pitch = clamp(p, CAMERA.minPitch, CAMERA.maxPitch);
     },
 
     dispose() {

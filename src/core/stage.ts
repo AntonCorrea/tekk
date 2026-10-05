@@ -38,6 +38,10 @@ export async function createStage(container: HTMLElement): Promise<Stage> {
     CAMERA.near,
     CAMERA.far,
   );
+  // Placeholder only. The camera rig in render/scene.ts sets the real position
+  // on its first sync, before anything is drawn, so this is never visible -- it
+  // just avoids a camera at the origin for the frame between construction and
+  // the first sync.
   camera.position.set(0, CAMERA.height, CAMERA.distance);
 
   const onResize = () => {

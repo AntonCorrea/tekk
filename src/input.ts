@@ -10,6 +10,7 @@
  * replayed past it — see shared/input.ts.
  */
 
+import { CAMERA } from './constants.ts';
 import type { MoveInputData } from './shared/input.ts';
 
 const FORWARD_KEYS = new Set(['KeyW', 'ArrowUp']);
@@ -42,15 +43,104 @@ function onKeyUp(event: Event): void {
   held.delete((event as KeyboardEvent).code);
 }
 
-/** Call once at startup. */
-export function initInput(target: EventTarget = window): void {
+/**
+ * Call once at startup.
+ *
+ * `viewport` is the element to lock the pointer to on click -- the renderer
+ * canvas. Clicking anywhere else on the page still leaves the keyboard working,
+ * but the camera only turns while the pointer is captured.
+ */
+export function initInput(target: EventTarget = window, viewport?: HTMLElement): void {
   target.addEventListener('keydown', onKeyDown);
   target.addEventListener('keyup', onKeyUp);
+
+  // `mousemove` on the document, not the canvas: under pointer lock the cursor
+  // stops producing element-targeted events the way it normally would, and
+  // movement is reported against the locked element's document.
+  document.addEventListener('mousemove', onPointerMove);
+  document.addEventListener('pointerlockchange', onLockChange);
+
+  if (viewport) {
+    viewport.addEventListener('click', onViewportClick);
+    viewport.addEventListener('contextmenu', onContextMenu);
+  }
 }
 
-export function disposeInput(target: EventTarget = window): void {
+export function disposeInput(target: EventTarget = window, viewport?: HTMLElement): void {
   target.removeEventListener('keydown', onKeyDown);
   target.removeEventListener('keyup', onKeyUp);
+  document.removeEventListener('mousemove', onPointerMove);
+  document.removeEventListener('pointerlockchange', onLockChange);
+  if (viewport) {
+    viewport.removeEventListener('click', onViewportClick);
+    viewport.removeEventListener('contextmenu', onContextMenu);
+  }
+
+  // Releasing the lock rather than leaving it held: a stray `locked` flag would
+  // keep the camera responding to a cursor the player can no longer see.
+  if (document.pointerLockElement) document.exitPointerLock();
+}
+
+function onViewportClick(event: Event): void {
+  // Ignore the click that is itself unlocking, or capture would immediately
+  // re-engage and the player could never let go.
+  if (document.pointerLockElement) return;
+  (event.currentTarget as HTMLElement).requestPointerLock();
+}
+
+/**
+ * Suppress the browser's context menu on the viewport.
+ *
+ * Right-clicking a WebGL canvas otherwise offers "Save image as", which is
+ * useless mid-race -- the canvas is a frame, not the thing you want. Pointer
+ * lock is unaffected; this only kills the menu.
+ */
+function onContextMenu(event: Event): void {
+  event.preventDefault();
+}
+
+/**
+ * Look angles, in radians. Yaw 0 faces -Z, the course start direction.
+ *
+ * Held here rather than in the renderer because both the camera and the movement
+ * mapping need them, and they must agree: if they read different values, the
+ * racer walks off at an angle to the way the view is pointing.
+ *
+ * Yaw is unwrapped and grows without bound. Sin/cos tolerate that, and keeping
+ * it continuous avoids a discontinuity when the camera crosses the +/-PI seam.
+ */
+let yaw = 0;
+// Annotated: CAMERA is `as const`, so without this the local narrows to the
+// literal type 0.5 and every reassignment fails.
+let pitch: number = CAMERA.pitch;
+let locked = false;
+
+function onPointerMove(event: Event): void {
+  const e = event as MouseEvent;
+
+  // movementX/Y are deltas from the previous event, so they stay correct at any
+  // event rate. Guard on lock anyway: unlocked, these are plain client
+  // coordinates and one stray move would fling the camera across the course.
+  if (!locked) return;
+
+  yaw -= e.movementX * CAMERA.yawSensitivity;
+  pitch = clamp(
+    pitch - e.movementY * CAMERA.pitchSensitivity,
+    CAMERA.minPitch,
+    CAMERA.maxPitch,
+  );
+}
+
+function onLockChange(): void {
+  locked = document.pointerLockElement !== null;
+}
+
+const clamp = (value: number, lo: number, hi: number): number =>
+  value < lo ? lo : value > hi ? hi : value;
+
+/** Current look angles, for the renderer. */
+export function lookAngles(): { yaw: number; pitch: number } {
+  return { yaw, pitch };
 }
 
 /**
@@ -62,7 +152,7 @@ export function disposeInput(target: EventTarget = window): void {
  *
  * Call at most once per fixed step, before `send()`.
  */
-export function stageInput(target: MoveInputData): MoveInputData {
+export function stageInput(target: MoveInputData, yaw = 0): MoveInputData {
   const axis = (positive: Set<string>, negative: Set<string>) => {
     let value = 0;
     for (const code of positive) if (held.has(code)) value += 1;
@@ -70,9 +160,31 @@ export function stageInput(target: MoveInputData): MoveInputData {
     return Math.max(-1, Math.min(1, value));
   };
 
-  // Forward is -Z, matching the shared simulation's world axes.
-  target.moveZ = axis(FORWARD_KEYS, BACK_KEYS);
-  target.moveX = axis(RIGHT_KEYS, LEFT_KEYS);
+  // Keyboard intent in camera space: +Z is "away from the camera", +X is right.
+  const forward = axis(FORWARD_KEYS, BACK_KEYS);
+  const strafe = axis(RIGHT_KEYS, LEFT_KEYS);
+
+  // Rotate into world space so W always means "the way I'm looking".
+  //
+  // At yaw 0 the camera sits on +Z looking toward -Z (see `orbitOffset`), so
+  // "away from the camera" is -Z. W therefore has to produce a NEGATIVE moveZ.
+  // Getting this sign wrong is invisible in code review and obvious in play: W
+  // walks you backwards, toward the camera.
+  //
+  //   forward at yaw 0 is (0, -1); rotating it by yaw gives
+  //     (-sin(yaw), -cos(yaw))
+  //   right at yaw 0 is (+1, 0); rotating it by yaw gives
+  //     ( cos(yaw), -sin(yaw))
+  //
+  // Yaw never leaves the client. The server still simulates world-axis input,
+  // which is why applyInput needs no change and the determinism contract holds:
+  // two clients looking different directions send different vectors, and both
+  // are exactly what that client predicted.
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
+  target.moveX = strafe * cos - forward * sin;
+  target.moveZ = -strafe * sin - forward * cos;
+
   target.sprint = [...SPRINT_KEYS].some((code) => held.has(code));
   target.jump = jumpQueued;
 

@@ -19,11 +19,10 @@ import { startFrameLoop } from './core/loop.ts';
 import { buildScene } from './render/scene.ts';
 import { buildCourse, pulseGoal } from './course/build.ts';
 import { createPhysicsWorld, initPhysics } from './physics/world.ts';
-import { readPose } from './physics/player.ts';
 import { connectSession } from './net/session.ts';
 import { createRacerVisuals } from './net/remotes.ts';
 import { createHud, type ConnectionStatus } from './ui/hud.ts';
-import { clearInput, initInput, stageInput } from './input.ts';
+import { clearInput, initInput, lookAngles, stageInput } from './input.ts';
 import { FIXED_TIMESTEP } from './constants.ts';
 
 /**
@@ -68,7 +67,9 @@ async function boot(): Promise<void> {
   const remotes = createRacerVisuals(stage.scene, session);
   const hud = createHud(container);
 
-  initInput();
+  // The renderer canvas is the pointer-lock target: clicking the game captures
+  // the mouse for camera control, Escape releases it.
+  initInput(window, stage.renderer.domElement);
   globalThis.addEventListener('blur', clearInput);
 
   // --- connection status, for the HUD only -------------------------------
@@ -102,27 +103,40 @@ async function boot(): Promise<void> {
     // because the reconciler replays from the buffer — batching them into one
     // send would collapse several simulation steps into one.
     const steps = session.pump(now);
+
+    // Read the look angles once per frame, not once per step. Every step in this
+    // batch must use the same yaw: if the mouse moved mid-batch the steps would
+    // disagree, and the server would simulate a path the client never predicted.
+    const look = lookAngles();
+
     for (let step = 0; step < steps; step++) {
-      stageInput(session.input.data);
+      stageInput(session.input.data, look.yaw);
       session.input.send();
     }
 
     // --- render -------------------------------------------------------
-    // Read the predicted body, not the last authoritative state. That gap is
-    // the entire point of prediction: what you see is where you just moved to,
-    // not where the server last agreed you were.
-    const pose = readPose(sim);
-    visuals.sync({ ...pose, grounded: sim.grounded });
+    // The reconciler's render pose, NOT `sim.body.translation()`.
+    //
+    // Prediction is still what is being shown — this is the predicted position,
+    // not the last authoritative one, which was always the point. But the
+    // reconciler interpolates it between fixed steps and absorbs each rollback
+    // into a decaying offset. The raw body has neither: `adoptTruth` cuts it
+    // straight to server truth ~20x/sec, so drawing it directly showed every
+    // correction as a twitch. That is why remotes looked smooth and the local
+    // racer did not — remotes went through `predict.value`, this did not.
+    //
+    // Must be read after `pump()`, which is what advances the reconciler.
+    const pose = session.renderPose();
+    // `delta` drives the camera's follow smoothing. It was previously computed
+    // and discarded, which is what let the camera silently assume 60fps.
+    visuals.orbit(look.yaw, look.pitch);
+    visuals.sync({ ...pose, grounded: sim.grounded }, delta);
 
     remotes.sync();
     pulseGoal(courseHandle.goalMesh, now / 1000);
 
     hud.update(session.room.state, session.sessionId, course.name, connection);
     stage.render();
-
-    // Referenced so the frame delta is not dead weight in this signature —
-    // cosmetics that need smoothing time will use it.
-    void delta;
   });
 
   console.info(

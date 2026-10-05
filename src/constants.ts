@@ -86,10 +86,48 @@ export const CAMERA = {
   fov: 70,
   near: 0.1,
   far: 600,
-  distance: 9,
-  height: 5,
+
+  /**
+   * Orbit radius from the focus point, in world units.
+   *
+   * Replaces the old `distance`/`height` pair. Those described a fixed offset on
+   * one axis, which cannot orbit; a radius and a pitch can.
+   */
+  distance: 10.3,
+  /** Starting pitch in radians. Positive puts the camera above, looking down. */
+  pitch: 0.5,
+  /**
+   * Pitch limits, radians.
+   *
+   * The lower bound is above zero on purpose: at pitch 0 the camera sits level
+   * with the racer's chest and the horizon cuts the course in half. Keeping a
+   * little elevation preserves the sense of where the ground is.
+   */
+  minPitch: 0.06,
+  maxPitch: 1.3,
+
+  /** Radians of yaw per pixel of mouse movement. */
+  yawSensitivity: 0.0025,
+  /** Radians of pitch per pixel. Slightly lower than yaw, which is usual. */
+  pitchSensitivity: 0.0022,
+
   /** Look-at offset above the player's feet. */
   lookAtHeight: 1.2,
-  /** Exponential smoothing factor per second. Higher = tighter follow. */
+
+  /**
+   * How fast the focus point chases the racer, per second. Higher = tighter.
+   *
+   * Must be applied against the real frame delta, never FIXED_TIMESTEP. This is
+   * per-second smoothing, and `sync` runs once per rendered frame, so a fixed
+   * constant only produces this feel at exactly 60fps -- see render/scene.ts.
+   */
   smoothing: 9,
+
+  /**
+   * Seed height for the pre-first-frame camera in core/stage.ts.
+   *
+   * Placeholder only. The camera rig overwrites the position on its first
+   * `sync`, before anything is rendered, so this value is never seen.
+   */
+  height: 5,
 } as const;

@@ -33,6 +33,7 @@ import {
   type SimBody,
 } from '../shared/sim.ts';
 import { adoptTruth, readPose } from '../physics/player.ts';
+import type { Pose } from '../physics/player.ts';
 import type { GameStateInstance, PlayerStateInstance } from '../shared/state.ts';
 import type { World } from '@dimforge/rapier3d-compat';
 import type { RigidBody } from '@dimforge/rapier3d-compat';
@@ -64,6 +65,20 @@ export interface Session {
    * normal at high refresh rates and must not be forced.
    */
   pump(now: number): number;
+
+  /**
+   * Interpolated, correction-smoothed render pose for YOUR racer.
+   *
+   * Call once per rendered frame, AFTER `pump()`. This is what the mesh and the
+   * camera should follow — not `sim.body.translation()`.
+   *
+   * The distinction is the whole reason remotes look smooth and the local racer
+   * did not: `adoptTruth` cuts the body straight to server truth on every
+   * acknowledgement (~20/sec), so the raw body is discontinuous by design. The
+   * reconciler interpolates between fixed steps and bleeds the correction off
+   * over a few frames instead.
+   */
+  renderPose(): Pose;
 
   /** Authoritative state for your own racer, or undefined before the first patch. */
   self(): PlayerStateInstance | undefined;
@@ -120,7 +135,13 @@ export async function connectSession(
   // The documented engine-backed shape. `world` holds two OPAQUE entries — a
   // Rapier world and our SimBody — so nothing is auto-bound and `adopt` is
   // mandatory: without a restore point, construction throws.
-  predict.sim({
+  //
+  // The returned SimReconciler is kept, not discarded. It owns the render pose:
+  // the prediction interpolated between fixed steps, plus a decaying offset that
+  // absorbs each correction so mispredictions never pop. Reading the Rapier body
+  // directly instead is what made the local racer jitter while remotes -- which
+  // go through the same machinery via `predict.value` -- stayed smooth.
+  const simReconciler = predict.sim({
     input,
     world: { world, sim },
 
@@ -161,6 +182,13 @@ export async function connectSession(
       // Reconciles against any new server truth, then reports how many fixed
       // input steps this frame owes. Both are driven by this one call.
       return predict.tick(now);
+    },
+
+    renderPose() {
+      // `pose()` returns a record the reconciler REUSES, so it has to be copied
+      // before it outlives the frame that produced it.
+      const p = simReconciler.pose();
+      return { x: p.x, y: p.y, z: p.z };
     },
 
     self() {
