@@ -1,37 +1,28 @@
 /**
- * Course construction
+ * Course visuals
  *
- * Turns a validated Course definition into Three.js meshes and Rapier
- * colliders. This is the only place that knows how a course becomes
- * geometry — everything else reads positions.
+ * Turns a validated Course definition into Three.js meshes. Client-only —
+ * the colliders are built by the shared `buildCourseColliders` in
+ * shared/sim.ts, because the server needs the same geometry and a server that
+ * cannot import Three.js is the whole reason that split exists.
+ *
+ * Meshes are followers. They never feed anything back into the simulation.
  */
 
 import * as THREE from 'three/webgpu';
-import { ColliderDesc, Cuboid, RigidBodyDesc } from '@dimforge/rapier3d-compat';
-import type { World } from '@dimforge/rapier3d-compat';
 import type { Course } from '../shared/course.ts';
-import { GOAL, WORLD } from '../constants.ts';
+import { GOAL } from '../constants.ts';
 
 export interface CourseHandle {
   readonly goalMesh: THREE.Mesh;
-  /** Remove every mesh from the scene and release the static body. */
-  dispose(scene: THREE.Scene): void;
+  /** Remove every mesh from the scene. Colliders are disposed separately. */
+  dispose(): void;
 }
 
-/**
- * Build the course.
- *
- * All colliders live on a single fixed body at the origin, each offset by
- * its own translation. Rapier treats this as one compound static object,
- * which is cheaper than a body per solid and keeps the count low.
- */
-export function buildCourse(
-  scene: THREE.Scene,
-  world: World,
-  course: Course,
-): CourseHandle {
-  const staticBody = world.createRigidBody(RigidBodyDesc.fixed());
+const DEFAULT_SOLID_COLOR = '#4f7f4a';
 
+export function buildCourse(scene: THREE.Scene, course: Course): CourseHandle {
+  // One unit cube shared by every solid; each mesh scales to its own size.
   const cube = new THREE.BoxGeometry(1, 1, 1);
   const materials = new Map<string, THREE.MeshStandardMaterial>();
   const meshes: THREE.Mesh[] = [];
@@ -40,15 +31,7 @@ export function buildCourse(
     const [sx, sy, sz] = solid.size;
     const [px, py, pz] = solid.position;
 
-    world.createCollider(
-      ColliderDesc.cuboid(sx / 2, sy / 2, sz / 2)
-        .setTranslation(px, py, pz)
-        .setFriction(WORLD.friction)
-        .setRestitution(WORLD.restitution),
-      staticBody,
-    );
-
-    const color = solid.color ?? '#4f7f4a';
+    const color = solid.color ?? DEFAULT_SOLID_COLOR;
     let material = materials.get(color);
     if (!material) {
       material = new THREE.MeshStandardMaterial({
@@ -58,7 +41,6 @@ export function buildCourse(
       materials.set(color, material);
     }
 
-    // Unit cube scaled to size, so every solid shares one geometry.
     const mesh = new THREE.Mesh(cube, material);
     mesh.position.set(px, py, pz);
     mesh.scale.set(sx, sy, sz);
@@ -70,36 +52,34 @@ export function buildCourse(
   const [gx, gy, gz] = course.goal.position;
   const [gw, gh, gd] = course.goal.size;
 
-  const goalMesh = new THREE.Mesh(
-    new THREE.BoxGeometry(gw, gh, gd),
-    new THREE.MeshStandardMaterial({
-      color: GOAL.color,
-      emissive: new THREE.Color(GOAL.emissive),
-      transparent: true,
-      opacity: GOAL.opacity,
-      roughness: 0.3,
-    }),
-  );
+  const goalMaterial = new THREE.MeshStandardMaterial({
+    color: GOAL.color,
+    emissive: new THREE.Color(GOAL.emissive),
+    transparent: true,
+    opacity: GOAL.opacity,
+    roughness: 0.3,
+  });
+
+  const goalMesh = new THREE.Mesh(new THREE.BoxGeometry(gw, gh, gd), goalMaterial);
   goalMesh.position.set(gx, gy, gz);
   scene.add(goalMesh);
 
-  // A frame around the gate reads as a finish line rather than a box.
+  // A frame around the gate reads as a finish line rather than a floating box.
   const frameMaterial = new THREE.MeshStandardMaterial({
     color: GOAL.frameColor,
     emissive: new THREE.Color(GOAL.emissive),
     roughness: 0.4,
   });
+
   const frameParts: THREE.Mesh[] = [];
-  const addFramePart = (
-    offset: [number, number, number],
-    size: [number, number, number],
-  ) => {
-    const part = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), frameMaterial);
+  const addFramePart = (offset: [number, number, number], size: [number, number, number]) => {
+    const part = new THREE.Mesh(cube, frameMaterial);
     part.position.set(gx + offset[0], gy + offset[1], gz + offset[2]);
     part.scale.set(size[0], size[1], size[2]);
     scene.add(part);
     frameParts.push(part);
   };
+
   const t = GOAL.frameThickness;
   addFramePart([0, gh / 2 + t / 2, 0], [gw + t * 2, t, t]);
   addFramePart([0, -gh / 2 - t / 2, 0], [gw + t * 2, t, t]);
@@ -108,54 +88,24 @@ export function buildCourse(
 
   return {
     goalMesh,
-    dispose(scene) {
+
+    dispose() {
       for (const mesh of meshes) scene.remove(mesh);
       for (const part of frameParts) scene.remove(part);
       scene.remove(goalMesh);
+
       cube.dispose();
-      for (const material of materials.values()) material.dispose();
+      goalMesh.geometry.dispose();
+      goalMaterial.dispose();
       frameMaterial.dispose();
-      (goalMesh.material as THREE.Material).dispose();
-      world.removeRigidBody(staticBody);
+      for (const material of materials.values()) material.dispose();
     },
   };
 }
 
-export interface GroundProbe {
-  /** Topmost solid surface at or below `fromY`, or null if nothing is below. */
-  topY: number | null;
-}
-
-/**
- * Find the highest solid surface beneath a point.
- *
- * Used to drop a respawning player onto whichever pad they fell from, so
- * respawn never leaves them embedded inside geometry. Queries the collider
- * set directly rather than casting a ray — cheaper and needs no collision
- * pipeline state.
- */
-export function probeGround(
-  world: World,
-  x: number,
-  z: number,
-  fromY: number,
-): GroundProbe {
-  let best = -Infinity;
-
-  world.forEachCollider((collider) => {
-    // Only boxes exist in the course format today. If a second primitive
-    // is added this must grow a branch rather than silently ignoring it.
-    if (!(collider.shape instanceof Cuboid)) return;
-    const half = collider.shape.halfExtents;
-
-    const t = collider.translation();
-    // Horizontal containment test against the box.
-    if (x < t.x - half.x || x > t.x + half.x) return;
-    if (z < t.z - half.z || z > t.z + half.z) return;
-
-    const top = t.y + half.y;
-    if (top <= fromY && top > best) best = top;
-  });
-
-  return { topY: best === -Infinity ? null : best };
+/** Cosmetic pulse on the goal gate. Called once per rendered frame. */
+export function pulseGoal(mesh: THREE.Mesh, elapsedSeconds: number): void {
+  const material = mesh.material as THREE.MeshStandardMaterial;
+  material.emissiveIntensity =
+    0.6 + Math.sin(elapsedSeconds * GOAL.pulseHz * Math.PI * 2) * 0.4;
 }

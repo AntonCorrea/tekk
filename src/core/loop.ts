@@ -1,46 +1,48 @@
 /**
- * Fixed-timestep loop
+ * Frame loop
  *
- * The simulation always advances in exact FIXED_TIMESTEP increments, no
- * matter what the display refresh rate is. Rendering happens once per
- * animation frame with whatever wall-clock time is left over.
+ * One callback per animation frame, with wall-clock delta for cosmetics.
  *
- * This is not optional. Variable-dt physics plus network prediction
- * produces desyncs that look exactly like collision bugs.
+ * There is deliberately no fixed-timestep accumulator here any more. Under
+ * server reconciliation the simulation clock belongs to `predict.tick()`,
+ * which returns the number of fixed input steps due this frame and re-runs the
+ * shared step function that many times. Accumulating time in a second place
+ * would give the client two opinions about how far the world has advanced, and
+ * the one that loses produces rubber-banding that reads as a physics bug.
+ *
+ * Fixed steps are still the rule — they are just owned by the prediction layer
+ * now, where the server's step rate is also known.
  */
 
-import { FIXED_TIMESTEP, MAX_FRAME_DELTA, MAX_STEPS_PER_FRAME } from '../constants.ts';
+import { MAX_FRAME_DELTA } from '../constants.ts';
 
 export interface LoopHandle {
   stop(): void;
 }
 
-export type FixedUpdate = (dt: number) => void;
+export interface FrameInfo {
+  /** `performance.now()` value for this frame, in ms. */
+  now: number;
+  /** Seconds since the previous frame, clamped to MAX_FRAME_DELTA. */
+  delta: number;
+}
 
-export function startLoop(update: FixedUpdate, render: () => void): LoopHandle {
+export type FrameUpdate = (frame: FrameInfo) => void;
+
+export function startFrameLoop(update: FrameUpdate): LoopHandle {
   let last = performance.now();
-  let accumulator = 0;
   let frameHandle = 0;
 
   const frame = (now: number) => {
     frameHandle = requestAnimationFrame(frame);
 
-    const frameDelta = Math.min((now - last) / 1000, MAX_FRAME_DELTA);
+    // A backgrounded tab or a long GC pause produces a huge delta. Clamping
+    // keeps cosmetics from teleporting; the sim does not use this value, so
+    // there is no catch-up spiral to guard against.
+    const delta = Math.min((now - last) / 1000, MAX_FRAME_DELTA);
     last = now;
-    accumulator += frameDelta;
 
-    let steps = 0;
-    while (accumulator >= FIXED_TIMESTEP && steps < MAX_STEPS_PER_FRAME) {
-      update(FIXED_TIMESTEP);
-      accumulator -= FIXED_TIMESTEP;
-      steps++;
-    }
-
-    // Fell too far behind (tab was backgrounded, long GC pause). Drop the
-    // backlog rather than spiralling into an ever-growing catch-up loop.
-    if (steps === MAX_STEPS_PER_FRAME) accumulator = 0;
-
-    render();
+    update({ now, delta });
   };
 
   frameHandle = requestAnimationFrame(frame);

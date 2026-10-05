@@ -11,21 +11,21 @@
 export const FIXED_TIMESTEP = 1 / 60;
 
 /** Clamp on how much wall-clock time one frame may advance the sim. */
+/**
+ * Max seconds a single animation frame may report.
+ *
+ * Caps the cosmetic delta after a backgrounded tab or a long GC pause. The
+ * simulation does not read it -- `predict.tick` owns the fixed step -- so
+ * there is no catch-up spiral to guard against here.
+ */
 export const MAX_FRAME_DELTA = 0.25;
-
-/** Max physics steps per frame before we give up catching up. */
-export const MAX_STEPS_PER_FRAME = 5;
 
 // ---------------------------------------------------------------- world
 
 export const GRAVITY = { x: 0, y: -26, z: 0 };
 
+/** Contact material for course colliders. */
 export const WORLD = {
-  /** Half-extent of the ground plane on X and Z. */
-  groundHalf: 120,
-  /** Full thickness of the ground slab. */
-  groundThickness: 2,
-  /** Top face of the ground slab sits at y = 0. */
   friction: 1.0,
   restitution: 0.0,
 } as const;
@@ -40,7 +40,6 @@ export const PLAYER = {
   get height() {
     return this.halfHeight * 2 + this.radius * 2;
   },
-  spawn: { x: 0, y: 1, z: 6 },
   mass: 80,
 } as const;
 

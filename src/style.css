@@ -73,6 +73,81 @@ body {
   opacity: 0.75;
 }
 
+/* Where it stands. Connection state matters more here than in a single-player
+   game: when the link drops, the HUD is the only place that says so, and the
+   local capsule keeps moving under prediction that will never be confirmed. */
+.hud-connection {
+  top: 12px;
+  right: 12px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+}
+
+.hud-connection::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  vertical-align: middle;
+  background: currentColor;
+}
+
+.hud-connection.is-connected {
+  color: var(--accent);
+}
+
+.hud-connection.is-connecting {
+  color: #ffd479;
+}
+
+.hud-connection.is-lost {
+  color: #ff5b5b;
+}
+
+/* Live standings. Not `white-space: pre` — these are divs, so rows flow. */
+.board {
+  position: fixed;
+  top: 52px;
+  right: 12px;
+  z-index: 10;
+  min-width: 168px;
+  padding: 6px;
+  border-radius: 6px;
+  background: var(--hud-bg);
+  color: var(--hud-fg);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.board-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 3px 6px;
+  border-radius: 4px;
+}
+
+.board-row.is-self {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--accent);
+}
+
+.board-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.board-time {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
 .banner {
   position: fixed;
   top: 50%;

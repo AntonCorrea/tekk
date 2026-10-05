@@ -1,147 +1,140 @@
 /**
  * TEKK — entry point
  *
- * Day 2 milestone: a course loaded from a JSON definition, a goal, and a
- * race clock. Physics is unchanged from Day 1 — the same character
- * controller, now standing on colliders built from data.
+ * Day 3 milestone: the game is multiplayer and server-authoritative. The
+ * client sends intent and renders state; the server owns the course, the clock,
+ * every position and the finishing order.
  *
- * Controls: WASD / arrows to move, Shift to sprint, Space to jump, R to restart.
+ * The local racer is *predicted*: a keypress is applied to a local Rapier world
+ * on the same frame, and rewound and replayed when the server disagrees. Other
+ * racers are interpolated followers.
+ *
+ * Controls: WASD / arrows to move, Shift to sprint, Space to jump.
  */
 
 import './style.css';
-import courseJson from './courses/tekk-01.json';
-import { createStage } from './core/stage.ts';
-import { startLoop } from './core/loop.ts';
-import { buildScene, pulseGoal } from './render/scene.ts';
-import { buildCourse, probeGround } from './course/build.ts';
-import { initPhysics, createPhysicsWorld } from './physics/world.ts';
-import { createPlayer, movePlayerTo, stepPlayer } from './physics/player.ts';
-import { parseCourse } from './shared/course.ts';
-import type { Vec3Tuple } from './shared/course.ts';
-import {
-  advanceRace,
-  createRace,
-  finishRace,
-  hasReachedGoal,
-  resetRace,
-  startRace,
-} from './game/race.ts';
-import { createHud } from './ui/hud.ts';
-import { clearInput, initInput, readInput } from './input.ts';
-import { FIXED_TIMESTEP, PLAYER } from './constants.ts';
 
-/** Lift above a surface so the capsule resolves a landing instead of starting inside it. */
-const RESPAWN_CLEARANCE = 0.05;
+import { createStage } from './core/stage.ts';
+import { startFrameLoop } from './core/loop.ts';
+import { buildScene } from './render/scene.ts';
+import { buildCourse, pulseGoal } from './course/build.ts';
+import { createPhysicsWorld, initPhysics } from './physics/world.ts';
+import { readPose } from './physics/player.ts';
+import { connectSession } from './net/session.ts';
+import { createRacerVisuals } from './net/remotes.ts';
+import { createHud, type ConnectionStatus } from './ui/hud.ts';
+import { clearInput, initInput, stageInput } from './input.ts';
+import { FIXED_TIMESTEP } from './constants.ts';
+
+/**
+ * Where the game server is.
+ *
+ * Not `location.origin`. Colyseus serves `Access-Control-Allow-Origin: *` by
+ * default, so the browser may talk to it cross-origin and there is nothing to
+ * proxy. `VITE_SERVER_URL` overrides this, which is how the production build
+ * learns its deployed address.
+ */
+function resolveEndpoint(): string {
+  const configured = import.meta.env['VITE_SERVER_URL'];
+  if (typeof configured === 'string' && configured.length > 0) return configured;
+
+  if (import.meta.env.DEV) return 'http://localhost:2567';
+
+  // Failing loudly beats silently defaulting to localhost in a deployed build,
+  // where it would present as "the game just never connects".
+  throw new Error(
+    'VITE_SERVER_URL is not set. A production build needs the address of the ' +
+      'Colyseus server, e.g. VITE_SERVER_URL=https://tekk.example.com npm run build',
+  );
+}
 
 async function boot(): Promise<void> {
   const container = document.querySelector<HTMLDivElement>('#app');
   if (!container) throw new Error('#app container missing from index.html');
 
-  // Validated before anything touches the physics world — a malformed
-  // course should fail with a readable message, not a broken collider.
-  const course = parseCourse(courseJson, 'tekk-01.json');
-
   await initPhysics();
+
   const stage = await createStage(container);
+
+  // The client's Rapier world holds the course colliders and your own capsule,
+  // and nothing else. `connectSession` builds both from the course the server
+  // sends, using the same shared builder the server used.
   const world = createPhysicsWorld();
-  const courseHandle = buildCourse(stage.scene, world, course);
-  const player = createPlayer(world, course.spawn);
+  const session = await connectSession(world, { endpoint: resolveEndpoint() });
+  const { course, sim } = session;
+
+  const courseHandle = buildCourse(stage.scene, course);
   const visuals = buildScene(stage);
+  const remotes = createRacerVisuals(stage.scene, session);
   const hud = createHud(container);
-  const race = createRace();
 
   initInput();
   globalThis.addEventListener('blur', clearInput);
 
-  let restartRequested = false;
-  globalThis.addEventListener('keydown', (e) => {
-    if (e.code === 'KeyR') restartRequested = true;
+  // --- connection status, for the HUD only -------------------------------
+  let connection: ConnectionStatus = 'connected';
+
+  session.room.onError(() => {
+    connection = 'lost';
   });
 
-  /** Put the player back on the course, on whichever pad is under the spawn point. */
-  const respawn = (): void => {
-    const probe = probeGround(world, course.spawn[0], course.spawn[2], course.spawn[1] + 4);
-    const feetY = probe.topY !== null ? probe.topY + RESPAWN_CLEARANCE : course.spawn[1];
-    movePlayerTo(player, course.spawn[0], feetY, course.spawn[2]);
-  };
+  session.room.onLeave((code, reason) => {
+    connection = 'lost';
+    console.warn(`TEKK left the room (code ${code}${reason ? `: ${reason}` : ''})`);
+  });
 
-  startLoop(
-    (dt) => {
-      if (restartRequested) {
-        restartRequested = false;
-        respawn();
-        resetRace(race);
-        hud.hideBanner();
-        clearInput();
-      }
-
-      const input = readInput();
-
-      // Movement input is what starts the clock. A server-authoritative
-      // version will send this instead of deriving it locally.
-      if (race.phase === 'ready' && (input.forward !== 0 || input.strafe !== 0)) {
-        startRace(race);
-      }
-
-      // Finished players still get physics — they can walk around the
-      // course — but the clock is frozen.
-      stepPlayer(world, player, input, dt);
-      advanceRace(race, dt * 1000);
-
-      // Fell out of the world.
-      if (player.body.translation().y < course.killY) {
-        respawn();
-      }
-
-      const position = player.body.translation();
-      const center: Vec3Tuple = { x: position.x, y: position.y, z: position.z };
-
-      if (
-        race.phase === 'running' &&
-        hasReachedGoal(center, PLAYER.radius, PLAYER.halfHeight, course.goal) &&
-        finishRace(race)
-      ) {
-        hud.showFinish(race.finishedMs ?? 0);
-      }
-    },
-
-    () => {
-      const position = player.body.translation();
-      const nowSeconds = performance.now() / 1000;
-      visuals.sync(player);
-      pulseGoal(courseHandle.goalMesh, nowSeconds);
-      hud.update(
-        {
-          grounded: player.grounded,
-          horizontalSpeed: player.horizontalSpeed,
-          heightAboveKill: position.y - course.killY,
-        },
-        race,
-        course.name,
-      );
-      stage.render();
-    },
-  );
-
-  console.info(
-    `TEKK — course "${course.id}" (${course.name}) · ` +
-    `${course.solids.length} solids · ` +
-    `fixed timestep ${(FIXED_TIMESTEP * 1000).toFixed(2)}ms · ` +
-    'WASD move · Shift sprint · Space jump · R restart',
-  );
-
-  // Exposed for playtesting from the console: TEKK.teleport(-10, 2, -30)
+  // Exposed for playtesting from the console: TEKK.state, TEKK.predict
   Object.assign(globalThis, {
     TEKK: {
       course,
-      race,
-      player,
-      teleport(x: number, z: number, y?: number) {
-        const probe = probeGround(world, x, z, (y ?? 60));
-        movePlayerTo(player, x, probe.topY !== null ? probe.topY + RESPAWN_CLEARANCE : (y ?? 5), z);
+      session,
+      world,
+      get player() {
+        return sim;
       },
     },
   });
+
+  const loop = startFrameLoop(({ now, delta }) => {
+    // --- input --------------------------------------------------------
+    // One call drives reconciliation and reports how many fixed input steps
+    // this frame owes. Each step gets its own staged input and its own send,
+    // because the reconciler replays from the buffer — batching them into one
+    // send would collapse several simulation steps into one.
+    const steps = session.pump(now);
+    for (let step = 0; step < steps; step++) {
+      stageInput(session.input.data);
+      session.input.send();
+    }
+
+    // --- render -------------------------------------------------------
+    // Read the predicted body, not the last authoritative state. That gap is
+    // the entire point of prediction: what you see is where you just moved to,
+    // not where the server last agreed you were.
+    const pose = readPose(sim);
+    visuals.sync({ ...pose, grounded: sim.grounded });
+
+    remotes.sync();
+    pulseGoal(courseHandle.goalMesh, now / 1000);
+
+    hud.update(session.room.state, session.sessionId, course.name, connection);
+    stage.render();
+
+    // Referenced so the frame delta is not dead weight in this signature —
+    // cosmetics that need smoothing time will use it.
+    void delta;
+  });
+
+  console.info(
+    `TEKK — "${course.id}" (${course.name}) · ` +
+      `${course.solids.length} solids · ` +
+      `${session.room.state.players.size} racing · ` +
+      `step ${(FIXED_TIMESTEP * 1000).toFixed(2)}ms · ` +
+      `you are "${session.self()?.name ?? '—'}" · ` +
+      'WASD move · Shift sprint · Space jump',
+  );
+
+  globalThis.addEventListener('beforeunload', () => loop.stop());
 }
 
 boot().catch((err) => {

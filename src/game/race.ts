@@ -1,55 +1,18 @@
 /**
- * Race state machine
+ * Race geometry and formatting
  *
- * Pure logic. No Three.js, no DOM, no timers of its own — the caller
- * supplies elapsed time. The server imports this module on Day 3 and
- * becomes the authority for the clock, so anything time-based or
- * side-effecting here would have to be rewritten.
+ * Pure logic shared by client and server. No Three.js, no DOM, no clock of its
+ * own.
+ *
+ * The race state machine that used to live here is gone. The server owns the
+ * phase and the timer now — see server/room.ts and shared/state.ts — so a
+ * client cannot decide it has finished, and two clients cannot disagree about
+ * when the race began. What remains is the geometry the server needs to detect
+ * the goal, plus the formatting everyone displays.
  */
 
 import type { Aabb, CourseGoal, Vec3Tuple } from '../shared/course.ts';
 import { aabbOverlap, boxAabb } from '../shared/course.ts';
-
-export type RacePhase = 'ready' | 'running' | 'finished';
-
-export interface RaceState {
-  phase: RacePhase;
-  /** Time since the race started. Meaningless while phase is 'ready'. */
-  elapsedMs: number;
-  /** Race time when the goal was reached, or null if not yet. */
-  finishedMs: number | null;
-}
-
-export function createRace(): RaceState {
-  return { phase: 'ready', elapsedMs: 0, finishedMs: null };
-}
-
-/** Ready -> running. Only the first input should trigger this. */
-export function startRace(state: RaceState): void {
-  if (state.phase !== 'ready') return;
-  state.phase = 'running';
-}
-
-/** Running -> finished, freezing the clock. Idempotent. */
-export function finishRace(state: RaceState): boolean {
-  if (state.phase !== 'running') return false;
-  state.phase = 'finished';
-  state.finishedMs = state.elapsedMs;
-  return true;
-}
-
-/** Advance the clock by a fixed step. Call once per fixed timestep. */
-export function advanceRace(state: RaceState, dtMs: number): void {
-  if (state.phase !== 'running') return;
-  state.elapsedMs += dtMs;
-}
-
-/** Back to the start without touching the clock history. */
-export function resetRace(state: RaceState): void {
-  state.phase = 'ready';
-  state.elapsedMs = 0;
-  state.finishedMs = null;
-}
 
 /**
  * Axis-aligned bounds of the player capsule, treated as a box.

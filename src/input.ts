@@ -1,19 +1,16 @@
 /**
  * Keyboard input
  *
- * Polled state, not event-driven. The fixed-timestep loop reads this once
- * per step, which keeps simulation input deterministic and replayable.
+ * Polled state, not event-driven. The fixed-timestep loop stages this into the
+ * network input schema once per step, which keeps what the server simulates and
+ * what the client predicts byte-identical.
+ *
+ * `jump` is level-triggered here and stays level-triggered on the wire. A
+ * queued keypress consumed by one step would be lost every time rollback
+ * replayed past it — see shared/input.ts.
  */
 
-export interface InputState {
-  /** -1 (back) .. 1 (forward) on the Z axis. */
-  forward: number;
-  /** -1 (left) .. 1 (right) on the X axis. */
-  strafe: number;
-  sprint: boolean;
-  /** True only on the step where jump was pressed. */
-  jumpPressed: boolean;
-}
+import type { MoveInputData } from './shared/input.ts';
 
 const FORWARD_KEYS = new Set(['KeyW', 'ArrowUp']);
 const BACK_KEYS = new Set(['KeyS', 'ArrowDown']);
@@ -57,10 +54,15 @@ export function disposeInput(target: EventTarget = window): void {
 }
 
 /**
- * Snapshot the current input. Call exactly once per fixed step, before
- * reading, so `jumpPressed` is consumed by a single step.
+ * Stage the current keyboard state into a network input, in place.
+ *
+ * Writes into the schema rather than returning a fresh object because the value
+ * that gets transmitted has to be the one the reconciler buffers for replay.
+ * A returned copy would be a different object from the one on the wire.
+ *
+ * Call at most once per fixed step, before `send()`.
  */
-export function readInput(): InputState {
+export function stageInput(target: MoveInputData): MoveInputData {
   const axis = (positive: Set<string>, negative: Set<string>) => {
     let value = 0;
     for (const code of positive) if (held.has(code)) value += 1;
@@ -68,15 +70,28 @@ export function readInput(): InputState {
     return Math.max(-1, Math.min(1, value));
   };
 
-  const state: InputState = {
-    forward: axis(FORWARD_KEYS, BACK_KEYS),
-    strafe: axis(RIGHT_KEYS, LEFT_KEYS),
-    sprint: [...SPRINT_KEYS].some((code) => held.has(code)),
-    jumpPressed: jumpQueued,
-  };
+  // Forward is -Z, matching the shared simulation's world axes.
+  target.moveZ = axis(FORWARD_KEYS, BACK_KEYS);
+  target.moveX = axis(RIGHT_KEYS, LEFT_KEYS);
+  target.sprint = [...SPRINT_KEYS].some((code) => held.has(code));
+  target.jump = jumpQueued;
 
   jumpQueued = false;
-  return state;
+  return target;
+}
+
+/**
+ * Is the player asking to move at all?
+ *
+ * Used only for local feedback (the "ready" prompt). The server decides when
+ * the race actually starts, from the inputs it receives.
+ */
+export function hasMovementIntent(): boolean {
+  for (const code of FORWARD_KEYS) if (held.has(code)) return true;
+  for (const code of BACK_KEYS) if (held.has(code)) return true;
+  for (const code of LEFT_KEYS) if (held.has(code)) return true;
+  for (const code of RIGHT_KEYS) if (held.has(code)) return true;
+  return false;
 }
 
 /** Drop all held keys — used when the window loses focus. */

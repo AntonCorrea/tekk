@@ -1,86 +1,168 @@
 /**
  * HUD
  *
- * DOM only. Reads game state, never mutates it — the HUD has no opinion
- * about the race, it just displays what the pure logic in game/race.ts says.
+ * DOM only. Displays replicated state and nothing else — every number shown
+ * here is decided by the server. The HUD has no opinion about the race, which
+ * is why two players looking at the same moment see the same clock.
  */
 
 import { formatTime } from '../game/race.ts';
-import type { RaceState } from '../game/race.ts';
+import type { GameStateInstance, PlayerStateInstance } from '../shared/state.ts';
 
 export interface Hud {
-  /** Per-frame readout. */
-  update(player: PlayerReadout, race: RaceState, courseName: string): void;
-  /** Big centred banner for finish. Hidden by default. */
-  showFinish(elapsedMs: number): void;
-  hideBanner(): void;
+  /** Per-frame readout of replicated state. */
+  update(
+    state: GameStateInstance,
+    selfId: string,
+    courseName: string,
+    connection: ConnectionStatus,
+  ): void;
   dispose(): void;
 }
 
-export interface PlayerReadout {
-  grounded: boolean;
-  horizontalSpeed: number;
-  /** Metres above the kill plane. */
-  heightAboveKill: number;
-}
+export type ConnectionStatus = 'connecting' | 'connected' | 'lost';
 
 export function createHud(container: HTMLElement): Hud {
-  const courseLabel = document.createElement('div');
-  courseLabel.className = 'hud hud-course';
-  container.appendChild(courseLabel);
-
-  const timer = document.createElement('div');
-  timer.className = 'hud hud-timer';
-  container.appendChild(timer);
-
-  const readout = document.createElement('div');
-  readout.className = 'hud hud-readout';
-  container.appendChild(readout);
-
-  const banner = document.createElement('div');
-  banner.className = 'banner';
+  const course = div('hud hud-course', container);
+  const timer = div('hud hud-timer', container);
+  const banner = div('banner', container);
   banner.hidden = true;
-  container.appendChild(banner);
 
-  const warning = document.createElement('div');
-  warning.className = 'warning';
-  warning.hidden = true;
-  container.appendChild(warning);
+  const connection = div('hud hud-connection', container);
+  const board = div('board', container);
+  const readout = div('hud hud-readout', container);
 
   return {
-    update(player, race, courseName) {
-      courseLabel.textContent = courseName;
+    update(state, selfId, courseName, status) {
+      course.textContent = courseName;
 
-      timer.textContent = race.phase === 'ready'
-        ? '--:--.---'
-        : formatTime(race.finishedMs ?? race.elapsedMs);
-      timer.classList.toggle('is-finished', race.phase === 'finished');
+      const self = state.players.get(selfId);
+      const running = state.phase === 'running';
+
+      // The server's clock, not a local stopwatch. A player's own time is
+      // frozen at the moment they crossed the line, which is the only number
+      // that matters once they are done.
+      const shown = self?.finishedMs ?? (running ? state.elapsedMs : 0);
+      timer.textContent = state.phase === 'ready' ? '--:--.---' : formatTime(shown);
+      timer.classList.toggle('is-finished', state.phase === 'finished');
+
+      connection.textContent = status;
+      connection.className = `hud hud-connection is-${status}`;
 
       readout.textContent =
-        `${player.grounded ? 'grounded' : 'airborne'}  ` +
-        `speed ${player.horizontalSpeed.toFixed(1)}  ` +
-        `height ${player.heightAboveKill.toFixed(0)}`;
+        `${self?.grounded ? 'grounded' : 'airborne'}  ` +
+        `speed ${(self?.speed ?? 0).toFixed(1)}`;
 
-      // Only warn once falling is genuinely unrecoverable.
-      warning.hidden = player.heightAboveKill > 6;
-    },
-
-    showFinish(elapsedMs) {
-      banner.hidden = false;
-      banner.innerHTML =
-        `<div class="banner-title">FINISHED</div>` +
-        `<div class="banner-time">${formatTime(elapsedMs)}</div>` +
-        `<div class="banner-hint">press R to run again</div>`;
-    },
-
-    hideBanner() {
-      banner.hidden = true;
+      renderBanner(banner, state, selfId);
+      renderBoard(board, state, selfId);
     },
 
     dispose() {
-      for (const el of [courseLabel, timer, readout, banner, warning]) {
-        el.remove();
-      }
+      for (const el of [course, timer, banner, connection, board, readout]) el.remove();
     },
   };
+}
+
+function div(className: string, parent: HTMLElement): HTMLDivElement {
+  const el = document.createElement('div');
+  el.className = className;
+  parent.appendChild(el);
+  return el;
+}
+
+/**
+ * The centred callout.
+ *
+ * Ready says what to do next, running stays out of the way, and finished shows
+ * your time and place — the two things a racer wants at that moment.
+ */
+function renderBanner(
+  banner: HTMLDivElement,
+  state: GameStateInstance,
+  selfId: string,
+): void {
+  const self = state.players.get(selfId);
+
+  if (state.phase === 'ready') {
+    banner.hidden = false;
+    banner.innerHTML =
+      `<div class="banner-title">GET READY</div>` +
+      `<div class="banner-hint">move to start the race</div>`;
+    return;
+  }
+
+  if (state.phase === 'finished' && self && self.finishedMs >= 0) {
+    const place = ordinal(self.place);
+    banner.hidden = false;
+    banner.innerHTML =
+      `<div class="banner-title">${place}</div>` +
+      `<div class="banner-time">${formatTime(self.finishedMs)}</div>` +
+      `<div class="banner-hint">next race shortly</div>`;
+    return;
+  }
+
+  banner.hidden = true;
+}
+
+/** Live standings, sorted by finish then by distance along the lane. */
+function renderBoard(
+  board: HTMLDivElement,
+  state: GameStateInstance,
+  selfId: string,
+): void {
+  const rows: Array<{ player: PlayerStateInstance; id: string; progress: number }> = [];
+
+  state.players.forEach((player, id) => {
+    rows.push({ player, id, progress: player.finishedMs >= 0 ? Infinity : -player.z });
+  });
+
+  rows.sort((a, b) => {
+    // Finishers first, ordered by place; then racers still going, furthest first.
+    const aDone = a.player.finishedMs >= 0;
+    const bDone = b.player.finishedMs >= 0;
+    if (aDone && bDone) return a.player.place - b.player.place;
+    if (aDone) return -1;
+    if (bDone) return 1;
+    return b.progress - a.progress;
+  });
+
+  board.innerHTML = rows
+    .map(({ player, id }) => {
+      const isSelf = id === selfId;
+      const time =
+        player.finishedMs >= 0
+          ? formatTime(player.finishedMs)
+          : player.place > 0 || player.finishedMs >= 0
+            ? '—'
+            : 'racing';
+      return (
+        `<div class="board-row${isSelf ? ' is-self' : ''}">` +
+        `<span class="board-name">${escapeHtml(player.name)}</span>` +
+        `<span class="board-time">${time}</span>` +
+        `</div>`
+      );
+    })
+    .join('');
+}
+
+function ordinal(place: number): string {
+  if (place <= 0) return 'FINISHED';
+  const suffix = place === 1 ? 'st' : place === 2 ? 'nd' : place === 3 ? 'rd' : 'th';
+  return `${place}${suffix}`;
+}
+
+/**
+ * Racer names come from other players, so they are untrusted text going into
+ * innerHTML. Strip anything that could close the element.
+ */
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (ch) => {
+    switch (ch) {
+      case '&': return '&amp;';
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '"': return '&quot;';
+      default: return '&#39;';
+    }
+  });
 }
