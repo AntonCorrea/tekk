@@ -1,0 +1,51 @@
+{
+  // Compiles the game server to plain JavaScript, for production hosting.
+  //
+  // Why this exists: Render (and most hosts) install with NODE_ENV=production,
+  // which makes `npm ci` skip devDependencies. Our start command therefore
+  // cannot rely on `tsx`, `tsc`, or `vite` existing at runtime. Compiling the
+  // server once at build time leaves production with zero dev dependencies --
+  // only `dependencies`, which is what actually ships.
+  //
+  // Emitted to `dist-server/`; `npm start` runs `dist-server/server/index.js`.
+  //
+  // This is a second, separate compile from `tsconfig.json`, and it has to
+  // differ in three ways:
+  //
+  //   1. `noEmit` off. The client config cannot emit, so it needs no outDir.
+  //   2. No `DOM` lib and no `vite/client` types. This half runs in Node, not
+  //      a browser. The client-only modules are excluded below instead.
+  //   3. `nodenext` resolution, so the emit is valid ESM for Node's loader.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["node"],
+
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+
+    "noEmit": false,
+    "outDir": "dist-server",
+    "rootDir": ".",
+    "sourceMap": true,
+
+    // The source imports siblings with an explicit `.ts` extension
+    // (`from '../src/constants.ts'`), which Vite resolves but Node does not.
+    // These two flags are what bridge that gap: they let the `.ts` extension
+    // appear in source AND still emit, rewriting each one to `.js` on the way
+    // out so Node's ESM loader can find the file at runtime.
+    //
+    // Rewriting ~40 imports by hand would be the alternative, and it would put
+    // a Vite-hostile file naming convention into the source for the sake of a
+    // bundler that never sees these files.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true
+  },
+
+  // Only what the server actually reaches. The client half of `src/` imports
+  // `three/webgpu` and touches the DOM, so it is deliberately not compiled
+  // here -- `npm run build` (Vite) owns those. Anything the server imports
+  // transitively must be reachable from this list, or the build fails loudly
+  // rather than silently omitting a module the server needs at runtime.
+  "include": ["server", "src/shared", "src/physics", "src/game", "src/constants.ts"]
+}

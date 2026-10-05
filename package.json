@@ -8,10 +8,12 @@
     "dev:client": "vite",
     "dev:server": "tsx watch server/index.ts",
     "server": "tsx server/index.ts",
+    "start": "node dist-server/server/index.js",
     "typecheck": "tsc --noEmit",
     "harness": "tsx scripts/harness.ts",
     "smoke": "tsx scripts/smoke.ts",
     "build": "tsc --noEmit && vite build",
+    "build:server": "tsc -p tsconfig.server.json && node scripts/copy-course.mjs",
     "preview": "vite preview"
   },
   "devDependencies": {
