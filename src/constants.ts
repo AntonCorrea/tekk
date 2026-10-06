@@ -44,8 +44,11 @@ export const PLAYER = {
 } as const;
 
 export const MOVE = {
-  walkSpeed: 7,
-  sprintSpeed: 12,
+  /**
+   * Top running speed, units/s. One speed, no sprint: in an arena the size of
+   * a Core Rush map a sprint key is noise, and Shift now belongs to the dash.
+   */
+  runSpeed: 9,
   /** Ground acceleration, units/s^2. Higher = snappier starts. */
   accel: 70,
   /** Ground deceleration when no input, units/s^2. */
@@ -53,6 +56,43 @@ export const MOVE = {
   /** Fraction of acceleration usable while airborne. */
   airControl: 0.3,
   jumpSpeed: 9,
+} as const;
+
+/**
+ * The dash -- the only way to steal the Core.
+ *
+ * Durations are in fixed TICKS, not seconds, on purpose: tick counts are
+ * integers that rollback restores exactly, where accumulated float seconds
+ * would drift between the client's replay and the server.
+ */
+export const DASH = {
+  /** Horizontal speed during the dash, units/s. */
+  speed: 22,
+  /** Length of the dash. 11 ticks at 60 Hz is ~0.18s. */
+  durationTicks: 11,
+  /** Ticks after a dash ENDS before the next one may start. 72 is 1.2s. */
+  cooldownTicks: 72,
+} as const;
+
+/** Core Rush rules. All tunable; none of these are final until playtested. */
+export const CORE = {
+  /** A dashing racer this close (centre to centre) to the carrier steals the Core. */
+  stealRadius: 1.4,
+  /** A free Core is picked up by any racer this close, no dash needed. */
+  pickupRadius: 1.2,
+  /** After a steal, the new carrier cannot be robbed for this long. */
+  immunityMs: 1500,
+  /** The carrier runs at this fraction of `MOVE.runSpeed`, and cannot dash. */
+  carrierSpeedFactor: 0.9,
+  /** Height of the Core above the carrier's body centre. */
+  carryHeight: 1.6,
+} as const;
+
+/** Match flow: ready -> countdown -> playing -> results -> ready. */
+export const MATCH = {
+  countdownMs: 3_000,
+  durationMs: 120_000,
+  resultsMs: 10_000,
 } as const;
 
 export const PHYSICS = {
