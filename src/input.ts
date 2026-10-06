@@ -182,8 +182,21 @@ export function stageInput(target: MoveInputData, yaw = 0): MoveInputData {
   // are exactly what that client predicted.
   const cos = Math.cos(yaw);
   const sin = Math.sin(yaw);
-  target.moveX = strafe * cos - forward * sin;
-  target.moveZ = -strafe * sin - forward * cos;
+  let moveX = strafe * cos - forward * sin;
+  let moveZ = -strafe * sin - forward * cos;
+
+  // A held diagonal has length sqrt(2), and once rotated a single component can
+  // exceed 1 (yaw 0.3 gives moveZ -1.25). The server's `sanitize` clamps each
+  // axis to [-1, 1], so an unclamped vector here is a direction the server never
+  // simulates -- a correction on every tick. Scaling to unit length keeps both
+  // components inside the range and the direction unchanged.
+  const length = Math.hypot(moveX, moveZ);
+  if (length > 1) {
+    moveX /= length;
+    moveZ /= length;
+  }
+  target.moveX = moveX;
+  target.moveZ = moveZ;
 
   target.sprint = [...SPRINT_KEYS].some((code) => held.has(code));
   target.jump = jumpQueued;

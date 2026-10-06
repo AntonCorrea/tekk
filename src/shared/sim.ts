@@ -121,8 +121,15 @@ export function createSimBody(world: World, course: Course, stepSeconds: number)
   };
 }
 
-/** Release a character's body and collider. */
+/**
+ * Release a character's body, collider and controller.
+ *
+ * Removing the body takes its collider with it, but the character controller
+ * is a separate WASM allocation the world tracks on its own. Without the second
+ * call every join on the server leaks one.
+ */
 export function destroySimBody(world: World, sim: SimBody): void {
+  world.removeCharacterController(sim.controller);
   world.removeRigidBody(sim.body);
 }
 

@@ -7,7 +7,7 @@
  */
 
 import { formatTime } from '../game/race.ts';
-import type { GameStateInstance, PlayerStateInstance } from '../shared/state.ts';
+import { displayTime, type GameStateInstance, type PlayerStateInstance } from '../shared/state.ts';
 
 export interface Hud {
   /** Per-frame readout of replicated state. */
@@ -37,13 +37,13 @@ export function createHud(container: HTMLElement): Hud {
       course.textContent = courseName;
 
       const self = state.players.get(selfId);
-      const running = state.phase === 'running';
 
       // The server's clock, not a local stopwatch. A player's own time is
       // frozen at the moment they crossed the line, which is the only number
       // that matters once they are done.
-      const shown = self?.finishedMs ?? (running ? state.elapsedMs : 0);
-      timer.textContent = state.phase === 'ready' ? '--:--.---' : formatTime(shown);
+      const shown = displayTime(state, selfId);
+      timer.textContent =
+        state.phase === 'ready' || shown === null ? '--:--.---' : formatTime(shown);
       timer.classList.toggle('is-finished', state.phase === 'finished');
 
       connection.textContent = status;

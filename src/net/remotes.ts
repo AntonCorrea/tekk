@@ -201,8 +201,12 @@ function makeLabel(name: string, color: THREE.Color): THREE.Sprite {
     // instead.
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    ctx.textAlign = 'center';
+    ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
+
+    // Set before measuring: `measureText` uses the current font, and measuring
+    // with the 10px default made every label sit off-centre.
+    ctx.font = '500 22px ui-sans-serif, "Helvetica Neue", Helvetica, Arial, sans-serif';
 
     // Uppercase with manual tracking, because canvas 2D has no letter-spacing in
     // a portable form across browsers and the wide tracking is the whole look.
@@ -212,7 +216,6 @@ function makeLabel(name: string, color: THREE.Color): THREE.Sprite {
     for (const ch of text) width += ctx.measureText(ch).width + spacing;
     width -= spacing;
 
-    ctx.font = '500 22px ui-sans-serif, "Helvetica Neue", Helvetica, Arial, sans-serif';
     let x = (canvas.width - width) / 2;
     for (const ch of text) {
       ctx.fillStyle = `#${color.getHexString()}`;
