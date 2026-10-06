@@ -9,16 +9,17 @@
  *   B. Rollback. A client that re-seeds from server truth and replays the
  *      unacknowledged inputs must land exactly where the server did. This is
  *      the claim that makes rollback invisible.
- *   C. Wire. A real Colyseus server and a real SDK client, in one process:
- *      schema encode/decode, input transport, sanitize, authoritative step,
- *      clock, goal, reset.
+ *   C. Rules. The Core Rush decisions (pickup, steal, ranking, match clock)
+ *      as pure functions, every tie-break pinned without a network.
+ *   D. Wire. A real Colyseus server and two real SDK clients, in one process:
+ *      schema encode/decode, input transport, sanitize, the phase flow, a
+ *      pickup up the dais, a dash steal, a drop on leave, results and reset.
  *
  * Run it more than once. An earlier version of the wire suite gave its
  * end-to-end autopilot a flat 15s wall-clock budget, which made the whole
- * harness a measurement of machine load: it reported anywhere from 25/4 to
- * 32/0 on identical code, and four assertions cascaded off a single missed
- * finish. A green run therefore proved very little. The autopilot is now
- * progress-driven, and the run is reliable enough to trust once.
+ * harness a measurement of machine load. The lesson carries over: the match
+ * clock now counts server ticks rather than wall time, and every wire wait
+ * polls for the state it needs instead of sleeping a fixed amount and hoping.
  */
 import { Client } from '@colyseus/sdk';
 
@@ -35,8 +36,18 @@ import {
 import { MoveInput } from '../src/shared/input.ts';
 import type { MoveInputData } from '../src/shared/input.ts';
 import { PlayerState } from '../src/shared/state.ts';
-import { hasReachedGoal } from '../src/game/race.ts';
-import { CORE, DASH, FIXED_TIMESTEP, MOVE, PLAYER } from '../src/constants.ts';
+import { CORE, DASH, FIXED_TIMESTEP, MATCH, MOVE, PLAYER } from '../src/constants.ts';
+import {
+  advancePhase,
+  chooseStealer,
+  choosePickup,
+  DEFAULT_TIMINGS,
+  rankStandings,
+  resolveTimings,
+  type Challenger,
+  type PhaseClock,
+  type RacerPoint,
+} from '../server/rules.ts';
 
 type Course = ReturnType<typeof loadCourse>;
 
@@ -499,10 +510,153 @@ async function testRollback(course: Course) {
   }
 }
 
-// ==================================================================== C: wire
+// ==================================================================== C: rules
 
-async function testWire(course: Awaited<ReturnType<typeof loadCourse>>) {
-  console.log('\n=== C. live server + SDK client ===');
+/**
+ * The Core Rush rules as pure functions, with no network and no physics.
+ * Every tie-break is pinned here, because on the wire ties are too rare to
+ * observe and too consequential to leave to Map iteration order.
+ */
+function testRules(course: Course) {
+  console.log('\n=== C. Core Rush rules (pure) ===');
+
+  const at = (id: string, x: number, y = 0, z = 0): RacerPoint => ({ id, x, y, z });
+  const dashing = (id: string, x: number, d = true): Challenger => ({ id, x, y: 0, z: 0, dashing: d });
+  const core = { x: 0, y: 0, z: 0 };
+
+  // --- pickup -----------------------------------------------------------
+  check('pickup: nobody in range takes nothing',
+    choosePickup(core, [at('a', 2), at('b', -1.3)], CORE.pickupRadius) === '');
+  check('pickup: the nearest racer in range takes it',
+    choosePickup(core, [at('a', 1.0), at('b', 0.5), at('c', 3)], CORE.pickupRadius) === 'b');
+  check('pickup: distance is 3D, not just horizontal',
+    choosePickup(core, [at('a', 0.1, 1.5)], CORE.pickupRadius) === '');
+  check('pickup: the radius is inclusive',
+    choosePickup(core, [at('a', CORE.pickupRadius)], CORE.pickupRadius) === 'a');
+  check('pickup: an exact tie goes to the lowest sessionId, whatever the order',
+    choosePickup(core, [at('zed', 0.5), at('amy', -0.5)], CORE.pickupRadius) === 'amy' &&
+      choosePickup(core, [at('amy', -0.5), at('zed', 0.5)], CORE.pickupRadius) === 'amy');
+
+  // --- steal ------------------------------------------------------------
+  const carrier = at('car', 0);
+  check('steal: a dashing racer in range takes it',
+    chooseStealer(carrier, [dashing('car', 0), dashing('t', 1.0)], CORE.stealRadius, 0) === 't');
+  check('steal: running through the carrier without a dash takes nothing',
+    chooseStealer(carrier, [dashing('t', 0.2, false)], CORE.stealRadius, 0) === '');
+  check('steal: a dash out of range takes nothing',
+    chooseStealer(carrier, [dashing('t', CORE.stealRadius + 0.01)], CORE.stealRadius, 0) === '');
+  check('steal: immunity blocks a dash that would otherwise steal',
+    chooseStealer(carrier, [dashing('t', 0.3)], CORE.stealRadius, 1) === '');
+  check('steal: the carrier cannot steal from itself mid-dash',
+    chooseStealer(carrier, [dashing('car', 0)], CORE.stealRadius, 0) === '');
+  check('steal: nearest dasher wins, then lowest sessionId',
+    chooseStealer(carrier, [dashing('far', 1.2), dashing('near', 0.6)], CORE.stealRadius, 0) === 'near' &&
+      chooseStealer(carrier, [dashing('yy', -0.6), dashing('bb', 0.6)], CORE.stealRadius, 0) === 'bb');
+  check('steal: a non-dashing racer closer than the dasher does not shadow it',
+    chooseStealer(carrier, [dashing('idle', 0.1, false), dashing('dash', 1.0)], CORE.stealRadius, 0) === 'dash');
+
+  // --- ranking ------------------------------------------------------------
+  const ranked = rankStandings([
+    { id: 'a', holdMs: 5000, lastHeldAtMs: 10_000 },
+    { id: 'b', holdMs: 9000, lastHeldAtMs: 20_000 },
+    { id: 'c', holdMs: 5000, lastHeldAtMs: 90_000 },
+    { id: 'd', holdMs: 0, lastHeldAtMs: -1 },
+  ]);
+  check('ranking: most hold time first; a tie goes to whoever held it last',
+    ranked.order.join(',') === 'b,c,a,d' && ranked.winnerId === 'b', ranked.order.join(','));
+  const fullTie = rankStandings([
+    { id: 'q', holdMs: 3000, lastHeldAtMs: 50_000 },
+    { id: 'p', holdMs: 3000, lastHeldAtMs: 50_000 },
+  ]);
+  check('ranking: a complete tie falls to the lowest sessionId', fullTie.order.join(',') === 'p,q');
+  const nobody = rankStandings([
+    { id: 'a', holdMs: 0, lastHeldAtMs: -1 },
+    { id: 'b', holdMs: 0, lastHeldAtMs: -1 },
+  ]);
+  check('ranking: nobody wins when nobody held the Core',
+    nobody.winnerId === '' && nobody.order.length === 2);
+  check('ranking: an empty room has no winner', rankStandings([]).winnerId === '');
+
+  // --- match clock ----------------------------------------------------------
+  const dtMs = FIXED_TIMESTEP * 1000;
+  const t = DEFAULT_TIMINGS;
+  {
+    const idle = advancePhase({ phase: 'ready', ticks: 0 }, false, dtMs, t);
+    const moved = advancePhase({ phase: 'ready', ticks: 0 }, true, dtMs, t);
+    check('clock: ready waits for movement and reports 0 remaining',
+      idle.entered === null && idle.clock.phase === 'ready' && idle.remainingMs === 0);
+    check('clock: movement in ready enters the countdown',
+      moved.entered === 'countdown' && moved.remainingMs === MATCH.countdownMs);
+  }
+  {
+    // Run each timed phase tick by tick and count exactly how long it lasts.
+    const lengthInTicks = (phase: 'countdown' | 'playing' | 'results') => {
+      let clock: PhaseClock = { phase, ticks: 0 };
+      for (let n = 1; n < 100_000; n++) {
+        const step = advancePhase(clock, false, dtMs, t);
+        if (step.entered) return { n, next: step.entered };
+        clock = step.clock;
+      }
+      return { n: -1, next: null };
+    };
+    const cd = lengthInTicks('countdown');
+    const pl = lengthInTicks('playing');
+    const rs = lengthInTicks('results');
+    check('clock: each phase lasts exactly its MATCH length in fixed ticks',
+      cd.n === MATCH.countdownMs / dtMs && pl.n === Math.round(MATCH.durationMs / dtMs) &&
+        rs.n === Math.round(MATCH.resultsMs / dtMs),
+      `countdown ${cd.n}, playing ${pl.n}, results ${rs.n} ticks`);
+    check('clock: countdown -> playing -> results -> ready',
+      cd.next === 'playing' && pl.next === 'results' && rs.next === 'ready');
+  }
+  check('timings: production defaults are the MATCH constants',
+    resolveTimings(undefined).durationMs === MATCH.durationMs &&
+      resolveTimings({}).countdownMs === MATCH.countdownMs);
+  {
+    let threw = false;
+    try {
+      resolveTimings({ durationMs: 0 });
+    } catch {
+      threw = true;
+    }
+    check('timings: a zero-length phase is rejected', threw);
+  }
+
+  // --- the dash flag the steal rule reads ----------------------------------
+  // `dashTicks` publishes 0 after the last dash step, so the steal rule reads
+  // `dashedThisStep` instead. Pin that it covers every flying step exactly.
+  {
+    const w = makeWorld(course);
+    const flags: { flew: boolean; ticksAfter: number }[] = [];
+    for (let step = 0; step < DASH.durationTicks + 5; step++) {
+      applyInput(w.sim, input(0, -1, true, false), FIXED_TIMESTEP);
+      w.world.step();
+      flags.push({ flew: w.sim.dashedThisStep, ticksAfter: w.sim.dashTicks });
+    }
+    const flew = flags.filter((f) => f.flew).length;
+    const last = flags[DASH.durationTicks - 1]!;
+    check('sim: dashedThisStep is true on every dash step, including the last',
+      flew === DASH.durationTicks && last.flew && last.ticksAfter === 0 &&
+        !flags[DASH.durationTicks]!.flew,
+      `${flew} flagged steps; last dash step published dashTicks=${last.ticksAfter}`);
+  }
+}
+
+// ==================================================================== D: wire
+
+/**
+ * Short phases for the wire suite. The production MATCH timings would make one
+ * match take two minutes. Passed through `createGameServer`, i.e. at define
+ * time, which is the only path that can set them -- see server/index.ts.
+ *
+ * The countdown is long enough to sample a racer running during it, and the
+ * match long enough to fit a pickup, the 1.5s steal immunity, a steal and a
+ * drop with room for a loaded machine.
+ */
+const WIRE_TIMINGS = { countdownMs: 1500, durationMs: 16_000, resultsMs: 1500 };
+
+async function testWire(course: Course) {
+  console.log('\n=== D. live server + SDK clients ===');
 
   // Use the real bootstrap, not a stand-in. The HTTP handler is part of what
   // is under test: a well-meaning catch-all in either place collides with
@@ -510,7 +664,7 @@ async function testWire(course: Awaited<ReturnType<typeof loadCourse>>) {
   const { createGameServer } = await import('../server/index.ts');
 
   const PORT = 25670 + Math.floor(Math.random() * 400);
-  const { gameServer } = createGameServer();
+  const { gameServer } = createGameServer({ matchTimings: WIRE_TIMINGS });
   await gameServer.listen(PORT, '127.0.0.1');
 
   check('server boots and listens', true, `port ${PORT}`);
@@ -529,121 +683,250 @@ async function testWire(course: Awaited<ReturnType<typeof loadCourse>>) {
   }
 
   const client = new Client(`ws://localhost:${PORT}`);
-  const room = await client.joinOrCreate('race', { name: 'HarnessOtter' });
-  check('client joins the room', !!room.sessionId, `sessionId=${room.sessionId.slice(0, 8)}...`);
+  // A client-supplied `timings` must be ignored: define-time options win.
+  const roomA = await client.joinOrCreate('race', { name: 'HarnessOtter', timings: { durationMs: 1 } });
+  const roomB = await client.joinOrCreate('race', { name: 'HarnessLynx' });
+  check('two clients join the same room',
+    !!roomA.sessionId && !!roomB.sessionId && roomA.roomId === roomB.roomId,
+    `A=${roomA.sessionId.slice(0, 6)} B=${roomB.sessionId.slice(0, 6)}`);
+
+  const A = roomA.sessionId;
+  const B = roomB.sessionId;
+  // Every read goes through A's view of the room; B only sends input.
+  const s = () => roomA.state;
+  const me = (id: string) => roomA.state.players.get(id);
 
   // --- the course arrives -------------------------------------------------
   let courseJson = '';
   for (let i = 0; i < 100 && !courseJson; i++) {
-    courseJson = room.state?.courseJson ?? '';
+    courseJson = roomA.state?.courseJson ?? '';
     if (!courseJson) await sleep(20);
   }
   check('server ships the course to the client', courseJson.length > 0, `${courseJson.length} bytes`);
 
   const { parseCourse } = await import('../src/shared/course.ts');
-  let received = null;
+  let received: Course | null = null;
   try {
     received = parseCourse(JSON.parse(courseJson), 'server');
   } catch (err) {
     check('client can validate the received course', false, String(err).slice(0, 120));
   }
   check(
-    'client validates the course and it matches the server file',
+    'client validates the course, it matches the server file, and it has a coreSpawn',
     received !== null &&
-      received!.id === course.id &&
-      received!.solids.length === course.solids.length &&
-      JSON.stringify(received) === JSON.stringify(course),
-    received ? `${received!.solids.length} solids` : '',
+      JSON.stringify(received) === JSON.stringify(course) &&
+      Array.isArray(received.coreSpawn) &&
+      received.coreSpawn.join(',') === course.coreSpawn!.join(','),
+    received ? `${received.solids.length} solids, coreSpawn ${received.coreSpawn?.join(',')}` : '',
   );
 
-  // --- the server advertises its step rate --------------------------------
   check(
     'server advertises the input step rate to the client',
-    room.input({ mode: 'reliable' }).stepSeconds !== undefined,
-    `stepSeconds=${room.input({ mode: 'reliable' }).stepSeconds}`,
+    roomA.input({ mode: 'reliable' }).stepSeconds !== undefined,
+    `stepSeconds=${roomA.input({ mode: 'reliable' }).stepSeconds}`,
   );
+
+  const coreAtSpawn = () =>
+    Math.abs(s().coreX - course.coreSpawn![0]) < 1e-6 &&
+    Math.abs(s().coreY - course.coreSpawn![1]) < 1e-6 &&
+    Math.abs(s().coreZ - course.coreSpawn![2]) < 1e-6;
+
+  check('the free Core sits on its spawn in ready', coreAtSpawn() && s().carrierId === '',
+    `core (${s().coreX}, ${s().coreY}, ${s().coreZ})`);
 
   // --- drive real inputs --------------------------------------------------
-  const handle = room.input({ type: MoveInput, mode: 'reliable' });
+  const hA = roomA.input({ type: MoveInput, mode: 'reliable' });
+  const hB = roomB.input({ type: MoveInput, mode: 'reliable' });
+  const send = (h: typeof hA, moveZ: number, dash = false) => {
+    h.data.moveX = 0;
+    h.data.moveZ = moveZ;
+    h.data.dash = dash;
+    h.data.jump = false;
+    h.send();
+  };
+  const both = (zA: number, zB: number) => {
+    send(hA, zA);
+    send(hB, zB);
+  };
+  /** Poll until `cond` or the deadline; keeps both clients sending idle. */
+  const waitFor = async (cond: () => boolean, ms: number) => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline && !cond()) {
+      both(0, 0);
+      await sleep(16);
+    }
+    return cond();
+  };
 
-  // 1. Idle for a moment: the clock must NOT have started.
+  // 1. Idle: the match must NOT start.
   for (let i = 0; i < 30; i++) {
-    handle.data.moveX = 0;
-    handle.data.moveZ = 0;
-    handle.data.dash = false;
-    handle.data.jump = false;
-    handle.send();
+    both(0, 0);
     await sleep(16);
   }
-  check(
-    'idle input does not start the race',
-    room.state.phase === 'ready',
-    `phase=${room.state.phase}`,
-  );
+  check('idle input does not start the match',
+    s().phase === 'ready' && s().phaseRemainingMs === 0,
+    `phase=${s().phase} remaining=${s().phaseRemainingMs}`);
 
-  // 2. Move: the clock starts and z goes negative (forward is -Z).
-  const z0 = room.state.players.get(room.sessionId)!.z;
-  for (let i = 0; i < 60; i++) {
-    handle.data.moveX = 0;
-    handle.data.moveZ = -1;
-    handle.data.dash = false;
-    handle.data.jump = false;
-    handle.send();
+  // 2. Move: the countdown starts. The axis is wildly out of range, which also
+  //    proves sanitize clamps it -- racers may move during the countdown.
+  const z0 = me(A)!.z;
+  let peakSpeed = 0;
+  let sawCountdown = false;
+  let countdownRemaining = -1;
+  for (let i = 0; i < 40; i++) {
+    send(hA, -9999);
+    send(hB, 0);
     await sleep(16);
+    peakSpeed = Math.max(peakSpeed, me(A)!.speed);
+    if (s().phase === 'countdown' && !sawCountdown) {
+      sawCountdown = true;
+      countdownRemaining = s().phaseRemainingMs;
+    }
   }
-  await sleep(120);
+  check('movement starts the countdown',
+    sawCountdown && countdownRemaining > 0 && countdownRemaining <= WIRE_TIMINGS.countdownMs,
+    `phase=${s().phase}, remaining at first sight ${countdownRemaining.toFixed(0)}ms`);
+  check('racers move during the countdown', me(A)!.z < z0 - 1, `z ${z0.toFixed(2)} -> ${me(A)!.z.toFixed(2)}`);
+  check('out-of-range input is clamped, not trusted',
+    peakSpeed > 1 && peakSpeed <= MOVE.runSpeed + 0.5,
+    `peak speed=${peakSpeed.toFixed(2)} (tuned run is ${MOVE.runSpeed})`);
+  check('the Core is not live during the countdown', s().carrierId === '' && coreAtSpawn());
 
-  const self = () => room.state.players.get(room.sessionId)!;
-  check('the race starts on movement', room.state.phase === 'running', `phase=${room.state.phase}`);
-  check('the server clock advances', room.state.elapsedMs > 0, `elapsedMs=${room.state.elapsedMs.toFixed(0)}`);
-  check(
-    'the authoritative racer moves forward',
-    self().z < z0 - 3,
-    `z ${z0.toFixed(2)} -> ${self().z.toFixed(2)}`,
-  );
+  // 3. Countdown -> playing, everyone back on spawn.
+  const playing = await waitFor(() => s().phase === 'playing', 10_000);
+  check('the countdown runs out into playing', playing, `phase=${s().phase}`);
+  // Phase and teleported position may land in different patches; wait for both.
+  await waitFor(() => Math.abs(me(A)!.z - course.spawn[2]) < 1, 2000);
+  check('entering playing returns racers to spawn',
+    Math.abs(me(A)!.z - course.spawn[2]) < 1 && Math.abs(me(B)!.z - course.spawn[2]) < 1,
+    `A z=${me(A)!.z.toFixed(2)} B z=${me(B)!.z.toFixed(2)} spawn z=${course.spawn[2]}`);
+  // A 1ms match from the client's `timings` option would already be over.
+  check('the match clock counts down from the define-time length, not the client\'s',
+    s().phaseRemainingMs > WIRE_TIMINGS.durationMs - 3000 && s().phaseRemainingMs <= WIRE_TIMINGS.durationMs,
+    `remaining=${s().phaseRemainingMs.toFixed(0)}ms of ${WIRE_TIMINGS.durationMs}`);
+  check('a new match starts with clean scores and a free Core',
+    me(A)!.holdMs === 0 && me(A)!.lastHeldAtMs === -1 && me(A)!.rank === 0 &&
+      s().carrierId === '' && s().immuneRemainingMs === 0 && coreAtSpawn());
 
-  // 3. Sanitize: an out-of-range axis must be clamped, not trusted.
-  for (let i = 0; i < 10; i++) {
-    handle.data.moveX = 0;
-    handle.data.moveZ = -9999;
-    handle.data.dash = false;
-    handle.data.jump = false;
-    handle.send();
-    await sleep(16);
+  // 4. A runs straight north from spawn, up the dais steps, onto the Core.
+  const transfers0 = s().coreTransfers;
+  {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline && s().carrierId !== A && s().phase === 'playing') {
+      send(hA, -1);
+      send(hB, 0);
+      await sleep(16);
+    }
   }
-  await sleep(150);
-  check(
-    'out-of-range input is clamped, not trusted',
-    self().speed <= MOVE.runSpeed + 0.5,
-    `speed=${self().speed.toFixed(2)} (tuned run is ${MOVE.runSpeed})`,
-  );
+  const picked = s().carrierId === A;
+  check('running north up the dais picks up the Core', picked,
+    `carrier=${s().carrierId.slice(0, 6) || "''"} A at z=${me(A)!.z.toFixed(2)} y=${me(A)!.y.toFixed(2)}`);
 
-  // 4. Goal detection is a pure function of position; check the geometry.
-  check(
-    'the goal box is detected at its own centre',
-    hasReachedGoal(
-      {
-        x: course.goal.position[0],
-        y: course.goal.position[1],
-        z: course.goal.position[2],
-      },
-      PLAYER.radius,
-      PLAYER.halfHeight,
-      course.goal,
-    ),
-    `goal at ${course.goal.position.join(',')}`,
-  );
-  check(
-    'the goal is NOT detected at the start pad',
-    !hasReachedGoal(
-      { x: course.spawn[0], y: 1, z: course.spawn[2] },
-      PLAYER.radius,
-      PLAYER.halfHeight,
-      course.goal,
-    ),
-  );
+  if (!picked) {
+    for (const label of ['pickup counts one transfer and grants immunity', 'the carrier accrues hold time',
+      'the carried Core rides above the carrier', 'a dash into the carrier steals the Core',
+      'dash counters are published', 'a carrier leaving drops the Core', 'time up enters results with ranks',
+      'results expire back to ready with scores cleared']) skip(label, 'A never picked up the Core');
+    await roomA.leave();
+    await roomB.leave();
+    await gameServer.gracefullyShutdown(false);
+    return;
+  }
 
-  // 5. Respawn: is the spawn point on solid ground?
+  check('pickup counts one transfer and grants immunity',
+    s().coreTransfers === transfers0 + 1 && s().immuneRemainingMs > 0 &&
+      s().immuneRemainingMs <= CORE.immunityMs,
+    `transfers ${transfers0} -> ${s().coreTransfers}, immunity ${s().immuneRemainingMs.toFixed(0)}ms`);
+
+  // A stops. Hold time must accrue while it stands there.
+  const h1 = me(A)!.holdMs;
+  await waitFor(() => false, 600);
+  const h2 = me(A)!.holdMs;
+  check('the carrier accrues hold time',
+    h2 > h1 + 300 && me(A)!.lastHeldAtMs > 0,
+    `holdMs ${h1.toFixed(0)} -> ${h2.toFixed(0)} over ~600ms, lastHeldAtMs=${me(A)!.lastHeldAtMs.toFixed(0)}`);
+  check('the carried Core rides above the carrier',
+    Math.abs(s().coreY - (me(A)!.y + CORE.carryHeight)) < 1e-3 &&
+      Math.abs(s().coreX - me(A)!.x) < 1e-3 && Math.abs(s().coreZ - me(A)!.z) < 1e-3,
+    `core y=${s().coreY.toFixed(3)} carrier y=${me(A)!.y.toFixed(3)} + ${CORE.carryHeight}`);
+
+  // 5. The steal. Deterministic enough because it does not depend on timing a
+  //    single tick: A stands still on the dais, B runs straight up the same
+  //    line and holds dash from 3.5 units out. A dash covers ~4 units in
+  //    0.37-unit steps, straight through A (racers pass through each other),
+  //    so some step of it lands inside the 1.4 steal radius wherever within a
+  //    unit or so of latency the dash actually starts. Immunity is waited out
+  //    first; a dash into an immune carrier is covered by the pure tests.
+  await waitFor(() => s().immuneRemainingMs === 0, 5000);
+  const transfers1 = s().coreTransfers;
+  let peakDash = 0;
+  let peakCooldown = 0;
+  {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline && s().carrierId === A && s().phase === 'playing') {
+      const gap = me(B)!.z - me(A)!.z;
+      send(hA, 0);
+      send(hB, -1, gap < 3.5);
+      await sleep(16);
+      peakDash = Math.max(peakDash, me(B)!.dashTicks);
+      peakCooldown = Math.max(peakCooldown, me(B)!.dashCooldownTicks);
+      // B has run well past A without stealing: no point continuing.
+      if (gap < -6) break;
+    }
+  }
+  const stolen = s().carrierId === B;
+  check('a dash into the carrier steals the Core',
+    stolen && s().coreTransfers === transfers1 + 1 && s().immuneRemainingMs > 0,
+    `carrier=${s().carrierId.slice(0, 6) || "''"} transfers ${transfers1} -> ${s().coreTransfers}, ` +
+      `B z=${me(B)!.z.toFixed(2)} A z=${me(A)!.z.toFixed(2)}`);
+
+  // The cooldown starts when the dash ends and lasts 1.2s, so it is visible
+  // in patches even when the 11-tick dash itself falls between two of them.
+  await waitFor(() => me(B)!.dashCooldownTicks > 0 || peakCooldown > 0, 1000);
+  peakCooldown = Math.max(peakCooldown, me(B)!.dashCooldownTicks);
+  check('dash counters are published',
+    (peakDash > 0 || peakCooldown > 0) && peakDash <= DASH.durationTicks && peakCooldown <= DASH.cooldownTicks,
+    `peak dashTicks=${peakDash}, peak dashCooldownTicks=${peakCooldown}`);
+
+  if (stolen) {
+    const aFrozen = me(A)!.holdMs;
+    await waitFor(() => false, 300);
+    check('the robbed racer stops accruing', me(A)!.holdMs === aFrozen && me(B)!.holdMs > 0,
+      `A holdMs ${aFrozen.toFixed(0)} -> ${me(A)!.holdMs.toFixed(0)}, B holdMs ${me(B)!.holdMs.toFixed(0)}`);
+  }
+
+  // 6. The carrier leaves: the Core drops. A may be standing within pickup
+  //    range of the Core's spawn and re-take it the same tick, so this checks
+  //    "B no longer has it and at least one change of hands", not "free".
+  const transfers2 = s().coreTransfers;
+  const carrierBeforeLeave = s().carrierId;
+  await roomB.leave();
+  await waitFor(() => !s().players.has(B), 2000);
+  check('a carrier leaving drops the Core',
+    carrierBeforeLeave === B && s().carrierId !== B && s().coreTransfers >= transfers2 + 1,
+    `carrier before=${carrierBeforeLeave.slice(0, 6)} after=${s().carrierId.slice(0, 6) || "''"}, ` +
+      `transfers ${transfers2} -> ${s().coreTransfers}`);
+
+  // 7. Time up.
+  const results = await waitFor(() => s().phase === 'results', WIRE_TIMINGS.durationMs + 10_000);
+  // Ranks and winner may trail the phase by one patch.
+  await waitFor(() => me(A)!.rank !== 0, 1000);
+  check('time up enters results with ranks',
+    results && me(A)!.rank === 1 && s().winnerId === A && s().carrierId === '' && coreAtSpawn() &&
+      s().phaseRemainingMs > 0 && s().phaseRemainingMs <= WIRE_TIMINGS.resultsMs,
+    `phase=${s().phase} rank=${me(A)!.rank} winner=${s().winnerId.slice(0, 6) || "''"} ` +
+      `A holdMs=${me(A)!.holdMs.toFixed(0)} remaining=${s().phaseRemainingMs.toFixed(0)}`);
+
+  // 8. Results expire.
+  const ready = await waitFor(() => s().phase === 'ready', WIRE_TIMINGS.resultsMs + 10_000);
+  await waitFor(() => me(A)!.holdMs === 0 && Math.abs(me(A)!.z - course.spawn[2]) < 1, 2000);
+  check('results expire back to ready with scores cleared',
+    ready && me(A)!.holdMs === 0 && me(A)!.lastHeldAtMs === -1 && me(A)!.rank === 0 &&
+      s().winnerId === '' && s().phaseRemainingMs === 0 && coreAtSpawn() &&
+      Math.abs(me(A)!.z - course.spawn[2]) < 1,
+    `phase=${s().phase} holdMs=${me(A)!.holdMs} rank=${me(A)!.rank} z=${me(A)!.z.toFixed(2)}`);
+
+  // 9. Respawn: is the spawn point on solid ground?
   const probe = respawnFeet(
     (() => {
       const w = createPhysicsWorld();
@@ -658,148 +941,7 @@ async function testWire(course: Awaited<ReturnType<typeof loadCourse>>) {
     `feet y=${probe.y.toFixed(2)} (JSON spawn y=${course.spawn[1]})`,
   );
 
-  // 6. Drive the whole course for real: hold sprint forward and hold jump.
-  //    Holding jump is the crude autopilot -- it re-jumps on every landing, which
-  //    clears the three gaps. This exercises the real finish path end to end:
-  //    goal AABB, finishedMs, place, phase, and the auto-reset.
-  //
-  //    Progress-driven, NOT wall-clock driven. An earlier version gave this a
-  //    flat 15s budget, which made the whole suite a measurement of machine load:
-  //    sprinting and re-jumping three gaps sometimes takes longer than 15s under
-  //    contention, the racer never reached the goal, and four assertions cascaded
-  //    off that single miss. It reported 25/4 on a clean checkout of known-good
-  //    code. The loop now runs until it finishes or genuinely stalls, with a
-  //    ceiling generous enough that load alone cannot reach it.
-  //
-  //    "Stalled" means forward progress has stopped for STALL_MS while the racer
-  //    is not finished. Measured on a loaded box the server's step loop starves,
-  //    the identical trajectory stretches across more real seconds, and the
-  //    drive once ran 58s against a 60s ceiling -- close enough to misreport a
-  //    slow machine as a broken course. Wedge geometry or a respawn loop is a
-  //    real failure worth reporting; running slowly is not.
-  const STALL_MS = 3_000;
-  const CEILING_MS = 120_000; // a loaded box was measured at 58s; typical is under 6s
-
-  // The server race clock can ALREADY be running before this loop. Suite 4 above
-  // moved the racer to start the race, so `startedAtMs` was set then -- measured
-  // runs put this loop ~1.9s after the clock started. Bounding the absolute
-  // finish time by `droveMs` therefore compared a value that INCLUDES that
-  // earlier stretch against a drive that EXCLUDES it, a fixed ~1.9s deficit that
-  // failed 8/8 runs. What this loop is responsible for is the clock DELTA across
-  // the drive, and a wall-clock source cannot advance faster than real time.
-  const clockAtDriveStart = room.state.elapsedMs;
-  const startedAt = Date.now();
-  let finishedAtMs = 0;
-  let bestZ = Infinity;
-  let lastProgressAt = startedAt;
-  let stalls = 0;
-
-  while (Date.now() - startedAt < CEILING_MS) {
-    handle.data.moveX = 0;
-    handle.data.moveZ = -1;
-    handle.data.dash = false;
-    handle.data.jump = true;
-    handle.send();
-
-    const me = self();
-    if (me.finishedMs >= 0 && finishedAtMs === 0) finishedAtMs = me.finishedMs;
-    if (finishedAtMs > 0) break;
-
-    // Forward is -Z, so "further along" is a more negative z. Falling into a gap
-    // respawns at the start pad and z jumps back positive; tracking the minimum
-    // rather than the latest sample keeps progress monotonic across that.
-    if (me.z < bestZ - 0.05) {
-      bestZ = me.z;
-      lastProgressAt = Date.now();
-    } else if (Date.now() - lastProgressAt > STALL_MS) {
-      stalls++;
-      lastProgressAt = Date.now();
-    }
-
-    await sleep(16);
-  }
-
-  const droveMs = Date.now() - startedAt;
-  console.info(
-    `  [autopilot] ${finishedAtMs > 0 ? 'finished' : 'did NOT finish'} in ` +
-      `${(droveMs / 1000).toFixed(1)}s of budget, reached z=${bestZ.toFixed(2)}, ` +
-      `${stalls} stall(s)`,
-  );
-
-  check('a full sprint down the lane reaches the goal', finishedAtMs > 0,
-    `finishedMs=${finishedAtMs} z=${bestZ.toFixed(2)} stalls=${stalls}`);
-
-  // If the drive did not finish, the whole tail is unobservable: `phase` correctly
-  // stays `running`, the results hold never starts and the auto-reset never fires.
-  // Asserting on them would report three failures for what is one root cause -- the
-  // goal was never crossed -- and bury the only line that matters.
-  if (finishedAtMs === 0) {
-    skip('the race clock advanced by the drive and no more than it took', 'never finished');
-    skip("the finishing place is assigned", 'never finished');
-    skip('the clock freezes at the finish line', 'never finished');
-    skip('the phase closes once everyone has finished', 'never finished');
-    skip('the room resets itself after the results hold', 'never finished');
-    skip('the reset clears the finish time', 'never finished');
-    skip('the reset returns the racer to the start pad', 'never finished');
-    await room.leave();
-    await gameServer.gracefullyShutdown(false);
-    return;
-  }
-
-  // Bound the clock DELTA, not the absolute time. Two reasons the absolute
-  // value is unusable here:
-  //
-  //   - `tickClock` reads `RoomClock.elapsedTime`, which is WALL-CLOCK, not
-  //     simulated time. A server whose fixed-step loop is starved covers the
-  //     identical trajectory in more real seconds: 5.7s on an idle box, 59.8s
-  //     loaded, same course and same inputs. A hardcoded ceiling measures the
-  //     machine, not the code.
-  //   - the race clock starts on first movement, which suite 4 triggered, so
-  //     the finish time includes ~1.9s before this drive loop even began.
-  //
-  // Subtracting the clock reading at loop entry removes both. What remains is
-  // genuinely bounded: a wall-clock source cannot advance faster than the real
-  // seconds elapsed, and the 500ms covers the ~50ms state-patch lag.
-  check('the race clock advanced by the drive and no more than it took',
-    finishedAtMs > 1000 && finishedAtMs - clockAtDriveStart <= droveMs + 500,
-    `+${((finishedAtMs - clockAtDriveStart) / 1000).toFixed(2)}s on the clock ` +
-      `over a ${(droveMs / 1000).toFixed(1)}s drive ` +
-      `(finishedMs=${finishedAtMs}, clock was ${clockAtDriveStart.toFixed(0)} at entry)`);
-  check('the finishing place is assigned', self().place === 1, `place=${self().place}`);
-  check(
-    'the clock freezes at the finish line',
-    Math.abs(self().finishedMs - room.state.elapsedMs) < 60,
-    `finishedMs=${self().finishedMs} elapsedMs=${room.state.elapsedMs.toFixed(0)}`,
-  );
-  // The player's finishedMs is set the moment the goal is crossed, but the room
-  // only closes on a later server tick, once it has seen that everyone is done.
-  // Checking immediately races that tick, and under load the scheduler loses.
-  // Wait for it the same way the auto-reset below does.
-  const closeDeadline = Date.now() + 10_000;
-  while (Date.now() < closeDeadline && room.state.phase !== 'finished') await sleep(100);
-
-  check('the phase closes once everyone has finished', room.state.phase === 'finished',
-    `phase=${room.state.phase}`);
-
-  // 7. Auto-reset back to the start pad. RESULTS_HOLD_MS is 10s, so the deadline
-  //    has to clear it with room for a loaded scheduler to slip the timer.
-  const resetDeadline = Date.now() + 40_000;
-  while (Date.now() < resetDeadline && room.state.phase !== 'ready') await sleep(200);
-  check('the room resets itself after the results hold', room.state.phase === 'ready',
-    `phase=${room.state.phase}`);
-  check('the reset clears the finish time', self().finishedMs === -1, `finishedMs=${self().finishedMs}`);
-  // The phase and the position arrive in DIFFERENT patches: the phase flips on the
-  // server tick, the teleported position at most one patch later (50ms). Reading z
-  // in the same sample as the phase flip catches a stale position still sitting at
-  // the finish line. Same class of bug as the phase check above -- wait for the
-  // value rather than racing the patch.
-  const padDeadline = Date.now() + 5_000;
-  while (Date.now() < padDeadline && Math.abs(self().z - course.spawn[2]) >= 3) await sleep(50);
-
-  check('the reset returns the racer to the start pad',
-    Math.abs(self().z - course.spawn[2]) < 3, `z=${self().z.toFixed(2)} spawn z=${course.spawn[2]}`);
-
-  await room.leave();
+  await roomA.leave();
   await gameServer.gracefullyShutdown(false);
 }
 
@@ -820,6 +962,7 @@ async function main(): Promise<void> {
   await testRollback(course);
   // Guarded so a crash in the wire suite still prints the tally for A and B,
   // which do not depend on the server room at all.
+  testRules(course);
   try {
     await testWire(course);
   } catch (err) {

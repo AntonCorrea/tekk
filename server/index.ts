@@ -14,6 +14,15 @@ import { pathToFileURL } from 'node:url';
 import { Server } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { RaceRoom } from './room.ts';
+import { DEFAULT_TIMINGS, type MatchTimings } from './rules.ts';
+
+export interface GameServerOptions {
+  /**
+   * Phase lengths. Production never passes this and gets the `MATCH`
+   * constants; the harness shortens them so a full match fits in a test run.
+   */
+  matchTimings?: Partial<MatchTimings>;
+}
 
 /**
  * Build the game server without listening.
@@ -22,7 +31,7 @@ import { RaceRoom } from './room.ts';
  * `listen()` is the only part that touches the network, which is the only part
  * worth separating. The port and host belong to `listen`, not here.
  */
-export function createGameServer() {
+export function createGameServer(options: GameServerOptions = {}) {
   /**
    * A real HTTP server is required, not optional. The matchmaking routes and
    * the WebSocket upgrade both attach to it, and the Vite dev proxy forwards to
@@ -51,7 +60,13 @@ export function createGameServer() {
     transport: new WebSocketTransport({ server: httpServer }),
   });
 
-  gameServer.define('race', RaceRoom);
+  // Timings are ALWAYS passed at define time, even in production. Colyseus
+  // merges define-time options over the client's create options, so supplying
+  // them here is what stops a client from creating a room with its own
+  // `timings` and a one-second match.
+  gameServer.define('race', RaceRoom, {
+    timings: { ...DEFAULT_TIMINGS, ...options.matchTimings },
+  });
 
   return { gameServer, httpServer };
 }
