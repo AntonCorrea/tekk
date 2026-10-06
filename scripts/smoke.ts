@@ -167,6 +167,16 @@ async function main(): Promise<void> {
 
     check('the room starts on a known phase', room.state.phase === 'ready', `phase=${room.state.phase}`);
 
+    // The production room, with production timings and the production course:
+    // the Core must be somewhere real and free before anyone has moved.
+    const coreSpawn = (course as { coreSpawn?: number[] }).coreSpawn;
+    check('the Core waits free on the course\'s coreSpawn',
+      Array.isArray(coreSpawn) && room.state.carrierId === '' &&
+        Math.abs(room.state.coreX - coreSpawn[0]!) < 1e-6 &&
+        Math.abs(room.state.coreY - coreSpawn[1]!) < 1e-6 &&
+        Math.abs(room.state.coreZ - coreSpawn[2]!) < 1e-6,
+      `core (${room.state.coreX}, ${room.state.coreY}, ${room.state.coreZ}) vs ${coreSpawn?.join(',')}`);
+
     await room.leave();
   } finally {
     await vite.close();

@@ -1,45 +1,14 @@
 /**
- * Race geometry and formatting
+ * Match formatting
  *
  * Pure logic shared by client and server. No Three.js, no DOM, no clock of its
  * own.
  *
- * The race state machine that used to live here is gone. The server owns the
- * phase and the timer now — see server/room.ts and shared/state.ts — so a
- * client cannot decide it has finished, and two clients cannot disagree about
- * when the race began. What remains is the geometry the server needs to detect
- * the goal, plus the formatting everyone displays.
+ * The goal-box geometry that used to live here went with the race: Core Rush
+ * has no finish line, and the rules that replaced it (pickup, steal, ranking)
+ * are server decisions that live in server/rules.ts. What remains is the time
+ * formatting everyone displays.
  */
-
-import type { Aabb, CourseGoal, Vec3Tuple } from '../shared/course.ts';
-import { aabbOverlap, boxAabb } from '../shared/course.ts';
-
-/**
- * Axis-aligned bounds of the player capsule, treated as a box.
- *
- * Exact for the goal test because the goal is also axis-aligned. Not
- * suitable for anything involving rotation.
- */
-export function playerAabb(
-  center: Vec3Tuple,
-  radius: number,
-  halfHeight: number,
-): Aabb {
-  return boxAabb([center.x, center.y, center.z], [radius * 2, halfHeight * 2, radius * 2]);
-}
-
-/** Has the player entered the goal volume? */
-export function hasReachedGoal(
-  playerCenter: Vec3Tuple,
-  playerRadius: number,
-  playerHalfHeight: number,
-  goal: CourseGoal,
-): boolean {
-  return aabbOverlap(
-    playerAabb(playerCenter, playerRadius, playerHalfHeight),
-    boxAabb(goal.position, goal.size),
-  );
-}
 
 /** `M:SS.mmm` — the format a speedrunner would want to read. */
 export function formatTime(ms: number): string {

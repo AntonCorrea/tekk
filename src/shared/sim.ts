@@ -106,6 +106,15 @@ export interface SimBody {
    * only ever read by the step.
    */
   carrying: boolean;
+  /**
+   * True if this body flew a dash step during the most recent `applyInput`.
+   *
+   * Output only -- the step never reads it, so it cannot change a trajectory.
+   * It exists for the server's steal rule: `dashTicks` already reads 0 after
+   * the LAST dash step, so "dashTicks > 0 after the step" would miss the final
+   * tick of every dash, the one most likely to land on the carrier.
+   */
+  dashedThisStep: boolean;
 }
 
 /**
@@ -172,6 +181,7 @@ export function createSimBody(world: World, course: Course, stepSeconds: number)
     dashTicks: 0,
     dashCooldownTicks: 0,
     carrying: false,
+    dashedThisStep: false,
   };
 }
 
@@ -239,6 +249,7 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
   // steering, accel and friction are all skipped, so the dash flies straight.
   // Once it ends the ordinary accel/friction below bleed the excess off.
   const dashing = sim.dashTicks > 0 || tryStartDash(sim, input, wishX, wishZ, hasWish);
+  sim.dashedThisStep = dashing;
 
   if (!dashing) {
     const targetSpeed = sim.carrying ? MOVE.runSpeed * CORE.carrierSpeedFactor : MOVE.runSpeed;
