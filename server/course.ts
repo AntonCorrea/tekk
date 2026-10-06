@@ -19,7 +19,7 @@ import type { Course } from '../src/shared/course.ts';
 const here = dirname(fileURLToPath(import.meta.url));
 
 /** Default course, relative to this file rather than the process cwd. */
-export const DEFAULT_COURSE_PATH = resolve(here, '..', 'src', 'courses', 'tekk-01.json');
+export const DEFAULT_COURSE_PATH = resolve(here, '..', 'src', 'courses', 'takk-arena.json');
 
 /**
  * Read and validate a course from disk.

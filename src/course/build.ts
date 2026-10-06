@@ -15,7 +15,8 @@ import { GOAL } from '../constants.ts';
 import { NEON, PALETTE, POST } from '../render/palette.ts';
 
 export interface CourseHandle {
-  readonly goalMesh: THREE.Mesh;
+  /** Null for goal-less courses such as the Core Rush arena. */
+  readonly goalMesh: THREE.Mesh | null;
   /** Remove every mesh from the scene. Colliders are disposed separately. */
   dispose(): void;
 }
@@ -125,56 +126,67 @@ export function buildCourse(scene: THREE.Scene, course: Course): CourseHandle {
   }
 
   // --- goal gate ---------------------------------------------------------
-  const [gx, gy, gz] = course.goal.position;
-  const [gw, gh, gd] = course.goal.size;
-
-  // The slab is the pulse target, so it is an unlit material: an unlit colour
-  // can be driven past 1.0 and bloom, which a lit one cannot without a very
-  // bright light pointed at it.
-  const goalMaterial = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(NEON.blue).multiplyScalar(0.9),
-    transparent: true,
-    opacity: GOAL.opacity,
-    toneMapped: false,
-  });
-  // `pulseGoal` is called from the frame loop with only the mesh, so the
-  // un-pulsed colour travels with the material rather than in a closure.
-  goalMaterial.userData['baseColor'] = new THREE.Color(NEON.blue);
-
-  const goalMesh = new THREE.Mesh(new THREE.BoxGeometry(gw, gh, gd), goalMaterial);
-  goalMesh.position.set(gx, gy, gz);
-  scene.add(goalMesh);
-
-  // A bright frame around the gate reads as a finish line rather than a floating
-  // box. Static, so it stays legible while the slab pulses behind it.
-  const frameMaterial = new THREE.LineBasicMaterial({
-    // '#' + hex. Passing the bare `fbfaf9` — which is exactly what
-    // `toString(16)` produces — looks like a valid colour and is not:
-    // THREE.Color parses a leading '#' or a `0x` prefix, and treats any other
-    // 6-character string as a named colour, fails, and silently falls back to
-    // black. Only the live browser console surfaced this; tsc is happy either
-    // way because the argument is still a string.
-    color: neonFromHex(`#${NEON.white.toString(16).padStart(6, '0')}`, EDGE_GAIN),
-    toneMapped: false,
-  });
-
+  // Only courses with a finish line get one; the arena has none.
+  let goalMesh: THREE.Mesh | null = null;
+  let goalMaterial: THREE.MeshBasicMaterial | null = null;
+  let frameMaterial: THREE.LineBasicMaterial | null = null;
   const frameParts: THREE.LineSegments[] = [];
-  const addFramePart = (offset: [number, number, number], size: [number, number, number]) => {
-    // `edgeGeometry`, not `cube`. A LineSegments built from the raw BoxGeometry
-    // would draw every triangle's edges including the face diagonals, turning
-    // the gate into a wireframe scribble instead of a frame.
-    const part = new THREE.LineSegments(edgeGeometry, frameMaterial);
-    part.position.set(gx + offset[0], gy + offset[1], gz + offset[2]);
-    part.scale.set(size[0], size[1], size[2]);
-    scene.add(part);
-    frameParts.push(part);
-  };
 
-  const t = GOAL.frameThickness;
-  addFramePart([0, gh / 2 + t / 2, 0], [gw + t * 2, t, t]);
-  addFramePart([0, -gh / 2 - t / 2, 0], [gw + t * 2, t, t]);
-  addFramePart([gw / 2 + t / 2, 0, 0], [t, gh, t]);
-  addFramePart([-gw / 2 - t / 2, 0, 0], [t, gh, t]);
+  if (course.goal) {
+    const [gx, gy, gz] = course.goal.position;
+    const [gw, gh, gd] = course.goal.size;
+
+    // The slab is the pulse target, so it is an unlit material: an unlit colour
+    // can be driven past 1.0 and bloom, which a lit one cannot without a very
+    // bright light pointed at it.
+    goalMaterial = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(NEON.blue).multiplyScalar(0.9),
+      transparent: true,
+      opacity: GOAL.opacity,
+      toneMapped: false,
+    });
+    // `pulseGoal` is called from the frame loop with only the mesh, so the
+    // un-pulsed colour travels with the material rather than in a closure.
+    goalMaterial.userData['baseColor'] = new THREE.Color(NEON.blue);
+
+    goalMesh = new THREE.Mesh(new THREE.BoxGeometry(gw, gh, gd), goalMaterial);
+    goalMesh.position.set(gx, gy, gz);
+    scene.add(goalMesh);
+
+    // A bright frame around the gate reads as a finish line rather than a floating
+    // box. Static, so it stays legible while the slab pulses behind it.
+    // Local const so the closure below sees a non-null material; the outer
+    // `let` is only there for dispose().
+    const frameMat = new THREE.LineBasicMaterial({
+      // '#' + hex. Passing the bare `fbfaf9` — which is exactly what
+      // `toString(16)` produces — looks like a valid colour and is not:
+      // THREE.Color parses a leading '#' or a `0x` prefix, and treats any other
+      // 6-character string as a named colour, fails, and silently falls back to
+      // black. Only the live browser console surfaced this; tsc is happy either
+      // way because the argument is still a string.
+      color: neonFromHex(`#${NEON.white.toString(16).padStart(6, '0')}`, EDGE_GAIN),
+      toneMapped: false,
+    });
+
+    frameMaterial = frameMat;
+
+    const addFramePart =(offset: [number, number, number], size: [number, number, number]) => {
+      // `edgeGeometry`, not `cube`. A LineSegments built from the raw BoxGeometry
+      // would draw every triangle's edges including the face diagonals, turning
+      // the gate into a wireframe scribble instead of a frame.
+      const part = new THREE.LineSegments(edgeGeometry, frameMat);
+      part.position.set(gx + offset[0], gy + offset[1], gz + offset[2]);
+      part.scale.set(size[0], size[1], size[2]);
+      scene.add(part);
+      frameParts.push(part);
+    };
+
+    const t = GOAL.frameThickness;
+    addFramePart([0, gh / 2 + t / 2, 0], [gw + t * 2, t, t]);
+    addFramePart([0, -gh / 2 - t / 2, 0], [gw + t * 2, t, t]);
+    addFramePart([gw / 2 + t / 2, 0, 0], [t, gh, t]);
+    addFramePart([-gw / 2 - t / 2, 0, 0], [t, gh, t]);
+  }
 
   return {
     goalMesh,
@@ -183,13 +195,13 @@ export function buildCourse(scene: THREE.Scene, course: Course): CourseHandle {
       for (const mesh of meshes) scene.remove(mesh);
       for (const edge of edges) scene.remove(edge);
       for (const part of frameParts) scene.remove(part);
-      scene.remove(goalMesh);
+      if (goalMesh) scene.remove(goalMesh);
 
       cube.dispose();
       edgeGeometry.dispose();
-      goalMesh.geometry.dispose();
-      goalMaterial.dispose();
-      frameMaterial.dispose();
+      goalMesh?.geometry.dispose();
+      goalMaterial?.dispose();
+      frameMaterial?.dispose();
       for (const material of edgeMaterials.values()) material.dispose();
       massMaterial.dispose();
     },
@@ -203,7 +215,8 @@ export function buildCourse(scene: THREE.Scene, course: Course): CourseHandle {
  * is now unlit — `emissiveIntensity` only means anything to a lit material, and
  * would silently do nothing here.
  */
-export function pulseGoal(mesh: THREE.Mesh, elapsedSeconds: number): void {
+export function pulseGoal(mesh: THREE.Mesh | null, elapsedSeconds: number): void {
+  if (!mesh) return;
   const material = mesh.material as THREE.MeshBasicMaterial;
   const base = material.userData['baseColor'] as THREE.Color | undefined;
   if (!base) return;

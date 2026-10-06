@@ -1,0 +1,257 @@
+{
+  "id": "takk-arena",
+  "name": "Arena 01",
+  "spawn": [
+    0,
+    1,
+    15
+  ],
+  "killY": -20,
+  "coreSpawn": [
+    0,
+    2.05,
+    0
+  ],
+  "solids": [
+    {
+      "id": "floor",
+      "kind": "box",
+      "position": [
+        0,
+        -1,
+        0
+      ],
+      "size": [
+        36,
+        2,
+        36
+      ],
+      "color": "#b35bf7"
+    },
+    {
+      "id": "rail-east",
+      "kind": "box",
+      "position": [
+        17.7,
+        0.8,
+        0
+      ],
+      "size": [
+        0.6,
+        1.6,
+        36
+      ],
+      "color": "#f086b8"
+    },
+    {
+      "id": "rail-south",
+      "kind": "box",
+      "position": [
+        0,
+        0.8,
+        17.7
+      ],
+      "size": [
+        34.8,
+        1.6,
+        0.6
+      ],
+      "color": "#f086b8"
+    },
+    {
+      "id": "rail-west-n",
+      "kind": "box",
+      "position": [
+        -17.7,
+        0.8,
+        -10.5
+      ],
+      "size": [
+        0.6,
+        1.6,
+        15
+      ],
+      "color": "#f086b8"
+    },
+    {
+      "id": "rail-west-s",
+      "kind": "box",
+      "position": [
+        -17.7,
+        0.8,
+        10.5
+      ],
+      "size": [
+        0.6,
+        1.6,
+        15
+      ],
+      "color": "#f086b8"
+    },
+    {
+      "id": "rail-north-w",
+      "kind": "box",
+      "position": [
+        -11.2,
+        0.8,
+        -17.7
+      ],
+      "size": [
+        12.4,
+        1.6,
+        0.6
+      ],
+      "color": "#f086b8"
+    },
+    {
+      "id": "rail-north-e",
+      "kind": "box",
+      "position": [
+        11.2,
+        0.8,
+        -17.7
+      ],
+      "size": [
+        12.4,
+        1.6,
+        0.6
+      ],
+      "color": "#f086b8"
+    },
+    {
+      "id": "dais",
+      "kind": "box",
+      "position": [
+        0,
+        0.525,
+        0
+      ],
+      "size": [
+        8,
+        1.05,
+        8
+      ],
+      "color": "#f7aee0"
+    },
+    {
+      "id": "dais-step-2",
+      "kind": "box",
+      "position": [
+        0,
+        0.35,
+        5
+      ],
+      "size": [
+        8,
+        0.7,
+        2
+      ],
+      "color": "#c69dfa"
+    },
+    {
+      "id": "dais-step-1",
+      "kind": "box",
+      "position": [
+        0,
+        0.175,
+        7
+      ],
+      "size": [
+        8,
+        0.35,
+        2
+      ],
+      "color": "#c69dfa"
+    },
+    {
+      "id": "platform-nw",
+      "kind": "box",
+      "position": [
+        -11,
+        0.5,
+        -8
+      ],
+      "size": [
+        6,
+        1,
+        5
+      ],
+      "color": "#4eabe8"
+    },
+    {
+      "id": "platform-ne",
+      "kind": "box",
+      "position": [
+        10,
+        0.5,
+        -10
+      ],
+      "size": [
+        5,
+        1,
+        4
+      ],
+      "color": "#4eabe8"
+    },
+    {
+      "id": "platform-e",
+      "kind": "box",
+      "position": [
+        12,
+        0.5,
+        6
+      ],
+      "size": [
+        6,
+        1,
+        5
+      ],
+      "color": "#4eabe8"
+    },
+    {
+      "id": "platform-sw",
+      "kind": "box",
+      "position": [
+        -12,
+        0.5,
+        8
+      ],
+      "size": [
+        4,
+        1,
+        4
+      ],
+      "color": "#4eabe8"
+    },
+    {
+      "id": "pillar-w",
+      "kind": "box",
+      "position": [
+        -8,
+        1.5,
+        2
+      ],
+      "size": [
+        2,
+        3,
+        2
+      ],
+      "color": "#808ff9"
+    },
+    {
+      "id": "pillar-e",
+      "kind": "box",
+      "position": [
+        8,
+        1.5,
+        -3
+      ],
+      "size": [
+        2,
+        3,
+        2
+      ],
+      "color": "#808ff9"
+    }
+  ]
+}

@@ -58,7 +58,16 @@ export interface Course {
   spawn: Vec3;
   /** Falling below this Y means the player is out and respawns. */
   killY: number;
-  goal: CourseGoal;
+  /**
+   * Finish trigger. Optional because Core Rush has no finish line; the old
+   * race course still sets it.
+   */
+  goal?: CourseGoal;
+  /**
+   * Where the Core appears at match start and returns to when its carrier
+   * falls out. Optional so race courses stay valid.
+   */
+  coreSpawn?: Vec3;
   solids: CourseSolid[];
 }
 
@@ -103,14 +112,27 @@ export function parseCourse(raw: unknown, source: string): Course {
     fail(source, 'spawn', `spawn Y (${spawn[1]}) must be above killY (${killY})`);
   }
 
-  const goalRaw = asObject(root.goal, source, 'goal');
-  const goalSize = asVec3(goalRaw.size, source, 'goal.size');
-  requirePositive(goalSize, source, 'goal.size');
-  const goal: CourseGoal = {
-    id: asString(goalRaw.id, source, 'goal.id'),
-    position: asVec3(goalRaw.position, source, 'goal.position'),
-    size: goalSize,
-  };
+  // Absent means "no finish line", which is valid. Present-but-malformed still
+  // fails loudly: a half-written goal must not silently turn into no goal.
+  let goal: CourseGoal | undefined;
+  if (root.goal !== undefined) {
+    const goalRaw = asObject(root.goal, source, 'goal');
+    const goalSize = asVec3(goalRaw.size, source, 'goal.size');
+    requirePositive(goalSize, source, 'goal.size');
+    goal = {
+      id: asString(goalRaw.id, source, 'goal.id'),
+      position: asVec3(goalRaw.position, source, 'goal.position'),
+      size: goalSize,
+    };
+  }
+
+  let coreSpawn: Vec3 | undefined;
+  if (root.coreSpawn !== undefined) {
+    coreSpawn = asVec3(root.coreSpawn, source, 'coreSpawn');
+    if (coreSpawn[1] <= killY) {
+      fail(source, 'coreSpawn', `coreSpawn Y (${coreSpawn[1]}) must be above killY (${killY})`);
+    }
+  }
 
   if (!Array.isArray(root.solids) || root.solids.length === 0) {
     fail(source, 'solids', 'expected a non-empty array of solids');
@@ -147,14 +169,18 @@ export function parseCourse(raw: unknown, source: string): Course {
     return solid;
   });
 
-  return {
+  const course: Course = {
     id: asString(root.id, source, 'id'),
     name: asString(root.name, source, 'name'),
     spawn,
     killY,
-    goal,
     solids,
   };
+  // Assigned only when present so a race course round-trips without stray
+  // `undefined` keys.
+  if (goal) course.goal = goal;
+  if (coreSpawn) course.coreSpawn = coreSpawn;
+  return course;
 }
 
 function fail(source: string, path: string, message: string): never {
