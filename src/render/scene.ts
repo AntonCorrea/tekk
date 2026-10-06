@@ -10,8 +10,26 @@
  */
 
 import * as THREE from 'three/webgpu';
+import {
+  cameraPosition,
+  clamp,
+  color,
+  dot,
+  mix,
+  mul,
+  normalize,
+  normalWorld,
+  oneMinus,
+  pow,
+  positionWorld,
+  saturate,
+  sub,
+  uniform,
+} from 'three/tsl';
+
 import type { Stage } from '../core/stage.ts';
 import { CAMERA, PLAYER } from '../constants.ts';
+import { NEON, PALETTE, POST, RAMP } from './palette.ts';
 import type { Pose } from '../physics/player.ts';
 
 /**
@@ -47,7 +65,7 @@ export interface SceneVisuals {
   dispose(): void;
 }
 
-const clamp = (value: number, lo: number, hi: number): number =>
+const clampNumber = (value: number, lo: number, hi: number): number =>
   value < lo ? lo : value > hi ? hi : value;
 
 /**
@@ -69,33 +87,104 @@ function orbitOffset(out: THREE.Vector3, yaw: number, pitch: number): THREE.Vect
 export function buildScene(stage: Stage): SceneVisuals {
   const { scene } = stage;
 
-  // --- lighting ----------------------------------------------------------
-  const hemi = new THREE.HemisphereLight(0xffffff, 0x50603a, 2.2);
+  // --- lighting ------------------------------------------------------------
+  // Built for a near-black scene. There is no sun and no sky, so every light
+  // here is a shaping tool rather than an illumination source: one dim key so
+  // the top faces of the architecture read as form, and two coloured rims from
+  // behind to separate silhouettes from the fog.
+  //
+  // The previous build had a 2.4-intensity warm sun and a 2.2 hemisphere,
+  // because it was rendering under a blue sky. Those numbers would blow out
+  // completely here — hence the large drop.
+  //
+  // The hemisphere's ground colour is `PALETTE.base` rather than a dark grey on
+  // purpose. Against a background of `#020202` a hemisphere that lights the
+  // undersides with anything lighter reads as a grey fog sitting on the ground
+  // plane, and the pads stop looking like they are above anything.
+  const hemi = new THREE.HemisphereLight(NEON.violet, PALETTE.base, 0.5);
   scene.add(hemi);
 
-  const sun = new THREE.DirectionalLight(0xfff4e0, 2.4);
-  sun.position.set(40, 60, 25);
-  scene.add(sun);
+  // Palette white rather than the previous hand-picked lavender `0xd8d4ff`. The
+  // ramp's white is a cool `#F4FAFC`, which is close enough that the look is
+  // unchanged, and it means the key light is a palette entry rather than a magic
+  // number that nothing else can see.
+  const key = new THREE.DirectionalLight(RAMP.white, 1.6);
+  key.position.set(30, 50, 20);
+  scene.add(key);
 
-  // --- local racer -------------------------------------------------------
+  const rimCyan = new THREE.DirectionalLight(NEON.cyan, 1.1);
+  rimCyan.position.set(-40, 18, -35);
+  scene.add(rimCyan);
+
+  const rimMagenta = new THREE.DirectionalLight(NEON.magenta, 0.8);
+  rimMagenta.position.set(38, 14, -40);
+  scene.add(rimMagenta);
+
+  // --- local racer ---------------------------------------------------------
+  // The capsule is a dark body carrying an iridescent emissive shell rather than
+  // a coloured solid.
+  //
+  // A solid bright capsule reads as a game character. What sells "premium" here
+  // is the opposite: an almost-black body whose light comes entirely from a
+  // view-dependent rim, so the racer looks like a piece of lit glass. It also
+  // means the bloom pass has something to work with — emissive values above 1
+  // are what the bloom threshold is tuned to catch.
+  const glowTint = uniform(new THREE.Color(NEON.violet));
+
   const playerMesh = new THREE.Mesh(
     new THREE.CapsuleGeometry(PLAYER.radius, PLAYER.halfHeight * 2, 8, 16),
-    new THREE.MeshStandardMaterial({ color: 0xff6b3d, roughness: 0.5 }),
+    new THREE.MeshStandardMaterial({
+      color: new THREE.Color(PALETTE.mass),
+      roughness: 0.35,
+      metalness: 0.1,
+    }),
   );
+
+  // Fresnel term: 0 facing the camera, 1 at grazing angles. This is what makes
+  // the highlight hug the silhouette instead of sitting on the middle of the
+  // body facing the viewer. The exponent tightens it, so the rim stays a rim
+  // rather than washing over half the capsule.
+  const viewDir = normalize(sub(cameraPosition, positionWorld));
+  const fresnel = pow(oneMinus(saturate(dot(normalize(normalWorld), viewDir))), 2.6);
+
+  // Three-stop ramp: magenta where the body faces you, through the tint, to cyan
+  // at the silhouette. Two chained mixes rather than one, because a two-colour
+  // lerp gives a straight line through the ramp and reads as a colour wash
+  // instead of as an oil-slick shift.
+  const hueLow = mix(color(NEON.magenta), glowTint, clamp(mul(fresnel, 2), 0, 1));
+  const hue = mix(hueLow, color(NEON.cyan), clamp(mul(sub(fresnel, 0.5), 2), 0, 1));
+
+  // Amplitude above 1 on purpose: the bloom threshold is a luminance cutoff, so
+  // an emissive clamped to 1 would barely register as bright. `POST.emissiveGain`
+  // carries the per-platform budget — see the note on Scheme.
+  (playerMesh.material as THREE.MeshStandardMaterial).emissiveNode = mul(
+    hue,
+    mul(fresnel, POST.emissiveGain),
+  );
+
   scene.add(playerMesh);
 
   // A flat ring under the capsule reads as a contact cue, which makes grounded
-  // vs airborne obvious without a shadow map.
+  // vs airborne obvious without a shadow map. Neon rather than a dark shadow:
+  // there is no lit ground here for a shadow to darken.
+  const markerMaterial = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(NEON.cyan),
+    transparent: true,
+    opacity: 0.7,
+    toneMapped: false,
+  });
   const marker = new THREE.Mesh(
-    new THREE.RingGeometry(0.45, 0.6, 24),
-    new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35 }),
+    new THREE.RingGeometry(0.45, 0.62, 32),
+    markerMaterial,
   );
   marker.rotation.x = -Math.PI / 2;
   scene.add(marker);
 
   const tint = new THREE.Color();
-  const baseColor = new THREE.Color(0xff6b3d);
-  const airborneColor = new THREE.Color(0x8fd4ff);
+  const groundedTint = new THREE.Color(NEON.violet);
+  const airborneTint = new THREE.Color(NEON.amber);
+  const groundedMarker = new THREE.Color(NEON.cyan);
+  const airborneMarker = new THREE.Color(NEON.amber);
 
   const followTarget = new THREE.Vector3();
   const followPoint = new THREE.Vector3();
@@ -113,11 +202,18 @@ export function buildScene(stage: Stage): SceneVisuals {
 
       // The ring stays at ground level rather than following the capsule, so it
       // doubles as a height cue while airborne.
+      // Just above the deck surface. Hardcoded rather than derived from
+      // `ATMOS.gridY`: the pads' top faces are at y=0 and the grid sits below
+      // them, so tracking the grid would bury this ring inside the geometry.
       marker.position.set(pose.x, 0.02, pose.z);
 
-      // Tint by grounded state so air control is visually readable.
-      tint.copy(pose.grounded ? baseColor : airborneColor);
-      (playerMesh.material as THREE.MeshStandardMaterial).color.lerp(tint, 0.25);
+      // The airborne tint moved from the mesh's base colour to the emissive
+      // tint, because the base colour is now almost black and tinting it does
+      // nothing visible. The hue is the same amber it always was, so the cue
+      // keeps meaning the same thing.
+      tint.copy(pose.grounded ? groundedTint : airborneTint);
+      glowTint.value.lerp(tint, 0.25);
+      markerMaterial.color.lerp(pose.grounded ? groundedMarker : airborneMarker, 0.25);
 
       // --- follow camera ---------------------------------------------------
       // Position is offset from the racer by a fixed spherical rig (see
@@ -148,15 +244,15 @@ export function buildScene(stage: Stage): SceneVisuals {
 
     orbit(y, p) {
       yaw = y;
-      pitch = clamp(p, CAMERA.minPitch, CAMERA.maxPitch);
+      pitch = clampNumber(p, CAMERA.minPitch, CAMERA.maxPitch);
     },
 
     dispose() {
-      scene.remove(playerMesh, marker, hemi, sun);
+      scene.remove(playerMesh, marker, hemi, key, rimCyan, rimMagenta);
       playerMesh.geometry.dispose();
       (playerMesh.material as THREE.Material).dispose();
       marker.geometry.dispose();
-      (marker.material as THREE.Material).dispose();
+      markerMaterial.dispose();
     },
   };
 }

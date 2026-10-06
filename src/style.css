@@ -1,7 +1,70 @@
+/* TEKK — HUD
+ *
+ * Swiss editorial typography over a near-black 3D scene.
+ *
+ * The rules the rest of this file follows:
+ *
+ *   - No panels. The previous build put every readout in a rounded translucent
+ *     box, which was a way of saying "here is a UI" rather than letting the
+ *     image carry it. Against a dark scene those boxes also destroyed the thing
+ *     they sat on. Now the only chrome is a hairline rule.
+ *   - One typeface family, two sizes, two weights. The timer is the only large
+ *     text in the game, which is why it can be.
+ *   - Tracking does the work size cannot. Small labels are uppercase and widely
+ *     tracked, which is how they stay legible at 10px without going bold.
+ *   - Tabular numerals everywhere a number can change, so digits do not shuffle
+ *     horizontally as the clock runs.
+ */
+
+/* ---------------------------------------------------------------- tokens */
+
 :root {
-  --hud-bg: rgba(0, 0, 0, 0.45);
-  --hud-fg: #e8f0e8;
-  --accent: #2ecc71;
+  /* The palette, verbatim. Duplicated rather than imported because CSS custom
+     properties cannot read a TS module, and the alternative — reading the palette
+     in JS and writing inline styles — costs a style recalculation on every
+     frame. RAMP in src/render/palette.ts is the source of truth; both blocks are
+     commented. */
+
+  --black: #020202; /* main background */
+  --charcoal: #100f13; /* secondary dark */
+  --dark-purple: #201c29; /* background transition */
+  --deep-violet: #2c1a57;
+  --purple: #482285; /* main purple */
+  --magenta-purple: #b35bf7; /* bright purple accents */
+  --lavender: #c69dfa; /* soft purple surfaces */
+  --periwinkle: #808ff9;
+  --light-blue: #9ec7fa; /* cyan/blue surfaces */
+  --cyan-blue: #4eabe8; /* bright blue accents */
+  --pink: #f086b8; /* pink surfaces */
+  --light-pink: #f7aee0; /* pastel pink */
+  --white: #f4fafc; /* cool white, never #fff */
+  --cream: #ead2a9; /* also the airborne cue */
+  --crimson: #781649; /* red/pink shadows */
+
+  /* Role aliases, so the styles below talk about intent rather than about hue.
+     The HUD accent is lavender rather than a saturated purple because it has to
+     hold as a hairline rule against a #020202 page — main purple at that weight
+     is nearly invisible. */
+  --ink: var(--white);
+  --ink-dim: #9d9db2;
+  --ink-faint: #565666;
+  --hairline: #ffffff17;
+  --accent: var(--lavender);
+  --accent-warm: var(--cream);
+
+  /* The signature gradient, same four stops as SIGNATURE in palette.ts. Ends on
+     the lightest stop rather than fading back out — the two ends are different
+     colours, so fading out would just blank the middle of a headline. */
+  --signature: linear-gradient(
+    105deg,
+    #808ff9 0%,
+    #c69dfa 36%,
+    #f7aee0 68%,
+    #f4fafc 100%
+  );
+
+  --grotesk: ui-sans-serif, -apple-system, 'Helvetica Neue', Helvetica, Arial,
+    'Segoe UI', Roboto, sans-serif;
 }
 
 * {
@@ -15,8 +78,12 @@ body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #8fc7ec;
-  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  /* Matches PALETTE.base. A mismatched letterbox shows as a bright seam the
+     moment the canvas does not cover the viewport, e.g. during a rotate. */
+  background: var(--black);
+  font-family: var(--grotesk);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 #app {
@@ -30,113 +97,155 @@ body {
   height: 100%;
 }
 
+/* ---------------------------------------------------------------- shared */
+
 .hud {
   position: fixed;
   z-index: 10;
-  padding: 8px 12px;
-  border-radius: 6px;
-  background: var(--hud-bg);
-  color: var(--hud-fg);
-  font-size: 13px;
-  line-height: 1.4;
-  letter-spacing: 0.02em;
+  color: var(--ink);
+  font-family: var(--grotesk);
+  line-height: 1.2;
   pointer-events: none;
   white-space: pre;
 }
 
+/* ---------------------------------------------------------------- course */
+
 .hud-course {
-  top: 12px;
-  left: 12px;
-  text-transform: uppercase;
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  opacity: 0.8;
+  top: 22px;
+  left: 24px;
 }
+
+/* A hairline under the course name rather than a box around it. */
+/* The one accent rule on the HUD, in brand purple. */
+.hud-course::after {
+  content: '';
+  display: block;
+  width: 28px;
+  height: 1px;
+  margin-top: 8px;
+  background: var(--purple);
+}
+
+/* ---------------------------------------------------------------- timer */
 
 .hud-timer {
-  top: 12px;
+  top: 18px;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 26px;
+  font-size: 44px;
+  font-weight: 200;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0.04em;
+  /* Light weight at 44px is what keeps the clock from competing with the scene.
+     It is also the reason this reads as editorial rather than as a game HUD. */
 }
 
+/* The finished state is the one place in the HUD that uses the site's signature
+   gradient, because it is the one moment the game celebrates. Clipped to text
+   with the same 105deg stop list as --signature; the two returns to ivory are
+   what stop it reading as a rainbow. */
 .hud-timer.is-finished {
-  color: var(--accent);
+  background: var(--signature);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
 }
+
+/* ---------------------------------------------------------------- state */
 
 .hud-readout {
-  left: 12px;
-  bottom: 12px;
-  font-size: 12px;
-  opacity: 0.75;
+  left: 24px;
+  bottom: 22px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+/* ---------------------------------------------------------------- link */
+
+.hud-connection {
+  top: 22px;
+  right: 24px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hud-connection::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  background: currentColor;
+}
+
+.hud-connection.is-connected {
+  color: var(--light-blue);
+}
+
+.hud-connection.is-connecting {
+  color: var(--cream);
+}
+
+.hud-connection.is-lost {
+  color: var(--pink);
 }
 
 /* Where it stands. Connection state matters more here than in a single-player
    game: when the link drops, the HUD is the only place that says so, and the
    local capsule keeps moving under prediction that will never be confirmed. */
-.hud-connection {
-  top: 12px;
-  right: 12px;
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  padding: 4px 10px;
-}
 
-.hud-connection::before {
-  content: '';
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-right: 7px;
-  border-radius: 50%;
-  vertical-align: middle;
-  background: currentColor;
-}
+/* ---------------------------------------------------------------- board */
 
-.hud-connection.is-connected {
-  color: var(--accent);
-}
-
-.hud-connection.is-connecting {
-  color: #ffd479;
-}
-
-.hud-connection.is-lost {
-  color: #ff5b5b;
-}
-
-/* Live standings. Not `white-space: pre` — these are divs, so rows flow. */
 .board {
   position: fixed;
-  top: 52px;
-  right: 12px;
+  top: 62px;
+  right: 24px;
   z-index: 10;
-  min-width: 168px;
-  padding: 6px;
-  border-radius: 6px;
-  background: var(--hud-bg);
-  color: var(--hud-fg);
-  font-size: 12px;
+  min-width: 176px;
+  color: var(--ink);
+  font-family: var(--grotesk);
+  font-size: 11px;
   pointer-events: none;
+  border-top: 1px solid var(--hairline);
+  padding-top: 8px;
 }
 
 .board-row {
   display: flex;
   justify-content: space-between;
-  gap: 14px;
-  padding: 3px 6px;
-  border-radius: 4px;
+  align-items: baseline;
+  gap: 16px;
+  padding: 4px 0;
 }
 
 .board-row.is-self {
-  background: rgba(255, 255, 255, 0.14);
-  color: var(--accent);
+  color: var(--light-blue);
+}
+
+/* Self is marked with a rule rather than a highlight, so the standings keep
+   their left edge aligned down the column. */
+.board-row.is-self .board-name::before {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 1px;
+  margin-right: 8px;
+  vertical-align: middle;
+  background: currentColor;
 }
 
 .board-name {
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -144,9 +253,15 @@ body {
 
 .board-time {
   font-variant-numeric: tabular-nums;
-  opacity: 0.75;
+  color: var(--ink-dim);
   white-space: nowrap;
 }
+
+.board-row.is-self .board-time {
+  color: currentColor;
+}
+
+/* ---------------------------------------------------------------- banner */
 
 .banner {
   position: fixed;
@@ -154,31 +269,43 @@ body {
   left: 50%;
   z-index: 20;
   transform: translate(-50%, -50%);
-  padding: 28px 44px;
-  border-radius: 12px;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
   text-align: center;
+  color: var(--ink);
   pointer-events: none;
 }
 
 .banner-title {
   font-size: 13px;
-  letter-spacing: 0.32em;
-  opacity: 0.7;
+  font-weight: 500;
+  letter-spacing: 0.36em;
+  text-indent: 0.36em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
 }
 
+/* The results banner is the biggest text in the game and the biggest payoff, so
+   it carries the signature gradient rather than a flat colour. */
 .banner-time {
-  margin: 6px 0 10px;
-  color: var(--accent);
-  font-size: 44px;
+  margin: 10px 0 14px;
+  background: var(--signature);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  font-size: 64px;
+  font-weight: 200;
+  letter-spacing: -0.03em;
   font-variant-numeric: tabular-nums;
 }
 
 .banner-hint {
-  font-size: 12px;
-  opacity: 0.6;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
 }
+
+/* ---------------------------------------------------------------- warning */
 
 .warning {
   position: fixed;
@@ -186,10 +313,12 @@ body {
   left: 50%;
   z-index: 15;
   transform: translate(-50%, -50%);
-  color: #ff5b5b;
-  font-size: 15px;
-  letter-spacing: 0.3em;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+  color: var(--pink);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.36em;
+  text-indent: 0.36em;
+  text-transform: uppercase;
   pointer-events: none;
 }
 
@@ -197,15 +326,48 @@ body {
   content: 'FALLING';
 }
 
+/* ---------------------------------------------------------------- fatal */
+
 .fatal {
   position: fixed;
   inset: 24px;
   z-index: 100;
-  padding: 16px;
+  padding: 20px;
   overflow: auto;
-  border-radius: 8px;
-  background: #2b0d0d;
-  color: #ffd7d7;
-  font-size: 13px;
+  background: #170510;
+  color: var(--pink);
+  border: 1px solid var(--pink);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
   white-space: pre-wrap;
+}
+
+/* ------------------------------------------------------------- narrow */
+
+@media (max-width: 560px) {
+  .hud-course {
+    left: 16px;
+  }
+
+  .hud-readout {
+    left: 16px;
+  }
+
+  .board {
+    right: 16px;
+    min-width: 140px;
+  }
+
+  .hud-connection {
+    right: 16px;
+  }
+
+  .hud-timer {
+    font-size: 34px;
+  }
+
+  .banner-time {
+    font-size: 48px;
+  }
 }

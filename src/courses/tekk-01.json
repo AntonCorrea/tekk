@@ -14,56 +14,56 @@
       "kind": "box",
       "position": [0, -1, 9],
       "size": [12, 2, 18],
-      "color": "#4f7f4a"
+      "color": "#9ec7fa"
     },
     {
       "id": "mid-pad",
       "kind": "box",
       "position": [0, -1, -8],
       "size": [12, 2, 10],
-      "color": "#4a7a52"
+      "color": "#c69dfa"
     },
     {
       "id": "high-pad",
       "kind": "box",
       "position": [0, 0, -20],
       "size": [12, 2, 8],
-      "color": "#5c8a4a"
+      "color": "#f7aee0"
     },
     {
       "id": "goal-pad",
       "kind": "box",
       "position": [0, -1, -33],
       "size": [14, 2, 12],
-      "color": "#42704f"
+      "color": "#b35bf7"
     },
     {
       "id": "start-rail-left",
       "kind": "box",
       "position": [-6.5, 1, 9],
       "size": [1, 2, 18],
-      "color": "#6b6f5c"
+      "color": "#2c1a57"
     },
     {
       "id": "start-rail-right",
       "kind": "box",
       "position": [6.5, 1, 9],
       "size": [1, 2, 18],
-      "color": "#6b6f5c"
+      "color": "#2c1a57"
     },
     {
       "id": "goal-rail-left",
       "kind": "box",
       "position": [-7.5, 1, -33],
       "size": [1, 2, 12],
-      "color": "#6b6f5c"
+      "color": "#2c1a57"
     },
     {
       "id": "goal-rail-right",
       "kind": "box",
       "position": [7.5, 1, -33],
       "size": [1, 2, 12],
-      "color": "#6b6f5c"
+      "color": "#2c1a57"
     }
   ]
 }
