@@ -63,6 +63,14 @@
     #f4fafc 100%
   );
 
+  /* Bold condensed display face for the callouts: tall, tight, technical. Barlow
+     Condensed is loaded from index.html; the rest is the fallback chain. */
+  --condensed: 'Barlow Condensed', 'Arial Narrow', 'Roboto Condensed', Impact,
+    'Helvetica Neue', sans-serif;
+  --neon-magenta: #f086b8;
+  --neon-cyan: #4eabe8;
+  --neon-violet: #b35bf7;
+
   --grotesk: ui-sans-serif, -apple-system, 'Helvetica Neue', Helvetica, Arial,
     'Segoe UI', Roboto, sans-serif;
 }
@@ -141,15 +149,10 @@ body {
      It is also the reason this reads as editorial rather than as a game HUD. */
 }
 
-/* The finished state is the one place in the HUD that uses the site's signature
-   gradient, because it is the one moment the game celebrates. Clipped to text
-   with the same 105deg stop list as --signature; the two returns to ivory are
-   what stop it reading as a rainbow. */
-.hud-timer.is-finished {
-  background: var(--signature);
-  background-clip: text;
-  -webkit-background-clip: text;
-  color: transparent;
+/* Last ten seconds: the clock turns magenta. Colour only, no motion. */
+.hud-timer .is-low {
+  color: var(--neon-magenta);
+  text-shadow: 0 0 14px #f086b866;
 }
 
 /* ---------------------------------------------------------------- state */
@@ -274,35 +277,281 @@ body {
   pointer-events: none;
 }
 
-.banner-title {
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: 0.36em;
-  text-indent: 0.36em;
-  text-transform: uppercase;
-  color: var(--ink-dim);
+.banner[hidden] {
+  display: none;
 }
 
-/* The results banner is the biggest text in the game and the biggest payoff, so
-   it carries the signature gradient rather than a flat colour. */
-.banner-time {
-  margin: 10px 0 14px;
+.banner-title {
+  font-family: var(--condensed);
+  font-size: 44px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-indent: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink);
+  text-shadow: 0 0 22px #b35bf780;
+}
+
+.banner-title.is-result.has-winner {
   background: var(--signature);
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
-  font-size: 64px;
-  font-weight: 200;
-  letter-spacing: -0.03em;
-  font-variant-numeric: tabular-nums;
+  text-shadow: none;
 }
 
 .banner-hint {
+  margin-top: 12px;
   font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--ink-dim);
+}
+
+/* 3-2-1. The biggest type in the game: it is the one thing to read. */
+.banner-count {
+  font-family: var(--condensed);
+  font-size: 168px;
+  font-weight: 800;
+  line-height: 0.9;
+  font-variant-numeric: tabular-nums;
+  color: var(--neon-cyan);
+  text-shadow: 0 0 32px #4eabe8aa, 0 0 2px var(--white);
+}
+
+.banner-go {
+  font-family: var(--condensed);
+  font-size: 96px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-indent: 0.12em;
+  color: var(--neon-magenta);
+  text-shadow: 0 0 36px #f086b8bb, 0 0 2px var(--white);
+}
+
+/* Results table: rank / name / hold, hairline-separated, winner in magenta. */
+.results {
+  min-width: 300px;
+  margin: 18px auto 0;
+  border-top: 1px solid var(--hairline);
+  text-align: left;
+}
+
+.result-row {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--hairline);
+  font-family: var(--condensed);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.result-rank {
+  width: 1.4em;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.result-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.result-row.is-self {
+  color: var(--neon-cyan);
+}
+
+.result-row.is-winner {
+  color: var(--neon-magenta);
+  background: linear-gradient(90deg, #f086b81f, transparent);
+}
+
+.result-row.is-winner .result-rank {
+  color: currentColor;
+}
+
+/* ---------------------------------------------------------------- match */
+
+/* Who has the Core. Centred under the clock; colour carries the meaning. */
+.hud-status {
+  top: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--condensed);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.hud-status[hidden],
+.hud-hold[hidden],
+.hud-dash[hidden],
+.board[hidden] {
+  display: none;
+}
+
+.hud-status .is-you {
+  color: var(--white);
+  text-shadow: 0 0 16px #b35bf7cc, 0 0 4px #f086b8;
+}
+
+.hud-status .is-them {
+  color: var(--neon-magenta);
+}
+
+.hud-status .is-free {
+  color: var(--neon-cyan);
+}
+
+/* Own hold time: the score, big enough to glance at mid-chase. */
+.hud-hold {
+  top: 62px;
+  left: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hold-label {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--ink-dim);
+}
+
+.hold-time {
+  font-family: var(--condensed);
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--neon-violet);
+  text-shadow: 0 0 14px #b35bf766;
+}
+
+/* Dash readiness, bottom centre: label over a thin bar. */
+.hud-dash {
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.dash-label {
+  font-family: var(--condensed);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  text-indent: 0.28em;
+  color: var(--ink-dim);
+}
+
+.dash-label.is-ready {
+  color: var(--neon-cyan);
+}
+
+.dash-label.is-active {
+  color: var(--white);
+}
+
+.dash-label.is-locked {
+  color: var(--neon-magenta);
+}
+
+.dash-bar {
+  display: block;
+  width: 140px;
+  height: 3px;
+  background: var(--hairline);
+}
+
+.dash-bar i {
+  display: block;
+  height: 100%;
+  background: var(--ink-dim);
+}
+
+.dash-bar.is-ready i {
+  background: var(--neon-cyan);
+  box-shadow: 0 0 10px #4eabe8;
+}
+
+.hud-controls {
+  right: 24px;
+  bottom: 22px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--ink-faint);
+}
+
+/* The carrier on the live board: magenta marker, so the holder is findable
+   without reading names. */
+.board-row.is-carrier .board-name {
+  color: var(--neon-magenta);
+}
+
+.board-row.is-carrier .board-name::after {
+  content: '\25C6';
+  margin-left: 8px;
+  font-size: 9px;
+}
+
+.board-row.is-carrier .board-time {
+  color: var(--neon-magenta);
+}
+
+/* Motion is decoration only, and entirely opt-in. With reduced motion the same
+   callouts simply appear. */
+@media (prefers-reduced-motion: no-preference) {
+  .banner-count {
+    animation: count-pop 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+
+  .banner-go {
+    animation: go-flash 0.9s ease-out both;
+  }
+
+  .hud-status span {
+    animation: status-in 0.25s ease-out both;
+  }
+
+  .dash-bar i {
+    transition: width 0.08s linear;
+  }
+}
+
+@keyframes count-pop {
+  from { transform: scale(1.5); opacity: 0; }
+  30% { opacity: 1; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+@keyframes go-flash {
+  from { transform: scale(0.8); opacity: 0; }
+  20% { transform: scale(1.08); opacity: 1; }
+  to { transform: scale(1); opacity: 0; }
+}
+
+@keyframes status-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* ---------------------------------------------------------------- warning */
@@ -367,7 +616,23 @@ body {
     font-size: 34px;
   }
 
-  .banner-time {
-    font-size: 48px;
+  .banner-count {
+    font-size: 120px;
+  }
+
+  .banner-title {
+    font-size: 32px;
+  }
+
+  .banner-go {
+    font-size: 64px;
+  }
+
+  .hud-hold {
+    left: 16px;
+  }
+
+  .hud-controls {
+    display: none;
   }
 }
