@@ -321,7 +321,9 @@ function testPassThrough(course: Course) {
     // Server order: every racer integrated, then one world step.
     applyInput(rivalA, input(0, step < 60 ? -1 : 1, step % 90 === 20, step % 50 === 0), FIXED_TIMESTEP);
     applyInput(crowd.sim, scriptAt(step), FIXED_TIMESTEP);
-    applyInput(rivalB, scriptAt(step + 7), FIXED_TIMESTEP);
+    // Two steps ahead on the same script: a different path, but one that keeps
+    // crossing the body under test at any tuning of run and dash speed.
+    applyInput(rivalB, scriptAt(step + 2), FIXED_TIMESTEP);
     crowd.world.step();
 
     // Everyone starts overlapped on the shared spawn, which proves little on

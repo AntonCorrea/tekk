@@ -22,7 +22,12 @@ export const MAX_FRAME_DELTA = 0.25;
 
 // ---------------------------------------------------------------- world
 
-export const GRAVITY = { x: 0, y: -26, z: 0 };
+/**
+ * Heavy on purpose. Paired with a fast jump it keeps the apex where the arena
+ * was laid out for (jumpSpeed^2 / 2g ~= 1.57) while halving the hang time:
+ * floaty jumps read as slow, snappy ones as fast.
+ */
+export const GRAVITY = { x: 0, y: -40, z: 0 };
 
 /** Contact material for course colliders. */
 export const WORLD = {
@@ -48,14 +53,14 @@ export const MOVE = {
    * Top running speed, units/s. One speed, no sprint: in an arena the size of
    * a Core Rush map a sprint key is noise, and Shift now belongs to the dash.
    */
-  runSpeed: 9,
+  runSpeed: 13,
   /** Ground acceleration, units/s^2. Higher = snappier starts. */
-  accel: 70,
+  accel: 160,
   /** Ground deceleration when no input, units/s^2. */
-  friction: 55,
+  friction: 110,
   /** Fraction of acceleration usable while airborne. */
-  airControl: 0.3,
-  jumpSpeed: 9,
+  airControl: 0.5,
+  jumpSpeed: 11.2,
 } as const;
 
 /**
@@ -67,11 +72,11 @@ export const MOVE = {
  */
 export const DASH = {
   /** Horizontal speed during the dash, units/s. */
-  speed: 22,
-  /** Length of the dash. 11 ticks at 60 Hz is ~0.18s. */
-  durationTicks: 11,
-  /** Ticks after a dash ENDS before the next one may start. 72 is 1.2s. */
-  cooldownTicks: 72,
+  speed: 32,
+  /** Length of the dash. 9 ticks at 60 Hz is 0.15s, ~4.8 units. */
+  durationTicks: 9,
+  /** Ticks after a dash ENDS before the next one may start. 48 is 0.8s. */
+  cooldownTicks: 48,
 } as const;
 
 /** Core Rush rules. All tunable; none of these are final until playtested. */
@@ -123,7 +128,7 @@ export const GOAL = {
 // ---------------------------------------------------------------- camera
 
 export const CAMERA = {
-  fov: 70,
+  fov: 72,
   near: 0.1,
   far: 600,
 
@@ -133,9 +138,9 @@ export const CAMERA = {
    * Replaces the old `distance`/`height` pair. Those described a fixed offset on
    * one axis, which cannot orbit; a radius and a pitch can.
    */
-  distance: 10.3,
+  distance: 8,
   /** Starting pitch in radians. Positive puts the camera above, looking down. */
-  pitch: 0.5,
+  pitch: 0.42,
   /**
    * Pitch limits, radians.
    *

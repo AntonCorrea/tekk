@@ -29,8 +29,20 @@ export interface Hud {
     connection: ConnectionStatus,
     sim: HudSim,
   ): void;
+  /**
+   * A one-shot callout for the big moments: you took the Core, it was stolen
+   * from you. Replaces whatever callout is still showing, so rapid steals never
+   * stack into a pile of text.
+   */
+  announce(text: string, tone: AnnounceTone): void;
   dispose(): void;
 }
+
+/** `gain` is good for you, `loss` is bad for you, `info` is someone else's moment. */
+export type AnnounceTone = 'gain' | 'loss' | 'info';
+
+/** How long a callout stays up. Matches the CSS animation in style.css. */
+const ANNOUNCE_MS = 1100;
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'lost';
 
@@ -78,8 +90,11 @@ export function createHud(container: HTMLElement): Hud {
   const board = new Slot(div('board', container));
   const readout = new Slot(div('hud hud-readout', container));
   const dash = new Slot(div('hud hud-dash', container));
+  const announcer = div('announce', container);
+  announcer.hidden = true;
+  let announceTimer = 0;
   const controls = div('hud hud-controls', container);
-  controls.textContent = 'WASD / ARROWS move · SPACE jump · SHIFT dash · MOUSE look';
+  controls.textContent = 'WASD / ARROWS move · SPACE jump · SHIFT dash · MOUSE look · M mute';
 
   // Cosmetic latch for the "TAKE IT" flash. Not game state: the server has
   // already moved to `playing`; this only decides how long the callout lingers.
@@ -87,6 +102,8 @@ export function createHud(container: HTMLElement): Hud {
   let flashUntil = 0;
   let lastCourse = '';
   let lastConnection = '';
+  // Whole seconds of your hold time last frame, for the per-second pop.
+  let lastHoldSecond = -1;
 
   return {
     update(state, selfId, courseName, linkStatus, sim) {
@@ -134,6 +151,16 @@ export function createHud(container: HTMLElement): Hud {
         hold.html(
           `<span class="hold-label">YOUR HOLD</span><span class="hold-time">${formatHold(self?.holdMs ?? 0, true)}</span>`,
         );
+
+        // Every whole second you bank pops the counter: the score visibly
+        // climbing is the reward loop of the whole game.
+        const holdSecond = Math.floor((self?.holdMs ?? 0) / 1000);
+        if (holdSecond !== lastHoldSecond) {
+          if (holdSecond > lastHoldSecond && lastHoldSecond >= 0 && carrierId === selfId) {
+            restartAnimation(hold.el, 'is-tick');
+          }
+          lastHoldSecond = holdSecond;
+        }
       }
 
       // --- dash meter ------------------------------------------------------
@@ -150,7 +177,20 @@ export function createHud(container: HTMLElement): Hud {
       if (playing) board.html(boardMarkup(state, selfId));
     },
 
+    announce(text, tone) {
+      announcer.textContent = text;
+      announcer.className = `announce is-${tone}`;
+      announcer.hidden = false;
+      restartAnimation(announcer, 'is-live');
+      clearTimeout(announceTimer);
+      announceTimer = window.setTimeout(() => {
+        announcer.hidden = true;
+      }, ANNOUNCE_MS);
+    },
+
     dispose() {
+      clearTimeout(announceTimer);
+      announcer.remove();
       for (const el of [
         course,
         timer.el,
@@ -167,6 +207,17 @@ export function createHud(container: HTMLElement): Hud {
       }
     },
   };
+}
+
+/**
+ * Re-run a CSS animation from its first frame. Removing and re-adding the
+ * class is not enough on its own -- the browser coalesces it -- so a layout
+ * read in between forces the restart.
+ */
+function restartAnimation(el: HTMLElement, className: string): void {
+  el.classList.remove(className);
+  void el.offsetWidth;
+  el.classList.add(className);
 }
 
 function div(className: string, parent: HTMLElement): HTMLDivElement {

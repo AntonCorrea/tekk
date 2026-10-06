@@ -16,6 +16,8 @@ import './style.css';
 
 import { createStage } from './core/stage.ts';
 import { startFrameLoop } from './core/loop.ts';
+import { fxAberration, fxBeat, reducedMotion } from './render/fx.ts';
+import { createTechno, type Intensity } from './audio/techno.ts';
 import { buildScene } from './render/scene.ts';
 import { buildCourse } from './course/build.ts';
 import { createPhysicsWorld, initPhysics } from './physics/world.ts';
@@ -71,12 +73,35 @@ async function boot(): Promise<void> {
   const coreVisual = createCoreVisual(stage.scene);
 
   // Reused every frame: the loop below must not allocate.
-  const localPose: LocalPose = { x: 0, y: 0, z: 0, grounded: false, carrying: false, dashing: false };
+  const localPose: LocalPose = {
+    x: 0, y: 0, z: 0, vx: 0, vz: 0, speed: 0, grounded: false, carrying: false, dashing: false,
+  };
   const coreState: CoreVisualState = { x: 0, y: 0, z: 0, carried: false, immune: false };
 
   // Seeded from the state we joined into, so a Core that has already changed
   // hands twenty times does not fire a wave the moment you arrive.
   let lastTransfers = session.room.state.coreTransfers;
+  let lastCarrier = session.room.state.carrierId;
+
+  // --- feel ----------------------------------------------------------------
+  // Hit-stop: the image holds for a beat on a steal you were part of. Only the
+  // picture freezes -- input, prediction and the server carry on underneath --
+  // so it costs no gameplay, it just makes the moment land.
+  let hitStopUntil = 0;
+  let wasDashing = false;
+  let airTime = 0;
+  let lastCount = 0;
+
+  // --- sound ---------------------------------------------------------------
+  // Browsers only allow audio after a gesture, so the first key or click
+  // starts it. `M` mutes, and the choice is remembered.
+  const techno = createTechno();
+  const startAudio = (): void => techno.start();
+  globalThis.addEventListener('keydown', startAudio, { once: true });
+  globalThis.addEventListener('pointerdown', startAudio, { once: true });
+  globalThis.addEventListener('keydown', (event) => {
+    if (event.code === 'KeyM' && !event.repeat) techno.toggleMute();
+  });
 
   // The renderer canvas is the pointer-lock target: clicking the game captures
   // the mouse for camera control, Escape releases it.
@@ -149,6 +174,9 @@ async function boot(): Promise<void> {
     localPose.x = pose.x;
     localPose.y = pose.y;
     localPose.z = pose.z;
+    localPose.vx = sim.velocity.x;
+    localPose.vz = sim.velocity.z;
+    localPose.speed = sim.horizontalSpeed;
     localPose.grounded = sim.grounded;
     // The server's word decides who carries; the predicted sim only drives the
     // dash cue, which is yours and needs zero latency.
@@ -156,7 +184,7 @@ async function boot(): Promise<void> {
     localPose.dashing = sim.dashTicks > 0;
     visuals.sync(localPose, delta);
 
-    remotes.sync();
+    remotes.sync(delta);
 
     // --- the Core ------------------------------------------------------
     // Where it is drawn depends on who holds it, so it never visibly lags its
@@ -187,11 +215,82 @@ async function boot(): Promise<void> {
     if (state.coreTransfers !== lastTransfers) {
       lastTransfers = state.coreTransfers;
       coreVisual.burst();
+      onHandOff(lastCarrier, carrierId, now);
+    }
+    lastCarrier = carrierId;
+
+    // A dash of your own splits the colours a little; steals split them hard.
+    if (localPose.dashing && !wasDashing) {
+      fxAberration.value = Math.max(fxAberration.value, 0.35);
+      techno.sfx.dash();
+    }
+    wasDashing = localPose.dashing;
+    fxAberration.value *= Math.exp(-5 * delta);
+
+    if (!sim.grounded) airTime += delta;
+    else {
+      if (airTime > 0.35) techno.sfx.land();
+      airTime = 0;
     }
 
+    // --- music follows the tension ---------------------------------------
+    const remaining = state.phaseRemainingMs;
+    let intensity: Intensity = 0;
+    if (state.phase === 'countdown') intensity = 1;
+    else if (state.phase === 'playing') {
+      intensity = remaining <= 10_000 ? 3 : selfCarries || remaining <= 30_000 ? 2 : 1;
+    }
+    techno.setIntensity(intensity);
+
+    // Countdown ticks on each whole second, and a GO when play starts.
+    const count = state.phase === 'countdown' ? Math.ceil(remaining / 1000) : 0;
+    if (count !== lastCount) {
+      if (count > 0) techno.sfx.count(false);
+      else if (lastCount > 0 && state.phase === 'playing') techno.sfx.count(true);
+      lastCount = count;
+    }
+
+    // The arena and the Core breathe on the kick.
+    fxBeat.value = techno.beat();
+
     hud.update(state, session.sessionId, course.name, connection, sim);
-    stage.render();
+    // During hit-stop the canvas simply keeps its last frame.
+    if (now >= hitStopUntil) stage.render();
   });
+
+  /**
+   * React to the Core changing hands. Your own gains and losses get the full
+   * treatment -- callout, hit-stop, shake, colour split; other people's steals
+   * get a small nudge so the arena still feels alive around you.
+   */
+  function onHandOff(from: string, to: string, now: number): void {
+    const me = session.sessionId;
+    const state = session.room.state;
+    // Entering results frees the Core; that is the end of the match, not a play.
+    if (state.phase !== 'playing') return;
+
+    const nameOf = (id: string) => state.players.get(id)?.name ?? 'someone';
+    const big = (): void => {
+      if (!reducedMotion) hitStopUntil = now + 70;
+      visuals.kick(0.6);
+      fxAberration.value = 1;
+    };
+
+    if (to === me) {
+      hud.announce(from === '' ? 'GOT IT' : 'TAKEN!', 'gain');
+      if (from === '') techno.sfx.pickup();
+      else techno.sfx.take();
+      big();
+    } else if (from === me) {
+      hud.announce(to === '' ? 'DROPPED' : 'STOLEN!', 'loss');
+      techno.sfx.lose();
+      big();
+    } else if (to !== '') {
+      hud.announce(from === '' ? `${nameOf(to)} has it` : `${nameOf(to)} stole it`, 'info');
+      visuals.kick(0.12);
+      fxAberration.value = Math.max(fxAberration.value, 0.3);
+    }
+  }
 
   console.info(
     `TEKK — "${course.id}" (${course.name}) · ` +
@@ -199,12 +298,13 @@ async function boot(): Promise<void> {
       `${session.room.state.players.size} racing · ` +
       `step ${(FIXED_TIMESTEP * 1000).toFixed(2)}ms · ` +
       `you are "${session.self()?.name ?? '—'}" · ` +
-      'WASD move · Space jump · Shift dash · mouse look',
+      'WASD move · Space jump · Shift dash · mouse look · M mute',
   );
 
   globalThis.addEventListener('beforeunload', () => {
     loop.stop();
     coreVisual.dispose();
+    techno.dispose();
   });
 }
 

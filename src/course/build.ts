@@ -13,6 +13,8 @@ import * as THREE from 'three/webgpu';
 import type { Course } from '../shared/course.ts';
 import { GOAL } from '../constants.ts';
 import { NEON, PALETTE, POST } from '../render/palette.ts';
+import { fxBeat } from '../render/fx.ts';
+import { add, mul, vec3 } from 'three/tsl';
 
 export interface CourseHandle {
   /** Null for goal-less courses such as the Core Rush arena. */
@@ -110,11 +112,15 @@ export function buildCourse(scene: THREE.Scene, course: Course): CourseHandle {
     let edgeMaterial = edgeMaterials.get(key);
     if (!edgeMaterial) {
       edgeMaterial = new THREE.LineBasicMaterial({
-        color: neonFromHex(key, EDGE_GAIN),
         // Out of tone mapping so the neon reads at its authored brightness
         // rather than being compressed toward grey along with everything else.
         toneMapped: false,
       });
+      // The arena breathes with the kick drum: edges sit a little dim between
+      // beats and flare on each one. Beat-rate only (~2.2 Hz at 130 BPM), well
+      // under the 3 Hz flash limit -- see render/fx.ts.
+      const neon = neonFromHex(key, EDGE_GAIN);
+      edgeMaterial.colorNode = mul(vec3(neon.r, neon.g, neon.b), add(0.7, mul(fxBeat, 0.75)));
       edgeMaterials.set(key, edgeMaterial);
     }
 

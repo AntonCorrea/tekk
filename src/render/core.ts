@@ -59,6 +59,7 @@ import {
 } from 'three/tsl';
 
 import { NEON, POST } from './palette.ts';
+import { fxBeat } from './fx.ts';
 
 export interface CoreVisualState {
   /** World position of the Core's centre. */
@@ -285,7 +286,10 @@ export function createCoreVisual(scene: THREE.Scene): CoreVisual {
   );
   const haloTint = mix(mix(white, pink, 0.35), cyan, mul(uImmune, 0.6));
   const haloMat = own(new THREE.SpriteNodeMaterial());
-  haloMat.colorNode = vec4(mul(haloTint, mul(haloFalloff, mul(flicker, gain * 0.55))), 1);
+  // The halo swells on every kick drum (render/fx.ts), so the prize itself
+  // keeps time with the music.
+  const haloBeat = add(0.8, mul(fxBeat, 0.6));
+  haloMat.colorNode = vec4(mul(haloTint, mul(haloFalloff, mul(mul(flicker, haloBeat), gain * 0.55))), 1);
   applyCommon(haloMat);
   const halo = new THREE.Sprite(haloMat);
   halo.frustumCulled = false;

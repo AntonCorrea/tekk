@@ -8,40 +8,21 @@
  */
 
 import * as THREE from 'three/webgpu';
-import {
-  cameraPosition,
-  clamp,
-  color,
-  dot,
-  mix,
-  mul,
-  normalize,
-  normalWorld,
-  oneMinus,
-  pow,
-  positionWorld,
-  saturate,
-  sub,
-  uniform,
-} from 'three/tsl';
 
 import { PLAYER } from '../constants.ts';
-import { NEON, PALETTE, POST } from '../render/palette.ts';
+import { NEON, RACER_IDENTITY } from '../render/palette.ts';
+import { createCharacter, type Character, type CharacterState } from '../render/character.ts';
 import type { PlayerStateInstance } from '../shared/state.ts';
 import type { Session } from './session.ts';
 
 /**
- * Each racer gets a distinct hue so four people stay tellable apart.
+ * Each racer gets a distinct hue so people stay tellable apart.
  *
- * Drawn from the same ramp as everything else rather than the previous six
- * arbitrary brights. A remote racer's identity is carried entirely by this
- * colour, so the ramp is spaced far enough apart to stay readable at a glance
- * while the racer is moving.
+ * The saturated racer set from render/palette.ts, minus its first entry, which
+ * is the local racer's own colour -- so nobody else ever looks like you.
  */
-const IDENTITY = [NEON.cyan, NEON.magenta, NEON.blue, NEON.violet, NEON.amber];
+const IDENTITY = RACER_IDENTITY.slice(1);
 
-/** Airborne tint, matching the local player's cue in render/scene.ts. */
-const AIRBORNE = new THREE.Color(NEON.amber);
 
 /**
  * The carrier's tint: the ramp's white, which no identity colour uses, so the
@@ -64,83 +45,40 @@ const GLOW_CARRIER = 2.4;
  */
 const tintScratch = new THREE.Color();
 
-/**
- * The node produced by a colour uniform.
- *
- * Spelled out explicitly rather than as `ReturnType<typeof uniform>`: that bare
- * `ReturnType` erases the generics to `unknown`, and the vector constructors then
- * refuse the value. Note the first type parameter is the *node* type and the
- * second is the *value* type, which is the opposite of what the name suggests.
- * Annotating a TSL node too loosely is the same bug twice in this project.
- */
-type ColorUniform = THREE.UniformNode<'color', THREE.Color>;
-type FloatUniform = THREE.UniformNode<'float', number>;
-
-/**
- * The emissive fresnel rim shared by every remote racer.
- *
- * Identical construction to the local player's rim in render/scene.ts, minus the
- * tint: the graph is built once here and reused, and only the per-racer colour
- * uniform differs. Building the graph inside the per-racer loop would compile a
- * separate shader variant for each colour, which is the expensive way to get six
- * near-identical materials.
- */
-function iridescentRim(tint: ColorUniform, glow: FloatUniform): THREE.Node {
-  const viewDir = normalize(sub(cameraPosition, positionWorld));
-  const fresnel = pow(oneMinus(saturate(dot(normalize(normalWorld), viewDir))), 2.6);
-
-  const hueLow = mix(color(NEON.magenta), tint, clamp(mul(fresnel, 2), 0, 1));
-  const hue = mix(hueLow, color(NEON.cyan), clamp(mul(sub(fresnel, 0.5), 2), 0, 1));
-  return mul(hue, mul(fresnel, mul(glow, POST.emissiveGain)));
-}
-
 export interface RacerVisuals {
-  /** Interpolate every remote racer onto its smoothed position. */
-  sync(): void;
+  /**
+   * Interpolate every remote racer onto its smoothed position and animate it.
+   * `delta` is the real frame delta in seconds.
+   */
+  sync(delta: number): void;
   dispose(): void;
 }
 
 interface Racer {
-  capsule: THREE.Mesh;
+  /** The shared mannequin from render/character.ts. */
+  character: Character;
   label: THREE.Sprite;
+  /** Identity hue the tint returns to when not carrying or airborne. */
   color: THREE.Color;
-  tint: ColorUniform;
-  /** Rim gain multiplier: the carrier and dash cues. */
-  glow: FloatUniform;
-  material: THREE.MeshStandardMaterial;
 }
+
+/** Reused per racer per frame, so `sync` allocates nothing. */
+const characterState: CharacterState = {
+  x: 0, y: 0, z: 0, vx: 0, vz: 0, speed: 0, grounded: true, dashing: false, carrying: false,
+};
 
 export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerVisuals {
   const racers = new Map<string, Racer>();
-  const capsuleGeometry = new THREE.CapsuleGeometry(
-    PLAYER.radius,
-    PLAYER.halfHeight * 2,
-    8,
-    16,
-  );
 
   const add = (id: string, name: string) => {
     const identity = new THREE.Color(IDENTITY[racers.size % IDENTITY.length]!);
 
-    // Dark body lit by its own rim — the same treatment as the local player, so
-    // remote racers read as part of this world rather than as a different kind
-    // of object pasted into it.
-    const material = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(PALETTE.mass),
-      roughness: 0.35,
-      metalness: 0.1,
-    });
-    const tint = uniform(identity.clone());
-    const glow = uniform(GLOW_BASE);
-    material.emissiveNode = iridescentRim(tint, glow);
-
-    const capsule = new THREE.Mesh(capsuleGeometry, material);
-    scene.add(capsule);
+    const character = createCharacter(scene, identity);
 
     const label = makeLabel(name, identity);
     scene.add(label);
 
-    const racer: Racer = { capsule, label, color: identity, tint, glow, material };
+    const racer: Racer = { character, label, color: identity };
     racers.set(id, racer);
     return racer;
   };
@@ -148,14 +86,14 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
   const remove = (id: string) => {
     const racer = racers.get(id);
     if (!racer) return;
-    scene.remove(racer.capsule, racer.label);
-    racer.material.dispose();
+    scene.remove(racer.label);
+    racer.character.dispose();
     (racer.label.material as THREE.Material).dispose();
     racers.delete(id);
   };
 
   return {
-    sync() {
+    sync(delta) {
       const selfId = session.sessionId;
 
       // Drop racers that left.
@@ -172,7 +110,21 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
         // The smoothed read. Falls back to raw authority before the first
         // interpolation sample arrives, so a racer never pops in at the origin.
         const p = session.positionOf(player);
-        racer.capsule.position.set(p.x, p.y, p.z);
+        const carrying = id === session.room.state.carrierId;
+
+        // Velocity, speed and grounded come straight from the replicated state,
+        // which runs ~100ms ahead of the interpolated position. For facing and
+        // the run cycle that lead is invisible; for position it would not be.
+        characterState.x = p.x;
+        characterState.y = p.y;
+        characterState.z = p.z;
+        characterState.vx = player.vx;
+        characterState.vz = player.vz;
+        characterState.speed = player.speed;
+        characterState.grounded = player.grounded;
+        characterState.dashing = player.dashTicks > 0;
+        characterState.carrying = carrying;
+        racer.character.update(characterState, delta);
 
         // Label floats above the head and always faces the camera.
         racer.label.position.set(p.x, p.y + PLAYER.height * 0.85, p.z);
@@ -187,12 +139,11 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
         // The carrier overrides it with white and a much stronger rim: it is the
         // one fact every player needs to read at a glance. A dash is a brief
         // brightening only, so it never competes with the carrier cue.
-        const carrying = id === session.room.state.carrierId;
-        tintScratch.copy(carrying ? CARRIER : player.grounded ? racer.color : AIRBORNE);
-        racer.tint.value.lerp(tintScratch, 0.2);
+        tintScratch.copy(carrying ? CARRIER : racer.color);
+        racer.character.tint.lerp(tintScratch, 0.2);
 
         const glowTarget = carrying ? GLOW_CARRIER : player.dashTicks > 0 ? GLOW_DASH : GLOW_BASE;
-        racer.glow.value += (glowTarget - racer.glow.value) * 0.3;
+        racer.character.glow += (glowTarget - racer.character.glow) * 0.3;
 
         // The Core's holder keeps the label on during results too, so the final
         // screen still says who is who.
@@ -202,7 +153,6 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
 
     dispose() {
       for (const id of [...racers.keys()]) remove(id);
-      capsuleGeometry.dispose();
     },
   };
 }
