@@ -157,7 +157,7 @@ export async function connectSession(
     // unacknowledged inputs replay on top.
     adopt: (w) => {
       const truth = room.state.players.get(room.sessionId);
-      if (truth) adoptTruth(w.sim, truth);
+      if (truth) adoptTruth(w.sim, truth, room.state.carrierId === room.sessionId);
     },
 
     // Render pose -- the numbers interpolation and smooth correction apply to.

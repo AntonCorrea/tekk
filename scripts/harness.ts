@@ -24,6 +24,7 @@ import { Client } from '@colyseus/sdk';
 
 import { loadCourse } from '../server/course.ts';
 import { createPhysicsWorld, initPhysics } from '../src/physics/world.ts';
+import { adoptTruth } from '../src/physics/player.ts';
 import {
   applyInput,
   buildCourseColliders,
@@ -33,8 +34,11 @@ import {
 } from '../src/shared/sim.ts';
 import { MoveInput } from '../src/shared/input.ts';
 import type { MoveInputData } from '../src/shared/input.ts';
+import { PlayerState } from '../src/shared/state.ts';
 import { hasReachedGoal } from '../src/game/race.ts';
-import { FIXED_TIMESTEP, MOVE, PLAYER } from '../src/constants.ts';
+import { CORE, DASH, FIXED_TIMESTEP, MOVE, PLAYER } from '../src/constants.ts';
+
+type Course = ReturnType<typeof loadCourse>;
 
 let pass = 0;
 let fail = 0;
@@ -68,43 +72,93 @@ function skip(label: string, why: string): void {
   console.log(`  SKIP  ${label}  (${why})`);
 }
 
-const input = (moveX: number, moveZ: number, sprint = false, jump = false): MoveInputData => ({
+const input = (moveX: number, moveZ: number, dash = false, jump = false): MoveInputData => ({
   moveX,
   moveZ,
-  sprint,
+  dash,
   jump,
 });
 
-/** A deterministic, non-trivial input script: sprint, strafe, jump, idle, back. */
+/**
+ * A deterministic, non-trivial input script: run, strafe, jump, idle, back,
+ * and three dash windows that each exercise a different rule.
+ *
+ *   t 10..12   dash along the stick (forward).
+ *   t 102..104 dash with NO stick, during the idle stretch: the direction has
+ *              to come from the momentum the strafe left behind.
+ *   t 186..188 diagonal dash. The t 102 dash ended at 111, so the cooldown
+ *              has just expired.
+ *
+ * In the second 200-step cycle the t 10 window lands inside the t 186
+ * cooldown, so the script also holds dash while it must NOT fire.
+ */
 function scriptAt(step: number): MoveInputData {
   const t = step % 200;
-  if (t < 60) return input(0, -1, true, t === 30);
+  if (t < 60) return input(0, -1, t >= 10 && t <= 12, t === 30);
   if (t < 100) return input(1, 0, false, false);
-  if (t < 120) return input(0, 0, false, false);
-  if (t < 160) return input(-1, 0, true, t === 140);
+  if (t < 120) return input(0, 0, t >= 102 && t <= 104, false);
+  if (t < 160) return input(-1, 0, false, t === 140);
   if (t < 180) return input(0, 1, false, t === 165);
-  return input(0.7, -0.7, true, t === 195);
+  return input(0.7, -0.7, t >= 186 && t <= 188, t === 195);
 }
 
-function makeWorld(course: Awaited<ReturnType<typeof loadCourse>>) {
+/**
+ * A course world holding one racer, or several. `others` are created BEFORE
+ * the racer under test, so its body and collider handles differ from a
+ * lone-racer world -- the pass-through check would otherwise be comparing two
+ * worlds that differ only in an object nobody touches.
+ */
+function makeWorld(course: Course, others = 0) {
   const world = createPhysicsWorld();
   buildCourseColliders(world, course);
+  const extra: SimBody[] = [];
+  for (let i = 0; i < others; i++) extra.push(createSimBody(world, course, FIXED_TIMESTEP));
   const sim = createSimBody(world, course, FIXED_TIMESTEP);
-  return { world, sim };
+  return { world, sim, extra };
 }
 
 const snap = (sim: SimBody) => {
   const t = sim.body.translation();
-  return { x: t.x, y: t.y, z: t.z, vx: sim.velocity.x, vy: sim.velocity.y, vz: sim.velocity.z };
+  return {
+    x: t.x,
+    y: t.y,
+    z: t.z,
+    vx: sim.velocity.x,
+    vy: sim.velocity.y,
+    vz: sim.velocity.z,
+    grounded: sim.grounded,
+    speed: sim.horizontalSpeed,
+    dashTicks: sim.dashTicks,
+    dashCooldownTicks: sim.dashCooldownTicks,
+  };
 };
+type Snap = ReturnType<typeof snap>;
 
-function identical(a: ReturnType<typeof snap>, b: ReturnType<typeof snap>): boolean {
-  return a.x === b.x && a.y === b.y && a.z === b.z && a.vx === b.vx && a.vy === b.vy && a.vz === b.vz;
+function identical(a: Snap, b: Snap): boolean {
+  return (
+    a.x === b.x && a.y === b.y && a.z === b.z &&
+    a.vx === b.vx && a.vy === b.vy && a.vz === b.vz &&
+    a.grounded === b.grounded && a.speed === b.speed &&
+    a.dashTicks === b.dashTicks && a.dashCooldownTicks === b.dashCooldownTicks
+  );
+}
+
+/** Run `steps` steps of `script` on a fresh one-racer world; returns every snap. */
+function record(course: Course, steps: number, script: (step: number) => MoveInputData, carrying = false) {
+  const w = makeWorld(course);
+  w.sim.carrying = carrying;
+  const log: Snap[] = [];
+  for (let step = 0; step < steps; step++) {
+    applyInput(w.sim, script(step), FIXED_TIMESTEP);
+    w.world.step();
+    log.push(snap(w.sim));
+  }
+  return log;
 }
 
 // ============================================================== A: determinism
 
-async function testDeterminism(course: Awaited<ReturnType<typeof loadCourse>>) {
+async function testDeterminism(course: Course) {
   console.log('\n=== A. shared step determinism ===');
 
   const STEPS = 400;
@@ -112,7 +166,7 @@ async function testDeterminism(course: Awaited<ReturnType<typeof loadCourse>>) {
   const b = makeWorld(course);
 
   let firstDivergence = -1;
-  let last: ReturnType<typeof snap> | null = null;
+  let last: Snap | null = null;
 
   for (let step = 0; step < STEPS; step++) {
     const cmd = scriptAt(step);
@@ -128,7 +182,7 @@ async function testDeterminism(course: Awaited<ReturnType<typeof loadCourse>>) {
   }
 
   check(
-    `400 steps agree bit-for-bit across two worlds`,
+    `400 steps (with dashes) agree bit-for-bit across two worlds`,
     firstDivergence === -1,
     firstDivergence === -1 ? `final z=${last!.z.toFixed(6)}` : `diverged at step ${firstDivergence}`,
   );
@@ -146,113 +200,303 @@ async function testDeterminism(course: Awaited<ReturnType<typeof loadCourse>>) {
 
   // Repeating the same script from a fresh world must reproduce the same run.
   // Without this, "identical" could just mean a shared mutable default.
-  const c = makeWorld(course);
-  for (let step = 0; step < STEPS; step++) {
-    applyInput(c.sim, scriptAt(step), FIXED_TIMESTEP);
-    c.world.step();
-  }
-  check('a fresh world replays the run exactly', identical(snap(a.sim), snap(c.sim)));
+  const run = record(course, STEPS, scriptAt);
+  check('a fresh world replays the run exactly', identical(snap(a.sim), run[STEPS - 1]!));
 
   // The run must actually have gone somewhere. A test where everything is 0
-  // passes trivially, so assert the capsule really travelled and really jumped.
-  // Net displacement is small because the script strafes and reverses, so
-  // measure the furthest point reached rather than the final position.
-  let minZ = Infinity;
-  let maxZ = -Infinity;
-  let peakY = -Infinity;
-  const p = makeWorld(course);
-  for (let step = 0; step < STEPS; step++) {
-    applyInput(p.sim, scriptAt(step), FIXED_TIMESTEP);
-    p.world.step();
-    const t = p.sim.body.translation();
-    minZ = Math.min(minZ, t.z);
-    maxZ = Math.max(maxZ, t.z);
-    peakY = Math.max(peakY, t.y);
-  }
+  // passes trivially, so assert the capsule really travelled, jumped and
+  // dashed. Net displacement is small because the script strafes and
+  // reverses, so measure the furthest point reached rather than the final one.
+  const minZ = Math.min(...run.map((s) => s.z));
+  const maxZ = Math.max(...run.map((s) => s.z));
+  const peakY = Math.max(...run.map((s) => s.y));
+  const peakDash = Math.max(...run.map((s) => s.dashTicks));
+  const peakSpeed = Math.max(...run.map((s) => s.speed));
+  const dashStarts = run.filter((s, i) => s.dashTicks === DASH.durationTicks - 1 &&
+    (i === 0 || run[i - 1]!.dashTicks === 0)).length;
   check(
     'the capsule actually travelled along the lane',
     maxZ - minZ > 15,
     `z span ${minZ.toFixed(2)} .. ${maxZ.toFixed(2)}`,
   );
   check('the capsule actually left the ground', peakY > 1.2, `peak y=${peakY.toFixed(2)}`);
-  void last;
+  check(
+    'the script really dashed, past run speed',
+    peakDash > 0 && peakSpeed > MOVE.runSpeed + 5,
+    `${dashStarts} dash(es), peak dashTicks=${peakDash}, peak speed=${peakSpeed.toFixed(2)} ` +
+      `(run ${MOVE.runSpeed}, dash ${DASH.speed})`,
+  );
+  // Three windows per 200 steps, minus the cycle-2 t 10 window that falls
+  // inside the t 186 cooldown: 3 + 2 = 5 over 400 steps.
+  check('held dash inside a cooldown does not fire', dashStarts === 5, `${dashStarts} starts, expected 5`);
+
+  // The no-stick dash at t 102 must have borrowed the strafe's +X momentum.
+  const borrowed = run[102]!;
+  check(
+    'a dash with no stick input takes the direction of momentum',
+    borrowed.dashTicks > 0 && borrowed.vx === DASH.speed && borrowed.vz === 0,
+    `step 102: dashTicks=${borrowed.dashTicks} v=(${borrowed.vx.toFixed(3)}, ${borrowed.vz.toFixed(3)})`,
+  );
+
+  testDashTiming(course);
+  testPassThrough(course);
+  testCarrying(course);
+}
+
+/**
+ * Hold forward + dash from a standstill and read the counters off every step.
+ * The tick arithmetic is the contract the server and HUD read, so pin it.
+ */
+function testDashTiming(course: Course) {
+  const STEPS = 2 * (DASH.durationTicks + DASH.cooldownTicks) + 5;
+  // Pushing into the start pad's right rail: the body stays on the pad for the
+  // whole run (a fall would respawn and reset the counters), and a wall does
+  // not change the hand-integrated velocity, so the speeds read clean.
+  const log = record(course, STEPS, () => input(1, 0, true, false));
+
+  const starts = log
+    .map((s, i) => (s.dashTicks > 0 && (i === 0 || log[i - 1]!.dashTicks === 0) ? i : -1))
+    .filter((i) => i >= 0);
+  // Published `dashTicks` is "steps still to fly" after the step, so the last
+  // dash step publishes 0. Count the steps that actually flew at dash speed.
+  const firstLen = log.slice(starts[0]).findIndex((s) => s.speed !== DASH.speed);
+  const period = starts[1]! - starts[0]!;
+
+  check(
+    'a dash lasts exactly DASH.durationTicks steps at DASH.speed',
+    starts[0] === 0 && firstLen === DASH.durationTicks &&
+      log.slice(0, DASH.durationTicks).every((s) => s.speed === DASH.speed),
+    `started step ${starts[0]}, flew ${firstLen} steps`,
+  );
+  check(
+    'held dash re-fires after exactly DASH.cooldownTicks idle steps',
+    period === DASH.durationTicks + DASH.cooldownTicks,
+    `period ${period} = ${DASH.durationTicks} dash + ${period - DASH.durationTicks} cooldown`,
+  );
+  check(
+    'the dash ends at DASH.speed and run speed takes back over',
+    log[DASH.durationTicks + 30]!.speed === MOVE.runSpeed,
+    `speed ${log[DASH.durationTicks + 30]!.speed} 30 steps after`,
+  );
+
+  // Standing still with no stick: nothing to aim at, so no dash and no
+  // cooldown spent.
+  const idle = record(course, 30, () => input(0, 0, true, false));
+  check(
+    'dash with no stick and no momentum does nothing and costs nothing',
+    idle.every((s) => s.dashTicks === 0 && s.dashCooldownTicks === 0 && s.speed === 0),
+  );
+}
+
+/**
+ * Racers pass through each other.
+ *
+ * The server holds every capsule in one world; the client holds only its own.
+ * So the only way the client can predict the server is if a body's path in a
+ * crowd is bit-identical to its path alone. Two other racers are spawned
+ * INSIDE it (everyone shares the spawn) and then driven straight back through
+ * it, while the body under test runs the dash script.
+ */
+function testPassThrough(course: Course) {
+  const STEPS = 400;
+  const alone = record(course, STEPS, scriptAt);
+
+  const crowd = makeWorld(course, 2);
+  const [rivalA, rivalB] = crowd.extra as [SimBody, SimBody];
+  let firstDivergence = -1;
+  let closest = Infinity;
+
+  for (let step = 0; step < STEPS; step++) {
+    // Server order: every racer integrated, then one world step.
+    applyInput(rivalA, input(0, step < 60 ? -1 : 1, step % 90 === 20, step % 50 === 0), FIXED_TIMESTEP);
+    applyInput(crowd.sim, scriptAt(step), FIXED_TIMESTEP);
+    applyInput(rivalB, scriptAt(step + 7), FIXED_TIMESTEP);
+    crowd.world.step();
+
+    // Everyone starts overlapped on the shared spawn, which proves little on
+    // its own; only count crossings after they have spread out.
+    const me = crowd.sim.body.translation();
+    if (step >= 60) for (const rival of [rivalA, rivalB]) {
+      const r = rival.body.translation();
+      closest = Math.min(closest, Math.hypot(me.x - r.x, me.y - r.y, me.z - r.z));
+    }
+    if (firstDivergence === -1 && !identical(snap(crowd.sim), alone[step]!)) firstDivergence = step;
+  }
+
+  check(
+    'a racer among others moves exactly as it does alone',
+    firstDivergence === -1,
+    firstDivergence === -1 ? `400 steps identical` : `diverged at step ${firstDivergence}`,
+  );
+  // Without this the check above could pass because the rivals never came
+  // near: assert their capsules really overlapped the body under test.
+  check(
+    'the rivals really passed through it',
+    closest < PLAYER.radius,
+    `closest centre distance after step 60: ${closest.toFixed(3)} (capsule radius ${PLAYER.radius})`,
+  );
+}
+
+/** The carrier is slower and cannot dash. */
+function testCarrying(course: Course) {
+  const carrierTop = MOVE.runSpeed * CORE.carrierSpeedFactor;
+  const log = record(course, 120, () => input(1, 0, true, false), true);
+  const peak = Math.max(...log.map((s) => s.speed));
+  check(
+    'a carrier holding dash never dashes',
+    log.every((s) => s.dashTicks === 0 && s.dashCooldownTicks === 0),
+  );
+  check(
+    'a carrier tops out at the reduced speed',
+    peak === carrierTop,
+    `peak ${peak} (run ${MOVE.runSpeed} x ${CORE.carrierSpeedFactor} = ${carrierTop})`,
+  );
 }
 
 // ================================================================ B: rollback
 
-async function testRollback(course: Awaited<ReturnType<typeof loadCourse>>) {
+/**
+ * The client's restore point, built the way the server publishes it: a real
+ * PlayerState, written from the server body after its step.
+ */
+function truthOf(s: Snap) {
+  const truth = new PlayerState();
+  truth.x = s.x;
+  truth.y = s.y;
+  truth.z = s.z;
+  truth.vx = s.vx;
+  truth.vy = s.vy;
+  truth.vz = s.vz;
+  truth.grounded = s.grounded;
+  truth.speed = s.speed;
+  truth.dashTicks = s.dashTicks;
+  truth.dashCooldownTicks = s.dashCooldownTicks;
+  return truth;
+}
+
+/**
+ * The client mispredicts up to `ack` (it runs `clientScript`, which differs
+ * from what the server got), then a correction lands: it adopts server truth
+ * for step `ack` through the real `adoptTruth` and replays the true inputs
+ * ack+1..ack+horizon. Returns where it lands, against where the server was.
+ *
+ * `forget` drops the dash counters after adopting, to prove they matter.
+ */
+function rollback(
+  course: Course,
+  history: Snap[],
+  ack: number,
+  horizon: number,
+  clientScript: (step: number) => MoveInputData,
+  forget = false,
+) {
+  const client = makeWorld(course);
+  for (let step = 0; step <= ack; step++) {
+    applyInput(client.sim, clientScript(step), FIXED_TIMESTEP);
+    client.world.step();
+  }
+  const stale = { dashTicks: client.sim.dashTicks, cd: client.sim.dashCooldownTicks };
+
+  adoptTruth(client.sim, truthOf(history[ack]!), false);
+  if (forget) {
+    client.sim.dashTicks = stale.dashTicks;
+    client.sim.dashCooldownTicks = stale.cd;
+  }
+
+  for (let replay = ack + 1; replay <= ack + horizon; replay++) {
+    applyInput(client.sim, scriptAt(replay), FIXED_TIMESTEP);
+    client.world.step();
+  }
+  return { client: snap(client.sim), server: history[ack + horizon]!, stale };
+}
+
+async function testRollback(course: Course) {
   console.log('\n=== B. rollback reproduces the server ===');
 
-  const STEPS = 300;
-  const ACK = 200; // server has confirmed everything up to here
-
   // The server's full run, recorded.
-  const server = makeWorld(course);
-  const history: Array<ReturnType<typeof snap>> = [];
-  for (let step = 0; step < STEPS; step++) {
-    applyInput(server.sim, scriptAt(step), FIXED_TIMESTEP);
-    server.world.step();
-    history.push(snap(server.sim));
+  const history = record(course, 400, scriptAt);
+
+  // 1. The original case: a quiet stretch, client predicted the same inputs.
+  {
+    const r = rollback(course, history, 200, 12, scriptAt);
+    check(
+      'replay from server truth lands on the server trajectory',
+      identical(r.client, r.server),
+      `step 212: z=${r.client.z.toFixed(6)} vs ${r.server.z.toFixed(6)}`,
+    );
   }
 
-  // The client: own world, own body, predicted past the last ack.
-  const client = makeWorld(course);
-  const clientLog: Array<ReturnType<typeof snap>> = [];
-
-  for (let step = 0; step < STEPS; step++) {
-    applyInput(client.sim, scriptAt(step), FIXED_TIMESTEP);
-    client.world.step();
-    clientLog.push(snap(client.sim));
-
-    // A correction lands: adopt server truth for this step, then the client
-    // replays ACK+1..step on top of it. That is exactly what the reconciler does.
-    if (step === ACK) {
-      const truth = history[step]!;
-      client.sim.velocity.x = truth.vx;
-      client.sim.velocity.y = truth.vy;
-      client.sim.velocity.z = truth.vz;
-      client.sim.body.setTranslation({ x: truth.x, y: truth.y, z: truth.z }, true);
-
-      for (let replay = ACK + 1; replay <= step + 12 && replay < STEPS; replay++) {
-        applyInput(client.sim, scriptAt(replay), FIXED_TIMESTEP);
-        client.world.step();
-      }
-      break;
-    }
+  // 2. Mid-dash, after a misprediction. The client never saw the dash input
+  //    (it predicted plain running), so at the ack it has no dash, the wrong
+  //    velocity and the wrong position. Truth is a few ticks into the t 10
+  //    forward dash down the open lane; the replay must fly the remaining
+  //    ticks, end the dash, start the cooldown and land exactly on the server.
+  const noDash = (step: number) => ({ ...scriptAt(step), dash: false });
+  const ACK = 13;
+  const HORIZON = 20;
+  check(
+    'the rollback point really is mid-dash',
+    history[ACK]!.dashTicks > 0 && history[ACK + HORIZON]!.dashTicks === 0 &&
+      history[ACK + HORIZON]!.dashCooldownTicks > 0,
+    `truth dashTicks=${history[ACK]!.dashTicks}, ` +
+      `after replay cooldown=${history[ACK + HORIZON]!.dashCooldownTicks}`,
+  );
+  {
+    const r = rollback(course, history, ACK, HORIZON, noDash);
+    check(
+      'mid-dash rollback from a mispredicted client lands on the server',
+      identical(r.client, r.server) && r.stale.dashTicks === 0,
+      `client predicted dashTicks=${r.stale.dashTicks}; step ${ACK + HORIZON}: ` +
+        `z=${r.client.z.toFixed(6)} vs ${r.server.z.toFixed(6)}, ` +
+        `cooldown ${r.client.dashCooldownTicks} vs ${r.server.dashCooldownTicks}`,
+    );
+  }
+  {
+    // The bad case: position and velocity adopted, dash counters not. The
+    // replay no longer holds the dash, accel pulls the speed back to a run,
+    // and the client ends up somewhere the server never was. Compared on
+    // POSITION, not the full snapshot, so the counters themselves differing
+    // cannot pass this on their own.
+    const r = rollback(course, history, ACK, HORIZON, noDash, true);
+    check(
+      'without the dash counters the same replay lands elsewhere (negative control)',
+      r.client.z !== r.server.z,
+      `z=${r.client.z.toFixed(4)} vs server ${r.server.z.toFixed(4)}`,
+    );
   }
 
-  // After the rewind, the client runs forward from truth. It must land on the
-  // server's trajectory for the steps it replays.
-  const finalStep = ACK + 12;
-  const clientFinal = snap(client.sim);
-  const serverFinal = history[finalStep]!;
-  check(
-    'replay from server truth lands on the server trajectory',
-    identical(clientFinal, serverFinal),
-    identical(clientFinal, serverFinal)
-      ? `step ${finalStep}: z=${clientFinal.z.toFixed(6)}`
-      : `client z=${clientFinal.z.toFixed(6)} vs server z=${serverFinal.z.toFixed(6)}`,
-  );
-
-  // The bad case this guards against: adopting position WITHOUT velocity. It
-  // throws momentum away, and the replay diverges from there on.
-  const naive = makeWorld(course);
-  for (let step = 0; step < STEPS; step++) {
-    applyInput(naive.sim, scriptAt(step), FIXED_TIMESTEP);
-    naive.world.step();
+  // 3. Mid-dash INTO A WALL. The t 102 momentum dash drives +X into the start
+  //    pad's right rail. This is the case that caught `adoptTruth` moving the
+  //    body but not its collider: the first replayed sweep ran from the
+  //    client's mispredicted spot, missed the rail, and the client finished
+  //    inside it. Kept as the regression guard for that.
+  {
+    const r = rollback(course, history, 105, 20, noDash);
+    check(
+      'mid-dash rollback against a wall lands on the server',
+      identical(r.client, r.server),
+      `step 125: x=${r.client.x.toFixed(6)} vs ${r.server.x.toFixed(6)} ` +
+        `(rail stops the centre at x=5.6)`,
+    );
   }
-  const naiveFinal = snap(naive.sim);
 
-  const preAckClient = clientLog[ACK]!;
-  check(
-    'client and server agree on the pre-ack trajectory too',
-    identical(preAckClient, history[ACK]!),
-  );
-  check(
-    'divergence only exists because of a deliberate rewind',
-    true,
-    `pre-ack identical; naive-run z=${naiveFinal.z.toFixed(2)}`,
-  );
+  // 4. Mid-cooldown: the client wrongly predicted a SECOND dash fired (its
+  //    script held dash during the cooldown and it thought the cooldown was
+  //    over). Truth restores the cooldown, and the replay must not dash.
+  {
+    const ack2 = 150;
+    const eager = (step: number) => ({ ...scriptAt(step), dash: step >= 140 });
+    // `eager` skips the t 10 and t 102 dashes, so its cooldown is clear at 140
+    // and it fires a dash the server, still cooling down from t 102, never did.
+    const r = rollback(course, history, ack2, 30, eager);
+    check(
+      'mid-cooldown rollback lands on the server',
+      identical(r.client, r.server),
+      `client predicted dashTicks=${r.stale.dashTicks} cooldown=${r.stale.cd}, ` +
+        `truth cooldown=${history[ack2]!.dashCooldownTicks}; step ${ack2 + 30}: ` +
+        `z=${r.client.z.toFixed(6)} vs ${r.server.z.toFixed(6)}`,
+    );
+  }
 }
 
 // ==================================================================== C: wire
@@ -326,7 +570,7 @@ async function testWire(course: Awaited<ReturnType<typeof loadCourse>>) {
   for (let i = 0; i < 30; i++) {
     handle.data.moveX = 0;
     handle.data.moveZ = 0;
-    handle.data.sprint = false;
+    handle.data.dash = false;
     handle.data.jump = false;
     handle.send();
     await sleep(16);
@@ -342,7 +586,7 @@ async function testWire(course: Awaited<ReturnType<typeof loadCourse>>) {
   for (let i = 0; i < 60; i++) {
     handle.data.moveX = 0;
     handle.data.moveZ = -1;
-    handle.data.sprint = true;
+    handle.data.dash = false;
     handle.data.jump = false;
     handle.send();
     await sleep(16);
@@ -362,7 +606,7 @@ async function testWire(course: Awaited<ReturnType<typeof loadCourse>>) {
   for (let i = 0; i < 10; i++) {
     handle.data.moveX = 0;
     handle.data.moveZ = -9999;
-    handle.data.sprint = true;
+    handle.data.dash = false;
     handle.data.jump = false;
     handle.send();
     await sleep(16);
@@ -370,8 +614,8 @@ async function testWire(course: Awaited<ReturnType<typeof loadCourse>>) {
   await sleep(150);
   check(
     'out-of-range input is clamped, not trusted',
-    self().speed <= MOVE.sprintSpeed + 0.5,
-    `speed=${self().speed.toFixed(2)} (tuned sprint is ${MOVE.sprintSpeed})`,
+    self().speed <= MOVE.runSpeed + 0.5,
+    `speed=${self().speed.toFixed(2)} (tuned run is ${MOVE.runSpeed})`,
   );
 
   // 4. Goal detection is a pure function of position; check the geometry.
@@ -453,7 +697,7 @@ async function testWire(course: Awaited<ReturnType<typeof loadCourse>>) {
   while (Date.now() - startedAt < CEILING_MS) {
     handle.data.moveX = 0;
     handle.data.moveZ = -1;
-    handle.data.sprint = true;
+    handle.data.dash = false;
     handle.data.jump = true;
     handle.send();
 
@@ -574,7 +818,13 @@ async function main(): Promise<void> {
 
   await testDeterminism(course);
   await testRollback(course);
-  await testWire(course);
+  // Guarded so a crash in the wire suite still prints the tally for A and B,
+  // which do not depend on the server room at all.
+  try {
+    await testWire(course);
+  } catch (err) {
+    check('wire suite ran to completion', false, `crashed: ${String(err).slice(0, 160)}`);
+  }
 
   // A skipped check is unverified, not passing. Say so in the tally rather than
   // letting "N passed" imply more coverage than actually happened.
