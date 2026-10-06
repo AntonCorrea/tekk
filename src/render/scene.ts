@@ -41,6 +41,10 @@ import type { Pose } from '../physics/player.ts';
  */
 export interface LocalPose extends Pose {
   grounded: boolean;
+  /** You hold the Core: the capsule burns white, like a remote carrier. */
+  carrying: boolean;
+  /** Predicted dash in progress (`sim.dashTicks > 0`). */
+  dashing: boolean;
 }
 
 export interface SceneVisuals {
@@ -130,6 +134,8 @@ export function buildScene(stage: Stage): SceneVisuals {
   // means the bloom pass has something to work with — emissive values above 1
   // are what the bloom threshold is tuned to catch.
   const glowTint = uniform(new THREE.Color(NEON.violet));
+  // Rim gain multiplier for the carrier and dash cues; 1 is the resting look.
+  const glowGain = uniform(1);
 
   const playerMesh = new THREE.Mesh(
     new THREE.CapsuleGeometry(PLAYER.radius, PLAYER.halfHeight * 2, 8, 16),
@@ -159,7 +165,7 @@ export function buildScene(stage: Stage): SceneVisuals {
   // carries the per-platform budget — see the note on Scheme.
   (playerMesh.material as THREE.MeshStandardMaterial).emissiveNode = mul(
     hue,
-    mul(fresnel, POST.emissiveGain),
+    mul(fresnel, mul(glowGain, POST.emissiveGain)),
   );
 
   scene.add(playerMesh);
@@ -185,6 +191,9 @@ export function buildScene(stage: Stage): SceneVisuals {
   const airborneTint = new THREE.Color(NEON.amber);
   const groundedMarker = new THREE.Color(NEON.cyan);
   const airborneMarker = new THREE.Color(NEON.amber);
+  // Same white as remote carriers (net/remotes.ts), so the cue reads identically
+  // whether it is you or someone else holding the Core.
+  const carrierTint = new THREE.Color(NEON.white);
 
   const followTarget = new THREE.Vector3();
   const followPoint = new THREE.Vector3();
@@ -211,9 +220,18 @@ export function buildScene(stage: Stage): SceneVisuals {
       // tint, because the base colour is now almost black and tinting it does
       // nothing visible. The hue is the same amber it always was, so the cue
       // keeps meaning the same thing.
-      tint.copy(pose.grounded ? groundedTint : airborneTint);
+      tint.copy(pose.carrying ? carrierTint : pose.grounded ? groundedTint : airborneTint);
       glowTint.value.lerp(tint, 0.25);
-      markerMaterial.color.lerp(pose.grounded ? groundedMarker : airborneMarker, 0.25);
+      markerMaterial.color.lerp(
+        pose.carrying ? carrierTint : pose.grounded ? groundedMarker : airborneMarker,
+        0.25,
+      );
+
+      // Carrier burns hardest, a dash is a brief flare. Same multipliers as
+      // remote racers. Eased rather than switched so an 11-tick dash reads as a
+      // pulse instead of a flicker.
+      const gainTarget = pose.carrying ? 2.4 : pose.dashing ? 1.9 : 1;
+      glowGain.value += (gainTarget - glowGain.value) * 0.3;
 
       // --- follow camera ---------------------------------------------------
       // Position is offset from the racer by a fixed spherical rig (see

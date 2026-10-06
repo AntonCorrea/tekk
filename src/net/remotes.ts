@@ -44,6 +44,18 @@ const IDENTITY = [NEON.cyan, NEON.magenta, NEON.blue, NEON.violet, NEON.amber];
 const AIRBORNE = new THREE.Color(NEON.amber);
 
 /**
+ * The carrier's tint: the ramp's white, which no identity colour uses, so the
+ * Core holder is the one hot-white silhouette in the arena regardless of whose
+ * hue they are. Matches the local player's carrier cue in render/scene.ts.
+ */
+const CARRIER = new THREE.Color(NEON.white);
+
+/** Rim gain multipliers. Above 1 so bloom picks them up; carrier outranks dash. */
+const GLOW_BASE = 1;
+const GLOW_DASH = 1.9;
+const GLOW_CARRIER = 2.4;
+
+/**
  * Scratch colour for the per-frame airborne lerp.
  *
  * Module-level rather than allocated inside `sync`: `sync` runs once per rendered
@@ -62,6 +74,7 @@ const tintScratch = new THREE.Color();
  * Annotating a TSL node too loosely is the same bug twice in this project.
  */
 type ColorUniform = THREE.UniformNode<'color', THREE.Color>;
+type FloatUniform = THREE.UniformNode<'float', number>;
 
 /**
  * The emissive fresnel rim shared by every remote racer.
@@ -72,13 +85,13 @@ type ColorUniform = THREE.UniformNode<'color', THREE.Color>;
  * separate shader variant for each colour, which is the expensive way to get six
  * near-identical materials.
  */
-function iridescentRim(tint: ColorUniform): THREE.Node {
+function iridescentRim(tint: ColorUniform, glow: FloatUniform): THREE.Node {
   const viewDir = normalize(sub(cameraPosition, positionWorld));
   const fresnel = pow(oneMinus(saturate(dot(normalize(normalWorld), viewDir))), 2.6);
 
   const hueLow = mix(color(NEON.magenta), tint, clamp(mul(fresnel, 2), 0, 1));
   const hue = mix(hueLow, color(NEON.cyan), clamp(mul(sub(fresnel, 0.5), 2), 0, 1));
-  return mul(hue, mul(fresnel, POST.emissiveGain));
+  return mul(hue, mul(fresnel, mul(glow, POST.emissiveGain)));
 }
 
 export interface RacerVisuals {
@@ -92,6 +105,8 @@ interface Racer {
   label: THREE.Sprite;
   color: THREE.Color;
   tint: ColorUniform;
+  /** Rim gain multiplier: the carrier and dash cues. */
+  glow: FloatUniform;
   material: THREE.MeshStandardMaterial;
 }
 
@@ -116,7 +131,8 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
       metalness: 0.1,
     });
     const tint = uniform(identity.clone());
-    material.emissiveNode = iridescentRim(tint);
+    const glow = uniform(GLOW_BASE);
+    material.emissiveNode = iridescentRim(tint, glow);
 
     const capsule = new THREE.Mesh(capsuleGeometry, material);
     scene.add(capsule);
@@ -124,7 +140,7 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
     const label = makeLabel(name, identity);
     scene.add(label);
 
-    const racer: Racer = { capsule, label, color: identity, tint, material };
+    const racer: Racer = { capsule, label, color: identity, tint, glow, material };
     racers.set(id, racer);
     return racer;
   };
@@ -167,11 +183,20 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
         // body is near-black now, so tinting it would do nothing visible. The
         // hue is the same amber the cue used before the restyle, so it keeps
         // meaning the same thing.
-        tintScratch.copy(player.grounded ? racer.color : AIRBORNE);
+        //
+        // The carrier overrides it with white and a much stronger rim: it is the
+        // one fact every player needs to read at a glance. A dash is a brief
+        // brightening only, so it never competes with the carrier cue.
+        const carrying = id === session.room.state.carrierId;
+        tintScratch.copy(carrying ? CARRIER : player.grounded ? racer.color : AIRBORNE);
         racer.tint.value.lerp(tintScratch, 0.2);
 
-        // Hide finished racers' labels to reduce clutter on the results screen.
-        racer.label.visible = player.finishedMs < 0;
+        const glowTarget = carrying ? GLOW_CARRIER : player.dashTicks > 0 ? GLOW_DASH : GLOW_BASE;
+        racer.glow.value += (glowTarget - racer.glow.value) * 0.3;
+
+        // The Core's holder keeps the label on during results too, so the final
+        // screen still says who is who.
+        racer.label.visible = true;
       });
     },
 
