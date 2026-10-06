@@ -209,10 +209,20 @@ export function createCoreVisual(scene: THREE.Scene): CoreVisual {
     return x;
   };
 
-  // Immune cue: a hard on/off flicker (square wave) and a push toward cyan. A
-  // flicker reads as "can't be touched right now" faster than a colour change
-  // does, and works for colour-blind players.
-  const flicker = mix(float(1), add(0.45, mul(0.55, step(0, sin(mul(uTime, 38))))), uImmune);
+  // Immune cue: a smooth brightness pulse and a push toward cyan. A pulse reads
+  // as "can't be touched right now" faster than a colour change alone, and
+  // works for colour-blind players.
+  //
+  // Deliberately a sine at 2.5 Hz, not a hard flicker. Flashing above 3 Hz is
+  // a photosensitive-seizure risk (WCAG 2.3.1), and this is the brightest,
+  // most bloomed object on screen, shown on big screens at events. An earlier
+  // version used a ~6 Hz square wave.
+  const IMMUNE_PULSE_RAD_PER_S = 2 * Math.PI * 2.5;
+  const flicker = mix(
+    float(1),
+    add(0.72, mul(0.28, sin(mul(uTime, IMMUNE_PULSE_RAD_PER_S)))),
+    uImmune,
+  );
 
   // Crystal facets ---------------------------------------------------------
   const crystalGeo = own(buildCrystalGeometry());
