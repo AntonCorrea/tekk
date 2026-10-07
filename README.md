@@ -1,8 +1,10 @@
 # TEKK
 
-A multiplayer 3D physics racer that runs in the browser. The server owns the
-course, the clock, and every racer's position. Clients send intent and render
-state; they never decide where anybody is.
+A multiplayer 3D physics game that runs in the browser. **Core Rush**: one
+Core in the middle, whoever touches it carries it, and anyone can dash it
+away. Two minutes per match, and whoever held the Core longest wins. The
+server owns the course, the clock, and every player's position. Clients send
+intent and render state; they never decide where anybody is.
 
 Built for the [Monad Metropolis](https://monad.xyz/developers/hackathons/metropolis)
 hackathon.
@@ -30,7 +32,7 @@ the server did. That only holds if both sides simulate identically, which is a
 strong claim. So it is tested:
 
 ```
-npm run harness     # 32 checks
+npm run harness     # 82 checks
 ```
 
 Three tiers, in increasing order of what they prove:
@@ -41,10 +43,15 @@ Three tiers, in increasing order of what they prove:
    unacknowledged inputs must land exactly where the server did. The claim that
    makes rollback invisible.
 3. **Wire** — a real Colyseus server and a real SDK client in one process:
-   schema encode/decode, input transport, sanitize, authoritative step, clock,
-   goal, reset.
+   schema encode/decode, input transport, sanitize, authoritative step, match
+   phases, Core pickup and steal, results, reset.
 
-All three run against real Rapier WASM, not mocks.
+Alongside those, the pure rules in `server/rules.ts` (pickup, steal, ranking,
+clock) and the boost and jump pads are tested directly. The pad suite includes
+a negative control — a case built to fail if its own assertion ever goes
+toothless.
+
+All three tiers run against real Rapier WASM, not mocks.
 
 ---
 
@@ -55,6 +62,7 @@ All three run against real Rapier WASM, not mocks.
 | Rendering | Three.js WebGPU, WebGL2 fallback |
 | Physics | Rapier (`@dimforge/rapier3d-compat`) — WASM, same code client and server |
 | Networking | Colyseus 0.18 — schema state, input queue, prediction |
+| Audio | Web Audio API — 130 BPM techno generated in code, no assets |
 | Language | TypeScript, strict |
 | Build | Vite |
 
@@ -80,14 +88,44 @@ Then open `http://localhost:5173`. To play with someone else on your network,
 run `npx vite --host` (npm does not pass `--host` through) and open
 `http://<your-lan-ip>:5173`.
 
+`npm run dev` starts both in one terminal.
+
 ### Controls
 
 | | |
 |---|---|
 | Move | `WASD` / arrows |
-| Sprint | `Shift` |
 | Jump | `Space` |
+| Dash | `Shift` — 32 u/s for 0.15 s, 0.8 s cooldown. The only way to steal. |
 | Look | Mouse (click to capture, `Esc` to release) |
+| Mute | `M` |
+
+There is no separate sprint key. A map this size wants a dash, not a walk
+speed toggle, so `Shift` belongs to the dash.
+
+---
+
+## How to play
+
+| Phase | Length |
+|---|---|
+| `ready` | waits for someone to move |
+| `countdown` | 3 s |
+| `playing` | 120 s |
+| `results` | 10 s, then back to `ready` |
+
+- **Pickup** — the Core sits at the course's `coreSpawn`. Whoever is within
+  1.2 m of it takes it, no dash required.
+- **Carrying** — the carrier runs at 90% of normal speed and cannot dash.
+- **Stealing** — dash within 1.4 m of the carrier to take the Core. The new
+  carrier is immune for 1.5 s, and the robbed player stops accruing hold time.
+- **Dropping** — if the carrier falls off the map or leaves, the Core returns
+  to the centre.
+- **Winning** — most total hold time wins. A tie goes to whoever held it most
+  recently. Nobody wins a match in which nobody took the Core.
+- **Pads** — a boost pad only pushes you if you are already heading its way,
+  then holds 26 u/s for 0.6 s. A jump pad launches at 17 u/s, well above a
+  normal jump.
 
 ---
 
@@ -95,8 +133,8 @@ run `npx vite --host` (npm does not pass `--host` through) and open
 
 ```bash
 npm run typecheck    # tsc --noEmit
-npm run smoke        # 14 checks — routing, CORS, protocol
-npm run harness      # 32 checks — determinism, rollback, full race
+npm run smoke        # 15 checks — routing, CORS, protocol
+npm run harness      # 82 checks — determinism, rollback, rules, full match
 ```
 
 **Run the harness more than once.** An earlier version gave its end-to-end
@@ -156,13 +194,26 @@ always was.
 
 ## Course
 
-One course, `Lane 01`: eight solids, a start pad, and a finish gate. The server
-loads and validates it at boot, so a typo in the JSON fails loudly at startup
-rather than producing a collider in the wrong place.
+Three courses ship in `src/courses/`. The server loads and validates the one
+it is pointed at at boot, so a typo in the JSON fails loudly at startup rather
+than producing a collider in the wrong place.
 
-The server ships the course to clients as raw JSON in room state. That is not a
-convenience — if clients picked their own course, every player would be racing a
-different world while sharing a clock and a finish line, which is not a race.
+| File | Solids | |
+|---|---|---|
+| `takk-newyork.json` | 52 | **The default.** Manhattan's street grid over the void, Times Square with the Core, Central Park, four skyscrapers to run around, rooftops reached by pad and ramp, and the Brooklyn Bridge's two opposed boost lanes to Brooklyn. |
+| `takk-arena.json` | 16 | Compact Core Rush ring, one screen wide. |
+| `tekk-01.json` | 8 | The original race course. Kept for reference; the room runs Core Rush. |
+
+A course sets `ownCity: true` to hide the client's generic ground grid and
+far-field skyline, because its own architecture supplies them. Only New York
+does; the other two keep the towers.
+
+The default is a single constant, `DEFAULT_COURSE_PATH` in `server/course.ts`.
+There is no CLI or environment switch for it.
+
+The server ships the course to clients as raw JSON in room state. That is not
+a convenience — if clients picked their own course, every player would be
+raiding a different world while sharing a clock, which is not a match.
 
 ---
 
@@ -171,14 +222,21 @@ different world while sharing a clock and a finish line, which is not a race.
 ```
 src/
   shared/     the determinism contract — runs on BOTH sides
-    sim.ts      physics step, fall detection, respawn
+    sim.ts      physics step, dash, pads, fall detection, respawn
     state.ts    Colyseus schema definitions
     course.ts   course parsing and validation
-  net/        client-side networking, prediction wiring
-  render/     scene and camera rig
+    input.ts    the input struct both sides step with
+  net/        client networking, prediction wiring, remote racers
+  core/       frame loop and the stage — scene, lights, grid, far field, post
+  render/     scene, camera rig, racer, city, the Core, palette, skyline
   physics/    world setup, pose reading
-  game/       race rules — goal test, time formatting
-server/       authoritative room, course loading, bootstrap
+  course/     course meshes and neon edges
+  courses/    the three course JSON files
+  game/       time formatting
+  ui/         the HUD
+  audio/      generated techno
+  main.ts     boot and frame wiring
+server/       authoritative room, pure rules, course loading, bootstrap
 scripts/      harness, smoke test, build asset copy
 ```
 
@@ -194,10 +252,17 @@ The local racer renders from the reconciler's interpolated pose, never from
 
 ## Known limits
 
-- **The free tier is 0.1 CPU.** Single-player is comfortable; several racers in
+- **The free tier is 0.1 CPU.** Single-player is comfortable; several players in
   one room may rubber-band. Not yet measured under load.
 - **The server sleeps after 15 minutes idle** and takes about a minute to wake.
   First load after a quiet period looks like a hang.
+- **Match start teleports everyone.** At the end of the countdown the server
+  sends each player to their spawn, and the client renders that as a
+  correction.
+- **New York is large for two players.** Catching a carrier across the map is
+  hard. Not yet measured.
+- **No GPU shows the raw error.** A device without WebGPU or WebGL2 gets the
+  renderer's own message rather than a friendly one.
 - **One unresolved bug.** In an early session the server stopped responding to
   HTTP entirely while the process stayed alive at 0% CPU — no spin, just no
   answers, with sockets leaked in `CloseWait`. It has not reproduced since, so
