@@ -90,9 +90,22 @@ const HALF_HEIGHT = 0.9;
 const BURST_SECONDS = 0.7;
 /** Overlapping bursts are pooled; a steal chain faster than this recycles the oldest. */
 const BURST_SLOTS = 3;
-/** World-space radius the wave reaches. Big enough to be seen across an arena. */
-const BURST_RING_RADIUS = 7;
-const BURST_SHELL_RADIUS = 4.2;
+/**
+ * World-space radius the wave reaches. Big enough to read across the arena,
+ * but kept well inside the follow camera's distance (8 units): the first
+ * version reached 7, swept right past the lens on every steal you were part
+ * of, and drew a white band across the whole screen.
+ */
+const BURST_RING_RADIUS = 4.5;
+const BURST_SHELL_RADIUS = 3;
+
+/**
+ * Every additive Core effect fades out as it nears the camera, from fully lit
+ * at NEAR_FADE_END to gone at NEAR_FADE_START. Additive light this close to the
+ * lens is not an effect, it is the screen going white.
+ */
+const NEAR_FADE_START = 2;
+const NEAR_FADE_END = 6;
 
 /** Spin in rad/s: quick and tight when carried, slow and grand when sitting free. */
 const SPIN_CARRIED = 1.7;
@@ -277,6 +290,9 @@ export function createCoreVisual(scene: THREE.Scene): CoreVisual {
   const body = new THREE.Group();
   body.add(crystal, edges, nucleus);
 
+  // Shared by every additive layer: see NEAR_FADE_START.
+  const nearFade = smoothstep(NEAR_FADE_START, NEAR_FADE_END, length(sub(positionWorld, cameraPosition)));
+
   // Halo: a camera-facing sprite with a hot core falloff and a faint wide skirt.
   // A sprite (not a mesh) so it always faces the camera without the API needing one.
   const haloR = mul(length(sub(uv(), vec2(0.5, 0.5))), 2);
@@ -289,7 +305,10 @@ export function createCoreVisual(scene: THREE.Scene): CoreVisual {
   // The halo swells on every kick drum (render/fx.ts), so the prize itself
   // keeps time with the music.
   const haloBeat = add(0.8, mul(fxBeat, 0.6));
-  haloMat.colorNode = vec4(mul(haloTint, mul(haloFalloff, mul(mul(flicker, haloBeat), gain * 0.55))), 1);
+  haloMat.colorNode = vec4(
+    mul(haloTint, mul(mul(haloFalloff, nearFade), mul(mul(flicker, haloBeat), gain * 0.4))),
+    1,
+  );
   applyCommon(haloMat);
   const halo = new THREE.Sprite(haloMat);
   halo.frustumCulled = false;
@@ -357,7 +376,7 @@ export function createCoreVisual(scene: THREE.Scene): CoreVisual {
 
     const ringMat = own(new THREE.MeshBasicNodeMaterial());
     ringMat.side = THREE.DoubleSide;
-    ringMat.colorNode = vec4(mul(waveTint, mul(fade, gain * 2.2)), 1);
+    ringMat.colorNode = vec4(mul(waveTint, mul(mul(fade, nearFade), gain * 1.4)), 1);
     applyCommon(ringMat);
 
     // Shell is a fresnel skin: bright at the silhouette, see-through face-on, so
@@ -365,7 +384,9 @@ export function createCoreVisual(scene: THREE.Scene): CoreVisual {
     const shellMat = own(new THREE.MeshBasicNodeMaterial());
     shellMat.side = THREE.DoubleSide;
     shellMat.colorNode = vec4(
-      mul(waveTint, mul(mul(add(0.08, fresnelTerm(2.5)), fade), gain * 1.3)),
+      // Almost no face-on fill: the shell is drawn right over the racer at the
+      // moment of the steal, and a filled bubble hid exactly who took it.
+      mul(waveTint, mul(mul(mul(add(0.015, fresnelTerm(3)), fade), nearFade), gain * 0.55)),
       1,
     );
     applyCommon(shellMat);
@@ -418,7 +439,9 @@ export function createCoreVisual(scene: THREE.Scene): CoreVisual {
     nucleus.scale.setScalar(1 + 0.15 * Math.sin(now * 7));
 
     halo.position.set(cx, cy + bob, cz);
-    halo.scale.setScalar((3.2 + 3.2 * free) * (1 + 0.06 * Math.sin(now * 2.1)));
+    // Kept modest: a sprite this bright, blown up by bloom, covered half the
+    // screen at 6.4 units wide whenever you walked up to a free Core.
+    halo.scale.setScalar((2.2 + 2.0 * free) * (1 + 0.06 * Math.sin(now * 2.1)));
 
     const showFree = free > 0.01;
     beam.visible = showFree;
