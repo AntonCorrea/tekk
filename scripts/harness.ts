@@ -23,20 +23,22 @@
  */
 import { Client } from '@colyseus/sdk';
 
-import { loadCourse } from '../server/course.ts';
+import { DEFAULT_COURSE_PATH, loadCourse } from '../server/course.ts';
+import { dirname, join } from 'node:path';
 import { createPhysicsWorld, initPhysics } from '../src/physics/world.ts';
 import { adoptTruth } from '../src/physics/player.ts';
 import {
   applyInput,
   buildCourseColliders,
   createSimBody,
+  moveSimBody,
   respawnFeet,
   type SimBody,
 } from '../src/shared/sim.ts';
 import { MoveInput } from '../src/shared/input.ts';
 import type { MoveInputData } from '../src/shared/input.ts';
 import { PlayerState } from '../src/shared/state.ts';
-import { CORE, DASH, FIXED_TIMESTEP, MATCH, MOVE, PLAYER } from '../src/constants.ts';
+import { BOOST, CORE, DASH, FIXED_TIMESTEP, MATCH, MOVE, PLAYER } from '../src/constants.ts';
 import {
   advancePhase,
   chooseStealer,
@@ -141,6 +143,7 @@ const snap = (sim: SimBody) => {
     speed: sim.horizontalSpeed,
     dashTicks: sim.dashTicks,
     dashCooldownTicks: sim.dashCooldownTicks,
+    boostTicks: sim.boostTicks,
   };
 };
 type Snap = ReturnType<typeof snap>;
@@ -150,7 +153,8 @@ function identical(a: Snap, b: Snap): boolean {
     a.x === b.x && a.y === b.y && a.z === b.z &&
     a.vx === b.vx && a.vy === b.vy && a.vz === b.vz &&
     a.grounded === b.grounded && a.speed === b.speed &&
-    a.dashTicks === b.dashTicks && a.dashCooldownTicks === b.dashCooldownTicks
+    a.dashTicks === b.dashTicks && a.dashCooldownTicks === b.dashCooldownTicks &&
+    a.boostTicks === b.boostTicks
   );
 }
 
@@ -384,6 +388,7 @@ function truthOf(s: Snap) {
   truth.speed = s.speed;
   truth.dashTicks = s.dashTicks;
   truth.dashCooldownTicks = s.dashCooldownTicks;
+  truth.boostTicks = s.boostTicks;
   return truth;
 }
 
@@ -478,18 +483,49 @@ async function testRollback(course: Course) {
     );
   }
 
-  // 3. Mid-dash INTO A WALL. The t 102 momentum dash drives +X into the start
-  //    pad's right rail. This is the case that caught `adoptTruth` moving the
-  //    body but not its collider: the first replayed sweep ran from the
+  // 3. Mid-dash INTO A WALL. This is the case that caught `adoptTruth` moving
+  //    the body but not its collider: the first replayed sweep ran from the
   //    client's mispredicted spot, missed the rail, and the client finished
   //    inside it. Kept as the regression guard for that.
+  //
+  //    An explicit scenario, not a moment in `scriptAt`: the first version
+  //    relied on the scripted t 102 dash happening to reach the start pad's
+  //    right rail, and after the speed retune it silently stopped reaching it
+  //    -- the check still passed while testing an open floor. So the wall hit
+  //    is now asserted, not assumed.
   {
-    const r = rollback(course, history, 105, 20, noDash);
+    const RAIL_STOP = 6 - PLAYER.radius; // rail inner face x=6, minus the capsule
+    const feet: [number, number, number] = [1, 0.05, 9];
+    const intoRail = (step: number) => input(1, 0, step >= 3 && step <= 4);
+    const runFrom = (script: (step: number) => MoveInputData, steps: number) => {
+      const w = makeWorld(course);
+      moveSimBody(w.sim, feet[0], feet[1], feet[2]);
+      const log: Snap[] = [];
+      for (let step = 0; step < steps; step++) {
+        applyInput(w.sim, script(step), FIXED_TIMESTEP);
+        w.world.step();
+        log.push(snap(w.sim));
+      }
+      return { w, log };
+    };
+    const server = runFrom(intoRail, 30).log;
+    const ack = server.findIndex((s) => s.dashTicks > 0 && s.dashTicks < DASH.durationTicks - 2);
+    const client = runFrom(() => input(0, 0), ack + 1).w;
+    adoptTruth(client.sim, truthOf(server[ack]!), false);
+    for (let step = ack + 1; step < 30; step++) {
+      applyInput(client.sim, intoRail(step), FIXED_TIMESTEP);
+      client.world.step();
+    }
+    const end = server[29]!;
+    check(
+      'the wall scenario really ends against the rail',
+      Math.abs(end.x - RAIL_STOP) < 0.05,
+      `server centre x=${end.x.toFixed(3)}, rail stops it at ${RAIL_STOP.toFixed(2)}`,
+    );
     check(
       'mid-dash rollback against a wall lands on the server',
-      identical(r.client, r.server),
-      `step 125: x=${r.client.x.toFixed(6)} vs ${r.server.x.toFixed(6)} ` +
-        `(rail stops the centre at x=5.6)`,
+      ack > 0 && identical(snap(client.sim), end),
+      `ack at step ${ack}; x=${snap(client.sim).x.toFixed(6)} vs ${end.x.toFixed(6)}`,
     );
   }
 
@@ -510,6 +546,96 @@ async function testRollback(course: Course) {
         `z=${r.client.z.toFixed(6)} vs ${r.server.z.toFixed(6)}`,
     );
   }
+}
+
+// ===================================================================== P: pads
+
+/**
+ * Boost and jump pads, on the production map. Pads are resolved inside the
+ * shared step, so they carry the same burden as the dash: bit-identical on both
+ * sides, and a rollback that lands mid-boost must reproduce the server.
+ */
+function testPads(course: Course) {
+  console.log(`\n=== P. pads (${course.id}) ===`);
+  const boostPad = course.pads.find((p) => p.kind === 'boost' && p.direction?.[1] === -1);
+  const jumpPad = course.pads.find((p) => p.kind === 'jump');
+  if (!boostPad || !jumpPad) {
+    skip('pads', `${course.id} lacks a north boost pad or a jump pad`);
+    return;
+  }
+
+  // A world whose racer starts at `feet`, then runs `script`.
+  const run = (feet: [number, number, number], steps: number, script: (step: number) => MoveInputData) => {
+    const w = makeWorld(course);
+    moveSimBody(w.sim, feet[0], feet[1], feet[2]);
+    const log: Snap[] = [];
+    for (let step = 0; step < steps; step++) {
+      applyInput(w.sim, script(step), FIXED_TIMESTEP);
+      w.world.step();
+      log.push(snap(w.sim));
+    }
+    return log;
+  };
+
+  // Run north up the lane, onto the outward boost, then cut across.
+  const boostStart: [number, number, number] = [boostPad.position[0], 0.05, boostPad.position[2] + 6];
+  const boostScript = (step: number) => (step < 45 ? input(0, -1) : input(1, 0));
+  const a = run(boostStart, 90, boostScript);
+  const b = run(boostStart, 90, boostScript);
+  const diverged = a.findIndex((s, i) => !identical(s, b[i]!));
+  const peakBoost = Math.max(...a.map((s) => s.boostTicks));
+  const peakSpeed = Math.max(...a.map((s) => s.speed));
+  check('a boost pad run is bit-identical across two worlds', diverged === -1,
+    diverged === -1 ? '90 steps identical' : `diverged at step ${diverged}`);
+  // The counter is refilled and then ticks down at the end of the same step,
+  // so the published peak is one under the constant.
+  check('the boost pad really boosted', peakBoost === BOOST.ticks - 1 && peakSpeed > MOVE.runSpeed + 5,
+    `peak boostTicks=${peakBoost}, peak speed=${peakSpeed.toFixed(1)}`);
+
+  // Rollback mid-boost, after the pad: the client predicted standing still.
+  const ack = a.findIndex((s, i) => i > 0 && s.boostTicks > 0 && s.boostTicks < BOOST.ticks - 3);
+  const HORIZON = 20;
+  const replay = (forget: boolean) => {
+    const client = makeWorld(course);
+    moveSimBody(client.sim, boostStart[0], boostStart[1], boostStart[2]);
+    for (let step = 0; step <= ack; step++) {
+      applyInput(client.sim, input(0, 0), FIXED_TIMESTEP);
+      client.world.step();
+    }
+    adoptTruth(client.sim, truthOf(a[ack]!), false);
+    if (forget) client.sim.boostTicks = 0;
+    for (let step = ack + 1; step <= ack + HORIZON; step++) {
+      applyInput(client.sim, boostScript(step), FIXED_TIMESTEP);
+      client.world.step();
+    }
+    return snap(client.sim);
+  };
+  check('mid-boost rollback lands on the server', ack > 0 && identical(replay(false), a[ack + HORIZON]!),
+    `ack at step ${ack}, truth boostTicks=${a[ack]?.boostTicks}`);
+  {
+    const lost = replay(true);
+    const server = a[ack + HORIZON]!;
+    check('without boostTicks the same replay lands elsewhere (negative control)',
+      lost.x !== server.x || lost.z !== server.z,
+      `x=${lost.x.toFixed(4)} z=${lost.z.toFixed(4)} vs server x=${server.x.toFixed(4)} z=${server.z.toFixed(4)}`);
+  }
+
+  // Running AGAINST a boost does nothing: it used to throw you back, forever.
+  const against = run([boostPad.position[0], 0.05, boostPad.position[2] - 5], 50, () => input(0, 1));
+  check('running against a boost pad is not boosted',
+    Math.max(...against.map((s) => s.boostTicks)) === 0 && against[49]!.z > boostPad.position[2] + 2,
+    `ended z=${against[49]!.z.toFixed(2)}, past the pad at ${boostPad.position[2]}`);
+
+  // Jump pad: a racer running across it is launched well above a normal jump.
+  const jumpRun = run([jumpPad.position[0] - 3.5, 0.05, jumpPad.position[2]], 60, () => input(1, 0));
+  const startY = jumpRun[0]!.y;
+  const peakY = Math.max(...jumpRun.map((s) => s.y));
+  const jumpApex = (MOVE.jumpSpeed * MOVE.jumpSpeed) / 80;
+  check('a jump pad launches far above a normal jump', peakY - startY > jumpApex * 1.8,
+    `rose ${(peakY - startY).toFixed(2)} vs a normal jump's ${jumpApex.toFixed(2)}`);
+  const jumpAgain = run([jumpPad.position[0] - 3.5, 0.05, jumpPad.position[2]], 60, () => input(1, 0));
+  check('a jump pad run is bit-identical across two worlds',
+    jumpRun.every((s, i) => identical(s, jumpAgain[i]!)));
 }
 
 // ==================================================================== C: rules
@@ -666,7 +792,13 @@ async function testWire(course: Course) {
   const { createGameServer } = await import('../server/index.ts');
 
   const PORT = 25670 + Math.floor(Math.random() * 400);
-  const { gameServer } = createGameServer({ matchTimings: WIRE_TIMINGS });
+  // Pinned to Arena 01: these checks walk a straight line from the spawn to
+  // the Core, which is that course's layout. The production map is covered by
+  // the smoke test's production-room check.
+  const { gameServer } = createGameServer({
+    matchTimings: WIRE_TIMINGS,
+    coursePath: join(dirname(DEFAULT_COURSE_PATH), 'takk-arena.json'),
+  });
   await gameServer.listen(PORT, '127.0.0.1');
 
   check('server boots and listens', true, `port ${PORT}`);
@@ -685,8 +817,15 @@ async function testWire(course: Course) {
   }
 
   const client = new Client(`ws://localhost:${PORT}`);
-  // A client-supplied `timings` must be ignored: define-time options win.
-  const roomA = await client.joinOrCreate('race', { name: 'HarnessOtter', timings: { durationMs: 1 } });
+  // Client-supplied `timings` and `coursePath` must both be ignored: define-time
+  // options win. A honoured `coursePath` would be a client choosing which file
+  // on the server's disk to read -- here a path that does not exist, so if it
+  // were honoured the room would fail to create and this join would throw.
+  const roomA = await client.joinOrCreate('race', {
+    name: 'HarnessOtter',
+    timings: { durationMs: 1 },
+    coursePath: '../../not-a-course.json',
+  });
   const roomB = await client.joinOrCreate('race', { name: 'HarnessLynx' });
   check('two clients join the same room',
     !!roomA.sessionId && !!roomB.sessionId && roomA.roomId === roomB.roomId,
@@ -955,18 +1094,25 @@ function sleep(ms: number): Promise<void> {
 
 async function main(): Promise<void> {
   await initPhysics();
+  // The production map, for the pads and the wire suite.
   const course = loadCourse();
+  // Suites A and B were written against the original lane -- "the open lane",
+  // "the start pad's right rail" -- so they stay pinned to it rather than
+  // silently testing nothing when the production map changes.
+  const lane = loadCourse(join(dirname(DEFAULT_COURSE_PATH), 'tekk-01.json'));
 
   console.log(`\nTEKK Day 3 harness - course "${course.id}" (${course.name}), ` +
     `${course.solids.length} solids, step ${(FIXED_TIMESTEP * 1000).toFixed(2)}ms`);
 
-  await testDeterminism(course);
-  await testRollback(course);
+  await testDeterminism(lane);
+  await testRollback(lane);
+  testPads(course);
   // Guarded so a crash in the wire suite still prints the tally for A and B,
   // which do not depend on the server room at all.
   testRules(course);
   try {
-    await testWire(course);
+    // The wire suite runs against Arena 01 (see createGameServer in testWire).
+    await testWire(loadCourse(join(dirname(DEFAULT_COURSE_PATH), 'takk-arena.json')));
   } catch (err) {
     check('wire suite ran to completion', false, `crashed: ${String(err).slice(0, 160)}`);
   }

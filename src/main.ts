@@ -66,7 +66,9 @@ async function boot(): Promise<void> {
   const session = await connectSession(world, { endpoint: resolveEndpoint() });
   const { course, sim } = session;
 
-  buildCourse(stage.scene, course);
+  const courseHandle = buildCourse(stage.scene, course);
+  // A course with its own city drops the generic grid and far-field slabs.
+  if (course.ownCity) stage.useOwnCity();
   const visuals = buildScene(stage);
   const remotes = createRacerVisuals(stage.scene, session);
   const hud = createHud(container);
@@ -185,6 +187,7 @@ async function boot(): Promise<void> {
     visuals.sync(localPose, delta);
 
     remotes.sync(delta);
+    courseHandle.update(delta);
 
     // --- the Core ------------------------------------------------------
     // Where it is drawn depends on who holds it, so it never visibly lags its

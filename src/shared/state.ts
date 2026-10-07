@@ -42,6 +42,11 @@ export const PlayerState = schema(
     dashTicks: t.number().default(0),
     /** Fixed ticks until the next dash may start. */
     dashCooldownTicks: t.number().default(0),
+    /**
+     * Fixed ticks of boosted top speed left after a boost pad. Synced for the
+     * same reason as the dash counters: replay must know a boost is running.
+     */
+    boostTicks: t.number().default(0),
 
     /** Total time this racer has held the Core this match, in ms. The score. */
     holdMs: t.number().default(0),

@@ -24,8 +24,8 @@ import type {
   KinematicCharacterController,
 } from '@dimforge/rapier3d-compat';
 import { ColliderDesc, Cuboid, RigidBodyDesc } from '@dimforge/rapier3d-compat';
-import { CORE, DASH, GRAVITY, MOVE, PHYSICS, PLAYER, WORLD } from '../constants.ts';
-import type { Course } from './course.ts';
+import { BOOST, CORE, DASH, GRAVITY, JUMP_PAD, MOVE, PHYSICS, PLAYER, WORLD } from '../constants.ts';
+import type { Course, PadKind, Vec3 } from './course.ts';
 import type { MoveInputData } from './input.ts';
 
 /**
@@ -115,6 +115,23 @@ export interface SimBody {
    * tick of every dash, the one most likely to land on the carrier.
    */
   dashedThisStep: boolean;
+  /**
+   * Fixed ticks of boosted top speed left after touching a boost pad. Synced
+   * and restored like the dash counters.
+   */
+  boostTicks: number;
+  /** The course's pads, pre-resolved to world AABBs once at creation. */
+  readonly pads: readonly SimPad[];
+}
+
+/** A pad as the step uses it: a world-space box plus its effect. */
+export interface SimPad {
+  readonly kind: PadKind;
+  readonly min: Vec3Obj;
+  readonly max: Vec3Obj;
+  /** Boost direction, unit length; zero for jump pads. */
+  readonly dirX: number;
+  readonly dirZ: number;
 }
 
 /**
@@ -182,6 +199,22 @@ export function createSimBody(world: World, course: Course, stepSeconds: number)
     dashCooldownTicks: 0,
     carrying: false,
     dashedThisStep: false,
+    boostTicks: 0,
+    pads: course.pads.map((pad) => ({
+      kind: pad.kind,
+      min: {
+        x: pad.position[0] - pad.size[0] / 2,
+        y: pad.position[1] - pad.size[1] / 2,
+        z: pad.position[2] - pad.size[2] / 2,
+      },
+      max: {
+        x: pad.position[0] + pad.size[0] / 2,
+        y: pad.position[1] + pad.size[1] / 2,
+        z: pad.position[2] + pad.size[2] / 2,
+      },
+      dirX: pad.direction?.[0] ?? 0,
+      dirZ: pad.direction?.[1] ?? 0,
+    })),
   };
 }
 
@@ -230,6 +263,13 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
     sim.justRespawned = true;
   }
 
+  // --- pads ----------------------------------------------------------------
+  // Tested against the position left by the previous step, like the fall
+  // check above, and for the same reason: both sides see the same overlap on
+  // the same tick. The capsule is treated as its AABB, which is exact enough
+  // for flat trigger slabs lying on a surface.
+  applyPads(sim);
+
   // --- horizontal intent -------------------------------------------------
   // `moveZ` is already signed forward-positive-negative (W = -Z), so it maps
   // straight onto the world axis.
@@ -252,7 +292,12 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
   sim.dashedThisStep = dashing;
 
   if (!dashing) {
-    const targetSpeed = sim.carrying ? MOVE.runSpeed * CORE.carrierSpeedFactor : MOVE.runSpeed;
+    // A boost raises the top speed for a moment, and while it lasts letting
+    // go of the stick coasts instead of braking: a boost pad should carry you
+    // even if you are not touching anything.
+    const boosted = sim.boostTicks > 0;
+    const topSpeed = boosted ? BOOST.speed : MOVE.runSpeed;
+    const targetSpeed = sim.carrying ? topSpeed * CORE.carrierSpeedFactor : topSpeed;
     const control = sim.grounded ? 1 : MOVE.airControl;
     const accel = MOVE.accel * control;
     const decel = MOVE.friction * (sim.grounded ? 1 : MOVE.airControl);
@@ -260,6 +305,8 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
     if (hasWish) {
       velocity.x = approach(velocity.x, wishX * targetSpeed, accel * dt);
       velocity.z = approach(velocity.z, wishZ * targetSpeed, accel * dt);
+    } else if (boosted) {
+      // Coast: keep the boost's velocity.
     } else {
       velocity.x = approach(velocity.x, 0, decel * dt);
       velocity.z = approach(velocity.z, 0, decel * dt);
@@ -319,6 +366,7 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
   } else if (sim.dashCooldownTicks > 0) {
     sim.dashCooldownTicks -= 1;
   }
+  if (sim.boostTicks > 0) sim.boostTicks -= 1;
 }
 
 /**
@@ -370,6 +418,7 @@ function tryStartDash(
 export function moveSimBody(sim: SimBody, feetX: number, feetY: number, feetZ: number): void {
   sim.dashTicks = 0;
   sim.dashCooldownTicks = 0;
+  sim.boostTicks = 0;
   sim.velocity.x = 0;
   sim.velocity.y = 0;
   sim.velocity.z = 0;
@@ -397,6 +446,66 @@ export function moveSimBody(sim: SimBody, feetX: number, feetY: number, feetZ: n
 export function teleportBody(sim: SimBody, centre: Vec3Obj): void {
   sim.body.setTranslation(centre, true);
   sim.collider.setTranslation(centre);
+}
+
+/**
+ * Apply every pad the body overlaps this step.
+ *
+ * Boost: if the racer is already moving the pad's way (any positive component
+ * along it), horizontal velocity snaps to the pad's direction at boost speed
+ * and the boost timer refills, every tick the racer is on it -- so a strip of
+ * boost pads is a conveyor that also straightens you out. Jump: a grounded racer is
+ * launched up; the next tick it is airborne, so it cannot re-trigger mid-climb.
+ */
+function applyPads(sim: SimBody): void {
+  if (sim.pads.length === 0) return;
+  const p = sim.body.translation();
+  const r = PLAYER.radius;
+  const h = PLAYER.halfHeight + PLAYER.radius;
+
+  for (const pad of sim.pads) {
+    if (
+      p.x + r <= pad.min.x || p.x - r >= pad.max.x ||
+      p.y + h <= pad.min.y || p.y - h >= pad.max.y ||
+      p.z + r <= pad.min.z || p.z - r >= pad.max.z
+    ) {
+      continue;
+    }
+    if (pad.kind === 'boost') {
+      // Directional: a boost only grabs a racer already moving its way. Run
+      // across it or against it and nothing happens. Without this, an outward
+      // boost on a lane you must run IN along was a trap: it threw you back,
+      // you ran at it again, it threw you back again.
+      if (sim.velocity.x * pad.dirX + sim.velocity.z * pad.dirZ <= 0) continue;
+      sim.velocity.x = pad.dirX * BOOST.speed;
+      sim.velocity.z = pad.dirZ * BOOST.speed;
+      sim.boostTicks = BOOST.ticks;
+    } else if (sim.grounded) {
+      sim.velocity.y = JUMP_PAD.speed;
+      sim.grounded = false;
+    }
+  }
+}
+
+/**
+ * Euler degrees (X, then Y, then Z) to a quaternion -- the same convention as
+ * Three's default Euler order, so the collider and the mesh agree. Written out
+ * here because this module may not import Three.
+ */
+export function eulerDegreesToQuat(rotation: Vec3): { x: number; y: number; z: number; w: number } {
+  const half = Math.PI / 360;
+  const c1 = Math.cos(rotation[0] * half);
+  const c2 = Math.cos(rotation[1] * half);
+  const c3 = Math.cos(rotation[2] * half);
+  const s1 = Math.sin(rotation[0] * half);
+  const s2 = Math.sin(rotation[1] * half);
+  const s3 = Math.sin(rotation[2] * half);
+  return {
+    x: s1 * c2 * c3 + c1 * s2 * s3,
+    y: c1 * s2 * c3 - s1 * c2 * s3,
+    z: c1 * c2 * s3 + s1 * s2 * c3,
+    w: c1 * c2 * c3 - s1 * s2 * s3,
+  };
 }
 
 /** Move `current` toward `target` by at most `maxDelta`. */
@@ -432,7 +541,8 @@ export function buildCourseColliders(world: World, course: Course): RigidBody {
         .setTranslation(px, py, pz)
         .setFriction(WORLD.friction)
         .setRestitution(WORLD.restitution)
-        .setCollisionGroups(COURSE_GROUPS),
+        .setCollisionGroups(COURSE_GROUPS)
+        .setRotation(eulerDegreesToQuat(solid.rotation ?? [0, 0, 0])),
       staticBody,
     );
   }
@@ -460,6 +570,9 @@ export function probeGround(world: World, x: number, z: number, fromY: number): 
     // Only boxes exist in the course format today. If a second primitive is
     // added this must grow a branch rather than silently ignoring it.
     if (!(collider.shape instanceof Cuboid)) return;
+    // Ramps are rotated, and the containment test below is axis-aligned. A
+    // respawn point is never on a ramp, so they are simply not candidates.
+    if (Math.abs(collider.rotation().w) < 0.999999) return;
     const half = collider.shape.halfExtents;
 
     const t = collider.translation();

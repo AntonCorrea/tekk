@@ -13,6 +13,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { Server } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
+import { DEFAULT_COURSE_PATH } from './course.ts';
 import { RaceRoom } from './room.ts';
 import { DEFAULT_TIMINGS, type MatchTimings } from './rules.ts';
 
@@ -22,6 +23,11 @@ export interface GameServerOptions {
    * constants; the harness shortens them so a full match fits in a test run.
    */
   matchTimings?: Partial<MatchTimings>;
+  /**
+   * Course file. Production never passes this and gets the default course; the
+   * harness pins its wire tests to a course whose layout they were written for.
+   */
+  coursePath?: string;
 }
 
 /**
@@ -64,8 +70,13 @@ export function createGameServer(options: GameServerOptions = {}) {
   // merges define-time options over the client's create options, so supplying
   // them here is what stops a client from creating a room with its own
   // `timings` and a one-second match.
+  //
+  // `coursePath` too, and ALWAYS as a concrete string: it is a path on this
+  // server's disk, so a client-supplied value must never survive the merge.
+  // Leaving the key out would let a client's own `coursePath` through.
   gameServer.define('race', RaceRoom, {
     timings: { ...DEFAULT_TIMINGS, ...options.matchTimings },
+    coursePath: options.coursePath ?? DEFAULT_COURSE_PATH,
   });
 
   return { gameServer, httpServer };

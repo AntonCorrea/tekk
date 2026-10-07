@@ -15,6 +15,14 @@ export interface Stage {
   readonly renderer: THREE.WebGPURenderer;
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
+  /**
+   * Strip the generic set dressing for a course that brings its own city:
+   * hides the ground grid (which sits at y~0, right under every void, so a
+   * fall looked like dropping through a floor) and the far-field platforms
+   * (placed around the original lane, and liable to sit inside a bigger map).
+   * The course's own decor supplies the skyline instead.
+   */
+  useOwnCity(): void;
   render(): void;
   dispose(): void;
 }
@@ -108,6 +116,12 @@ export async function createStage(container: HTMLElement): Promise<Stage> {
     renderer,
     scene,
     camera,
+    useOwnCity: () => {
+      grid.visible = false;
+      // The whole far field: its pastel horizon towers read as flat columns
+      // next to a course's own lit skyline.
+      farField.group.visible = false;
+    },
     render: () => post.pipeline.render(),
     dispose: () => {
       globalThis.removeEventListener('resize', onResize);

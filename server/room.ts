@@ -64,6 +64,8 @@ export interface RaceJoinOptions {
  */
 export interface RaceCreateOptions {
   timings?: Partial<MatchTimings>;
+  /** Always set at define time (server/index.ts); never trusted from a client. */
+  coursePath?: string;
 }
 
 /**
@@ -117,7 +119,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
   private readonly racers = new Map<string, SimBody>();
 
   override async onCreate(options?: RaceCreateOptions): Promise<void> {
-    this.course = loadCourse();
+    this.course = loadCourse(options?.coursePath);
 
     // Fail at creation, loudly, rather than run a match with no Core. The
     // course format allows a missing coreSpawn so race courses still parse;
@@ -444,6 +446,7 @@ function publishBody(state: PlayerStateInstance, sim: SimBody): void {
   state.speed = sim.horizontalSpeed;
   state.dashTicks = sim.dashTicks;
   state.dashCooldownTicks = sim.dashCooldownTicks;
+  state.boostTicks = sim.boostTicks;
 }
 
 function clearScore(state: PlayerStateInstance): void {

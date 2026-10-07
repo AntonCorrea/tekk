@@ -44,6 +44,7 @@ export function adoptTruth(sim: SimBody, truth: PlayerStateInstance, carrying: b
   // started. They are integers, so the restore is exact.
   sim.dashTicks = truth.dashTicks;
   sim.dashCooldownTicks = truth.dashCooldownTicks;
+  sim.boostTicks = truth.boostTicks;
 
   // Not a PlayerState field -- the server keeps one `carrierId` on GameState --
   // so the caller resolves it and passes it in. Replay then runs the carrier's

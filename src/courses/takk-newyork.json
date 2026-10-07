@@ -1,0 +1,3696 @@
+{
+ "id": "takk-newyork",
+ "name": "New York",
+ "spawn": [
+  0,
+  1,
+  30
+ ],
+ "killY": -8,
+ "coreSpawn": [
+  0,
+  1.5,
+  0
+ ],
+ "ownCity": true,
+ "solids": [
+  {
+   "id": "avenue-0",
+   "kind": "box",
+   "position": [
+    -30,
+    -0.5,
+    0
+   ],
+   "size": [
+    6,
+    1,
+    66
+   ],
+   "color": "#4eabe8"
+  },
+  {
+   "id": "avenue-1",
+   "kind": "box",
+   "position": [
+    -10,
+    -0.5,
+    0
+   ],
+   "size": [
+    6,
+    1,
+    66
+   ],
+   "color": "#4eabe8"
+  },
+  {
+   "id": "avenue-2",
+   "kind": "box",
+   "position": [
+    10,
+    -0.5,
+    0
+   ],
+   "size": [
+    6,
+    1,
+    66
+   ],
+   "color": "#4eabe8"
+  },
+  {
+   "id": "avenue-3",
+   "kind": "box",
+   "position": [
+    30,
+    -0.5,
+    0
+   ],
+   "size": [
+    6,
+    1,
+    66
+   ],
+   "color": "#4eabe8"
+  },
+  {
+   "id": "street-0",
+   "kind": "box",
+   "position": [
+    0,
+    -0.5,
+    -30
+   ],
+   "size": [
+    66,
+    1,
+    6
+   ],
+   "color": "#4eabe8"
+  },
+  {
+   "id": "street-1",
+   "kind": "box",
+   "position": [
+    0,
+    -0.5,
+    -10
+   ],
+   "size": [
+    66,
+    1,
+    6
+   ],
+   "color": "#4eabe8"
+  },
+  {
+   "id": "street-2",
+   "kind": "box",
+   "position": [
+    0,
+    -0.5,
+    10
+   ],
+   "size": [
+    66,
+    1,
+    6
+   ],
+   "color": "#4eabe8"
+  },
+  {
+   "id": "street-3",
+   "kind": "box",
+   "position": [
+    0,
+    -0.5,
+    30
+   ],
+   "size": [
+    66,
+    1,
+    6
+   ],
+   "color": "#4eabe8"
+  },
+  {
+   "id": "times-square",
+   "kind": "box",
+   "position": [
+    0,
+    -0.5,
+    0
+   ],
+   "size": [
+    14,
+    1,
+    14
+   ],
+   "color": "#c69dfa"
+  },
+  {
+   "id": "pedestal",
+   "kind": "box",
+   "position": [
+    0,
+    0.175,
+    0
+   ],
+   "size": [
+    3,
+    0.35,
+    3
+   ],
+   "color": "#f7aee0"
+  },
+  {
+   "id": "ball-mast",
+   "kind": "box",
+   "position": [
+    0,
+    6,
+    -5.6
+   ],
+   "size": [
+    0.5,
+    12,
+    0.5
+   ],
+   "color": "#f7aee0"
+  },
+  {
+   "id": "central-park",
+   "kind": "box",
+   "position": [
+    0,
+    -0.5,
+    -20
+   ],
+   "size": [
+    14,
+    1,
+    14
+   ],
+   "color": "#2effa8"
+  },
+  {
+   "id": "trunk-0",
+   "kind": "box",
+   "position": [
+    -4.5,
+    1.2,
+    -24.5
+   ],
+   "size": [
+    0.5,
+    2.4,
+    0.5
+   ],
+   "color": "#2effa8"
+  },
+  {
+   "id": "trunk-1",
+   "kind": "box",
+   "position": [
+    4,
+    1.2,
+    -15.5
+   ],
+   "size": [
+    0.5,
+    2.4,
+    0.5
+   ],
+   "color": "#2effa8"
+  },
+  {
+   "id": "trunk-2",
+   "kind": "box",
+   "position": [
+    -4,
+    1.2,
+    -15.5
+   ],
+   "size": [
+    0.5,
+    2.4,
+    0.5
+   ],
+   "color": "#2effa8"
+  },
+  {
+   "id": "trunk-3",
+   "kind": "box",
+   "position": [
+    4.5,
+    1.2,
+    -25
+   ],
+   "size": [
+    0.5,
+    2.4,
+    0.5
+   ],
+   "color": "#2effa8"
+  },
+  {
+   "id": "trunk-4",
+   "kind": "box",
+   "position": [
+    -1,
+    1.2,
+    -21.5
+   ],
+   "size": [
+    0.5,
+    2.4,
+    0.5
+   ],
+   "color": "#2effa8"
+  },
+  {
+   "id": "trunk-5",
+   "kind": "box",
+   "position": [
+    5,
+    1.2,
+    -20.5
+   ],
+   "size": [
+    0.5,
+    2.4,
+    0.5
+   ],
+   "color": "#2effa8"
+  },
+  {
+   "id": "empire",
+   "kind": "box",
+   "position": [
+    20,
+    4.0,
+    -20
+   ],
+   "size": [
+    11,
+    68,
+    11
+   ],
+   "color": "#b35bf7",
+   "style": "building"
+  },
+  {
+   "id": "one-wtc",
+   "kind": "box",
+   "position": [
+    -20,
+    11.0,
+    -20
+   ],
+   "size": [
+    12,
+    82,
+    12
+   ],
+   "color": "#b35bf7",
+   "style": "building"
+  },
+  {
+   "id": "chrysler",
+   "kind": "box",
+   "position": [
+    20,
+    2.0,
+    20
+   ],
+   "size": [
+    10,
+    64,
+    10
+   ],
+   "color": "#b35bf7",
+   "style": "building"
+  },
+  {
+   "id": "flatiron",
+   "kind": "box",
+   "position": [
+    -20,
+    -3.0,
+    20
+   ],
+   "size": [
+    12,
+    54,
+    6
+   ],
+   "color": "#b35bf7",
+   "rotation": [
+    0,
+    32,
+    0
+   ],
+   "style": "building"
+  },
+  {
+   "id": "roof-east",
+   "kind": "box",
+   "position": [
+    20,
+    -13.5,
+    0
+   ],
+   "size": [
+    14,
+    33,
+    14
+   ],
+   "color": "#b35bf7",
+   "style": "building"
+  },
+  {
+   "id": "watertower-base",
+   "kind": "box",
+   "position": [
+    24,
+    4.5,
+    4
+   ],
+   "size": [
+    2.4,
+    3,
+    2.4
+   ],
+   "color": "#b35bf7"
+  },
+  {
+   "id": "roof-west",
+   "kind": "box",
+   "position": [
+    -24,
+    -13.5,
+    0
+   ],
+   "size": [
+    6,
+    33,
+    14
+   ],
+   "color": "#b35bf7",
+   "style": "building"
+  },
+  {
+   "id": "ramp-roof-west",
+   "kind": "box",
+   "position": [
+    -17.0702,
+    1.3127,
+    0
+   ],
+   "size": [
+    8.544,
+    0.4,
+    4.0
+   ],
+   "color": "#808ff9",
+   "rotation": [
+    0,
+    0,
+    -20.556
+   ]
+  },
+  {
+   "id": "subway-floor",
+   "kind": "box",
+   "position": [
+    0,
+    -3.5,
+    20
+   ],
+   "size": [
+    14,
+    1,
+    14
+   ],
+   "color": "#808ff9"
+  },
+  {
+   "id": "subway-wall-0",
+   "kind": "box",
+   "position": [
+    0,
+    -2,
+    13.5
+   ],
+   "size": [
+    14,
+    4,
+    1
+   ],
+   "color": "#b35bf7",
+   "style": "building"
+  },
+  {
+   "id": "subway-wall-1",
+   "kind": "box",
+   "position": [
+    -6.5,
+    -2,
+    20
+   ],
+   "size": [
+    1,
+    4,
+    14
+   ],
+   "color": "#b35bf7",
+   "style": "building"
+  },
+  {
+   "id": "subway-wall-2",
+   "kind": "box",
+   "position": [
+    6.5,
+    -2,
+    20
+   ],
+   "size": [
+    1,
+    4,
+    14
+   ],
+   "color": "#b35bf7",
+   "style": "building"
+  },
+  {
+   "id": "subway-wall-3",
+   "kind": "box",
+   "position": [
+    -6,
+    -2,
+    26.5
+   ],
+   "size": [
+    2,
+    4,
+    1
+   ],
+   "color": "#b35bf7",
+   "style": "building"
+  },
+  {
+   "id": "subway-wall-4",
+   "kind": "box",
+   "position": [
+    3.5,
+    -2,
+    26.5
+   ],
+   "size": [
+    7,
+    4,
+    1
+   ],
+   "color": "#b35bf7",
+   "style": "building"
+  },
+  {
+   "id": "ramp-subway",
+   "kind": "box",
+   "position": [
+    -3,
+    -1.6873,
+    23.0702
+   ],
+   "size": [
+    4.0,
+    0.4,
+    8.544
+   ],
+   "color": "#808ff9",
+   "rotation": [
+    -20.556,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "rail-n0",
+   "kind": "box",
+   "position": [
+    -28.5,
+    0.6,
+    -32.8
+   ],
+   "size": [
+    9,
+    1.2,
+    0.4
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "rail-n1",
+   "kind": "box",
+   "position": [
+    0.0,
+    0.6,
+    -32.8
+   ],
+   "size": [
+    32,
+    1.2,
+    0.4
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "rail-n2",
+   "kind": "box",
+   "position": [
+    28.5,
+    0.6,
+    -32.8
+   ],
+   "size": [
+    9,
+    1.2,
+    0.4
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "rail-s0",
+   "kind": "box",
+   "position": [
+    -28.5,
+    0.6,
+    32.8
+   ],
+   "size": [
+    9,
+    1.2,
+    0.4
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "rail-s1",
+   "kind": "box",
+   "position": [
+    0.0,
+    0.6,
+    32.8
+   ],
+   "size": [
+    32,
+    1.2,
+    0.4
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "rail-s2",
+   "kind": "box",
+   "position": [
+    28.5,
+    0.6,
+    32.8
+   ],
+   "size": [
+    9,
+    1.2,
+    0.4
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "rail-w0",
+   "kind": "box",
+   "position": [
+    -32.8,
+    0.6,
+    -28.5
+   ],
+   "size": [
+    0.4,
+    1.2,
+    9
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "rail-w1",
+   "kind": "box",
+   "position": [
+    -32.8,
+    0.6,
+    0.0
+   ],
+   "size": [
+    0.4,
+    1.2,
+    32
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "rail-w2",
+   "kind": "box",
+   "position": [
+    -32.8,
+    0.6,
+    28.5
+   ],
+   "size": [
+    0.4,
+    1.2,
+    9
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "rail-e0",
+   "kind": "box",
+   "position": [
+    32.8,
+    0.6,
+    -28.5
+   ],
+   "size": [
+    0.4,
+    1.2,
+    9
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "rail-e1",
+   "kind": "box",
+   "position": [
+    32.8,
+    0.6,
+    -10.0
+   ],
+   "size": [
+    0.4,
+    1.2,
+    12
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "rail-e2",
+   "kind": "box",
+   "position": [
+    32.8,
+    0.6,
+    10.0
+   ],
+   "size": [
+    0.4,
+    1.2,
+    12
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "rail-e3",
+   "kind": "box",
+   "position": [
+    32.8,
+    0.6,
+    28.5
+   ],
+   "size": [
+    0.4,
+    1.2,
+    9
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "bridge-deck",
+   "kind": "box",
+   "position": [
+    51.0,
+    -0.5,
+    0
+   ],
+   "size": [
+    36,
+    1,
+    6
+   ],
+   "color": "#9ec7fa"
+  },
+  {
+   "id": "bridge-rail-n",
+   "kind": "box",
+   "position": [
+    51.0,
+    0.6,
+    -3.2
+   ],
+   "size": [
+    36,
+    1.2,
+    0.4
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "bridge-rail-s",
+   "kind": "box",
+   "position": [
+    51.0,
+    0.6,
+    3.2
+   ],
+   "size": [
+    36,
+    1.2,
+    0.4
+   ],
+   "color": "#f086b8"
+  },
+  {
+   "id": "brooklyn",
+   "kind": "box",
+   "position": [
+    79,
+    -0.5,
+    0
+   ],
+   "size": [
+    20,
+    1,
+    20
+   ],
+   "color": "#c69dfa"
+  },
+  {
+   "id": "dumbo-warehouse",
+   "kind": "box",
+   "position": [
+    84,
+    -13.5,
+    -6
+   ],
+   "size": [
+    6,
+    33,
+    6
+   ],
+   "color": "#b35bf7",
+   "style": "building"
+  },
+  {
+   "id": "rail-bk-e0",
+   "kind": "box",
+   "position": [
+    88.8,
+    0.6,
+    0
+   ],
+   "size": [
+    0.4,
+    1.2,
+    20
+   ],
+   "color": "#f086b8"
+  }
+ ],
+ "pads": [
+  {
+   "id": "jump-roof-east",
+   "kind": "jump",
+   "position": [
+    11.5,
+    0.25,
+    0
+   ],
+   "size": [
+    2,
+    0.5,
+    2
+   ]
+  },
+  {
+   "id": "jump-subway",
+   "kind": "jump",
+   "position": [
+    2,
+    -2.75,
+    18
+   ],
+   "size": [
+    2.5,
+    0.5,
+    2.5
+   ]
+  },
+  {
+   "id": "boost-in-n-a",
+   "kind": "boost",
+   "position": [
+    -20,
+    0.25,
+    -11.5
+   ],
+   "size": [
+    4,
+    0.5,
+    2.5
+   ],
+   "direction": [
+    1,
+    0
+   ]
+  },
+  {
+   "id": "boost-in-n-b",
+   "kind": "boost",
+   "position": [
+    20,
+    0.25,
+    -11.5
+   ],
+   "size": [
+    4,
+    0.5,
+    2.5
+   ],
+   "direction": [
+    1,
+    0
+   ]
+  },
+  {
+   "id": "boost-in-e-a",
+   "kind": "boost",
+   "position": [
+    11.5,
+    0.25,
+    -20
+   ],
+   "size": [
+    2.5,
+    0.5,
+    4
+   ],
+   "direction": [
+    0,
+    1
+   ]
+  },
+  {
+   "id": "boost-in-e-b",
+   "kind": "boost",
+   "position": [
+    11.5,
+    0.25,
+    20
+   ],
+   "size": [
+    2.5,
+    0.5,
+    4
+   ],
+   "direction": [
+    0,
+    1
+   ]
+  },
+  {
+   "id": "boost-in-s-a",
+   "kind": "boost",
+   "position": [
+    20,
+    0.25,
+    11.5
+   ],
+   "size": [
+    4,
+    0.5,
+    2.5
+   ],
+   "direction": [
+    -1,
+    0
+   ]
+  },
+  {
+   "id": "boost-in-s-b",
+   "kind": "boost",
+   "position": [
+    -20,
+    0.25,
+    11.5
+   ],
+   "size": [
+    4,
+    0.5,
+    2.5
+   ],
+   "direction": [
+    -1,
+    0
+   ]
+  },
+  {
+   "id": "boost-in-w-a",
+   "kind": "boost",
+   "position": [
+    -11.5,
+    0.25,
+    20
+   ],
+   "size": [
+    2.5,
+    0.5,
+    4
+   ],
+   "direction": [
+    0,
+    -1
+   ]
+  },
+  {
+   "id": "boost-in-w-b",
+   "kind": "boost",
+   "position": [
+    -11.5,
+    0.25,
+    -20
+   ],
+   "size": [
+    2.5,
+    0.5,
+    4
+   ],
+   "direction": [
+    0,
+    -1
+   ]
+  },
+  {
+   "id": "boost-out-n",
+   "kind": "boost",
+   "position": [
+    0,
+    0.25,
+    -31
+   ],
+   "size": [
+    4,
+    0.5,
+    2.5
+   ],
+   "direction": [
+    -1,
+    0
+   ]
+  },
+  {
+   "id": "boost-out-w",
+   "kind": "boost",
+   "position": [
+    -31,
+    0.25,
+    0
+   ],
+   "size": [
+    2.5,
+    0.5,
+    4
+   ],
+   "direction": [
+    0,
+    1
+   ]
+  },
+  {
+   "id": "boost-out-s",
+   "kind": "boost",
+   "position": [
+    0,
+    0.25,
+    31
+   ],
+   "size": [
+    4,
+    0.5,
+    2.5
+   ],
+   "direction": [
+    1,
+    0
+   ]
+  },
+  {
+   "id": "boost-out-e",
+   "kind": "boost",
+   "position": [
+    31,
+    0.25,
+    20
+   ],
+   "size": [
+    2.5,
+    0.5,
+    4
+   ],
+   "direction": [
+    0,
+    -1
+   ]
+  },
+  {
+   "id": "boost-bridge-east",
+   "kind": "boost",
+   "position": [
+    44,
+    0.25,
+    -1.5
+   ],
+   "size": [
+    5,
+    0.5,
+    2.4
+   ],
+   "direction": [
+    1,
+    0
+   ]
+  },
+  {
+   "id": "boost-bridge-west",
+   "kind": "boost",
+   "position": [
+    58,
+    0.25,
+    1.5
+   ],
+   "size": [
+    5,
+    0.5,
+    2.4
+   ],
+   "direction": [
+    -1,
+    0
+   ]
+  },
+  {
+   "id": "jump-dumbo",
+   "kind": "jump",
+   "position": [
+    78.5,
+    0.25,
+    -6
+   ],
+   "size": [
+    2,
+    0.5,
+    2
+   ]
+  },
+  {
+   "id": "boost-brooklyn-home",
+   "kind": "boost",
+   "position": [
+    73,
+    0.25,
+    2
+   ],
+   "size": [
+    4,
+    0.5,
+    2.5
+   ],
+   "direction": [
+    -1,
+    0
+   ]
+  }
+ ],
+ "decor": [
+  {
+   "id": "ball",
+   "kind": "ball",
+   "position": [
+    0,
+    13.2,
+    -5.6
+   ],
+   "size": [
+    2.6,
+    2.6,
+    2.6
+   ]
+  },
+  {
+   "id": "core-ring",
+   "kind": "ring",
+   "position": [
+    0,
+    0.06,
+    0
+   ],
+   "size": [
+    8,
+    0.12,
+    8
+   ]
+  },
+  {
+   "id": "ts-sign-0",
+   "kind": "billboard",
+   "position": [
+    8.6,
+    9,
+    8.6
+   ],
+   "size": [
+    7,
+    1.8,
+    0.1
+   ],
+   "text": "TAKE IT",
+   "color": "#ff2fb9",
+   "rotationY": -135.0
+  },
+  {
+   "id": "ts-sign-1",
+   "kind": "billboard",
+   "position": [
+    -8.6,
+    9,
+    8.6
+   ],
+   "size": [
+    7,
+    1.8,
+    0.1
+   ],
+   "text": "KEEP IT",
+   "color": "#00e1ff",
+   "rotationY": 135.0
+  },
+  {
+   "id": "ts-sign-2",
+   "kind": "billboard",
+   "position": [
+    8.6,
+    9,
+    -8.6
+   ],
+   "size": [
+    7,
+    1.8,
+    0.1
+   ],
+   "text": "HODL IT",
+   "color": "#b8ff2e",
+   "rotationY": -45.0
+  },
+  {
+   "id": "ts-sign-3",
+   "kind": "billboard",
+   "position": [
+    -8.6,
+    9,
+    -8.6
+   ],
+   "size": [
+    7,
+    1.8,
+    0.1
+   ],
+   "text": "NYC 2077",
+   "color": "#a24bff",
+   "rotationY": 45.0
+  },
+  {
+   "id": "canopy-0",
+   "kind": "tree",
+   "position": [
+    -4.5,
+    3.5,
+    -24.5
+   ],
+   "size": [
+    2.6,
+    2.4,
+    2.6
+   ]
+  },
+  {
+   "id": "canopy-1",
+   "kind": "tree",
+   "position": [
+    4,
+    3.5,
+    -15.5
+   ],
+   "size": [
+    2.6,
+    2.4,
+    2.6
+   ]
+  },
+  {
+   "id": "canopy-2",
+   "kind": "tree",
+   "position": [
+    -4,
+    3.5,
+    -15.5
+   ],
+   "size": [
+    2.6,
+    2.4,
+    2.6
+   ]
+  },
+  {
+   "id": "canopy-3",
+   "kind": "tree",
+   "position": [
+    4.5,
+    3.5,
+    -25
+   ],
+   "size": [
+    2.6,
+    2.4,
+    2.6
+   ]
+  },
+  {
+   "id": "canopy-4",
+   "kind": "tree",
+   "position": [
+    -1,
+    3.5,
+    -21.5
+   ],
+   "size": [
+    2.6,
+    2.4,
+    2.6
+   ]
+  },
+  {
+   "id": "canopy-5",
+   "kind": "tree",
+   "position": [
+    5,
+    3.5,
+    -20.5
+   ],
+   "size": [
+    2.6,
+    2.4,
+    2.6
+   ]
+  },
+  {
+   "id": "park-pond",
+   "kind": "water",
+   "position": [
+    -4,
+    0.03,
+    -19.5
+   ],
+   "size": [
+    4,
+    0.01,
+    3
+   ]
+  },
+  {
+   "id": "empire-crown",
+   "kind": "tower",
+   "position": [
+    20,
+    41,
+    -20
+   ],
+   "size": [
+    6,
+    6,
+    6
+   ],
+   "cap": "spire",
+   "capHeight": 14
+  },
+  {
+   "id": "one-wtc-crown",
+   "kind": "tower",
+   "position": [
+    -20,
+    54,
+    -20
+   ],
+   "size": [
+    7,
+    4,
+    7
+   ],
+   "cap": "spire",
+   "capHeight": 26
+  },
+  {
+   "id": "chrysler-crown",
+   "kind": "tower",
+   "position": [
+    20,
+    36,
+    20
+   ],
+   "size": [
+    6,
+    4,
+    6
+   ],
+   "cap": "stepped",
+   "capHeight": 16
+  },
+  {
+   "id": "flatiron-crown",
+   "kind": "tower",
+   "position": [
+    -20,
+    25,
+    20
+   ],
+   "size": [
+    4,
+    2,
+    4
+   ],
+   "rotationY": 32
+  },
+  {
+   "id": "sign-empire",
+   "kind": "billboard",
+   "position": [
+    14.35,
+    14,
+    -20
+   ],
+   "size": [
+    9,
+    2.4,
+    0.1
+   ],
+   "text": "TAKK",
+   "color": "#ff2fb9",
+   "rotationY": -90
+  },
+  {
+   "id": "sign-wtc",
+   "kind": "billboard",
+   "position": [
+    -13.85,
+    18,
+    -20
+   ],
+   "size": [
+    9,
+    2.4,
+    0.1
+   ],
+   "text": "CORE RUSH",
+   "color": "#00e1ff",
+   "rotationY": 90
+  },
+  {
+   "id": "sign-chrysler",
+   "kind": "billboard",
+   "position": [
+    20,
+    12,
+    14.85
+   ],
+   "size": [
+    8,
+    2.2,
+    0.1
+   ],
+   "text": "HODL",
+   "color": "#b8ff2e",
+   "rotationY": 180
+  },
+  {
+   "id": "watertower",
+   "kind": "watertower",
+   "position": [
+    24,
+    5.5,
+    4
+   ],
+   "size": [
+    3.2,
+    5,
+    3.2
+   ]
+  },
+  {
+   "id": "sign-subway",
+   "kind": "billboard",
+   "position": [
+    0,
+    3.6,
+    20
+   ],
+   "size": [
+    7,
+    1.4,
+    0.1
+   ],
+   "text": "TAKK LINE",
+   "color": "#00e1ff",
+   "rotationY": 0
+  },
+  {
+   "id": "bridge-leg-0-1",
+   "kind": "tower",
+   "position": [
+    42,
+    -9.0,
+    -4.4
+   ],
+   "size": [
+    1.6,
+    58,
+    1.6
+   ]
+  },
+  {
+   "id": "bridge-leg-01",
+   "kind": "tower",
+   "position": [
+    42,
+    -9.0,
+    4.4
+   ],
+   "size": [
+    1.6,
+    58,
+    1.6
+   ]
+  },
+  {
+   "id": "bridge-arch-0",
+   "kind": "block",
+   "position": [
+    42,
+    17.5,
+    0
+   ],
+   "size": [
+    1.6,
+    5,
+    10.4
+   ]
+  },
+  {
+   "id": "bridge-leg-1-1",
+   "kind": "tower",
+   "position": [
+    60,
+    -9.0,
+    -4.4
+   ],
+   "size": [
+    1.6,
+    58,
+    1.6
+   ]
+  },
+  {
+   "id": "bridge-leg-11",
+   "kind": "tower",
+   "position": [
+    60,
+    -9.0,
+    4.4
+   ],
+   "size": [
+    1.6,
+    58,
+    1.6
+   ]
+  },
+  {
+   "id": "bridge-arch-1",
+   "kind": "block",
+   "position": [
+    60,
+    17.5,
+    0
+   ],
+   "size": [
+    1.6,
+    5,
+    10.4
+   ]
+  },
+  {
+   "id": "cable--1-1",
+   "kind": "cable",
+   "position": [
+    33,
+    2,
+    -4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    36.0,
+    11.6,
+    -4.4
+   ]
+  },
+  {
+   "id": "hanger--1-1",
+   "kind": "cable",
+   "position": [
+    36.0,
+    0.2,
+    -3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    36.0,
+    11.6,
+    -4.4
+   ]
+  },
+  {
+   "id": "cable--1-2",
+   "kind": "cable",
+   "position": [
+    36.0,
+    11.6,
+    -4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    39.0,
+    15.8,
+    -4.4
+   ]
+  },
+  {
+   "id": "hanger--1-2",
+   "kind": "cable",
+   "position": [
+    39.0,
+    0.2,
+    -3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    39.0,
+    15.8,
+    -4.4
+   ]
+  },
+  {
+   "id": "cable--1-3",
+   "kind": "cable",
+   "position": [
+    39.0,
+    15.8,
+    -4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    42.0,
+    7.6,
+    -4.4
+   ]
+  },
+  {
+   "id": "hanger--1-3",
+   "kind": "cable",
+   "position": [
+    42.0,
+    0.2,
+    -3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    42.0,
+    7.6,
+    -4.4
+   ]
+  },
+  {
+   "id": "cable--1-4",
+   "kind": "cable",
+   "position": [
+    42.0,
+    7.6,
+    -4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    45.0,
+    6.7111,
+    -4.4
+   ]
+  },
+  {
+   "id": "hanger--1-4",
+   "kind": "cable",
+   "position": [
+    45.0,
+    0.2,
+    -3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    45.0,
+    6.7111,
+    -4.4
+   ]
+  },
+  {
+   "id": "cable--1-5",
+   "kind": "cable",
+   "position": [
+    45.0,
+    6.7111,
+    -4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    48.0,
+    6.1778,
+    -4.4
+   ]
+  },
+  {
+   "id": "hanger--1-5",
+   "kind": "cable",
+   "position": [
+    48.0,
+    0.2,
+    -3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    48.0,
+    6.1778,
+    -4.4
+   ]
+  },
+  {
+   "id": "cable--1-6",
+   "kind": "cable",
+   "position": [
+    48.0,
+    6.1778,
+    -4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    51.0,
+    6.0,
+    -4.4
+   ]
+  },
+  {
+   "id": "hanger--1-6",
+   "kind": "cable",
+   "position": [
+    51.0,
+    0.2,
+    -3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    51.0,
+    6.0,
+    -4.4
+   ]
+  },
+  {
+   "id": "cable--1-7",
+   "kind": "cable",
+   "position": [
+    51.0,
+    6.0,
+    -4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    54.0,
+    6.1778,
+    -4.4
+   ]
+  },
+  {
+   "id": "hanger--1-7",
+   "kind": "cable",
+   "position": [
+    54.0,
+    0.2,
+    -3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    54.0,
+    6.1778,
+    -4.4
+   ]
+  },
+  {
+   "id": "cable--1-8",
+   "kind": "cable",
+   "position": [
+    54.0,
+    6.1778,
+    -4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    57.0,
+    6.7111,
+    -4.4
+   ]
+  },
+  {
+   "id": "hanger--1-8",
+   "kind": "cable",
+   "position": [
+    57.0,
+    0.2,
+    -3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    57.0,
+    6.7111,
+    -4.4
+   ]
+  },
+  {
+   "id": "cable--1-9",
+   "kind": "cable",
+   "position": [
+    57.0,
+    6.7111,
+    -4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    60.0,
+    7.6,
+    -4.4
+   ]
+  },
+  {
+   "id": "hanger--1-9",
+   "kind": "cable",
+   "position": [
+    60.0,
+    0.2,
+    -3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    60.0,
+    7.6,
+    -4.4
+   ]
+  },
+  {
+   "id": "cable--1-10",
+   "kind": "cable",
+   "position": [
+    60.0,
+    7.6,
+    -4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    63.0,
+    15.8,
+    -4.4
+   ]
+  },
+  {
+   "id": "hanger--1-10",
+   "kind": "cable",
+   "position": [
+    63.0,
+    0.2,
+    -3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    63.0,
+    15.8,
+    -4.4
+   ]
+  },
+  {
+   "id": "cable--1-11",
+   "kind": "cable",
+   "position": [
+    63.0,
+    15.8,
+    -4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    66.0,
+    11.6,
+    -4.4
+   ]
+  },
+  {
+   "id": "hanger--1-11",
+   "kind": "cable",
+   "position": [
+    66.0,
+    0.2,
+    -3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    66.0,
+    11.6,
+    -4.4
+   ]
+  },
+  {
+   "id": "cable--1-12",
+   "kind": "cable",
+   "position": [
+    66.0,
+    11.6,
+    -4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    69.0,
+    7.4,
+    -4.4
+   ]
+  },
+  {
+   "id": "hanger--1-12",
+   "kind": "cable",
+   "position": [
+    69.0,
+    0.2,
+    -3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    69.0,
+    7.4,
+    -4.4
+   ]
+  },
+  {
+   "id": "cable-1-1",
+   "kind": "cable",
+   "position": [
+    33,
+    2,
+    4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    36.0,
+    11.6,
+    4.4
+   ]
+  },
+  {
+   "id": "hanger-1-1",
+   "kind": "cable",
+   "position": [
+    36.0,
+    0.2,
+    3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    36.0,
+    11.6,
+    4.4
+   ]
+  },
+  {
+   "id": "cable-1-2",
+   "kind": "cable",
+   "position": [
+    36.0,
+    11.6,
+    4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    39.0,
+    15.8,
+    4.4
+   ]
+  },
+  {
+   "id": "hanger-1-2",
+   "kind": "cable",
+   "position": [
+    39.0,
+    0.2,
+    3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    39.0,
+    15.8,
+    4.4
+   ]
+  },
+  {
+   "id": "cable-1-3",
+   "kind": "cable",
+   "position": [
+    39.0,
+    15.8,
+    4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    42.0,
+    7.6,
+    4.4
+   ]
+  },
+  {
+   "id": "hanger-1-3",
+   "kind": "cable",
+   "position": [
+    42.0,
+    0.2,
+    3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    42.0,
+    7.6,
+    4.4
+   ]
+  },
+  {
+   "id": "cable-1-4",
+   "kind": "cable",
+   "position": [
+    42.0,
+    7.6,
+    4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    45.0,
+    6.7111,
+    4.4
+   ]
+  },
+  {
+   "id": "hanger-1-4",
+   "kind": "cable",
+   "position": [
+    45.0,
+    0.2,
+    3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    45.0,
+    6.7111,
+    4.4
+   ]
+  },
+  {
+   "id": "cable-1-5",
+   "kind": "cable",
+   "position": [
+    45.0,
+    6.7111,
+    4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    48.0,
+    6.1778,
+    4.4
+   ]
+  },
+  {
+   "id": "hanger-1-5",
+   "kind": "cable",
+   "position": [
+    48.0,
+    0.2,
+    3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    48.0,
+    6.1778,
+    4.4
+   ]
+  },
+  {
+   "id": "cable-1-6",
+   "kind": "cable",
+   "position": [
+    48.0,
+    6.1778,
+    4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    51.0,
+    6.0,
+    4.4
+   ]
+  },
+  {
+   "id": "hanger-1-6",
+   "kind": "cable",
+   "position": [
+    51.0,
+    0.2,
+    3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    51.0,
+    6.0,
+    4.4
+   ]
+  },
+  {
+   "id": "cable-1-7",
+   "kind": "cable",
+   "position": [
+    51.0,
+    6.0,
+    4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    54.0,
+    6.1778,
+    4.4
+   ]
+  },
+  {
+   "id": "hanger-1-7",
+   "kind": "cable",
+   "position": [
+    54.0,
+    0.2,
+    3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    54.0,
+    6.1778,
+    4.4
+   ]
+  },
+  {
+   "id": "cable-1-8",
+   "kind": "cable",
+   "position": [
+    54.0,
+    6.1778,
+    4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    57.0,
+    6.7111,
+    4.4
+   ]
+  },
+  {
+   "id": "hanger-1-8",
+   "kind": "cable",
+   "position": [
+    57.0,
+    0.2,
+    3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    57.0,
+    6.7111,
+    4.4
+   ]
+  },
+  {
+   "id": "cable-1-9",
+   "kind": "cable",
+   "position": [
+    57.0,
+    6.7111,
+    4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    60.0,
+    7.6,
+    4.4
+   ]
+  },
+  {
+   "id": "hanger-1-9",
+   "kind": "cable",
+   "position": [
+    60.0,
+    0.2,
+    3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    60.0,
+    7.6,
+    4.4
+   ]
+  },
+  {
+   "id": "cable-1-10",
+   "kind": "cable",
+   "position": [
+    60.0,
+    7.6,
+    4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    63.0,
+    15.8,
+    4.4
+   ]
+  },
+  {
+   "id": "hanger-1-10",
+   "kind": "cable",
+   "position": [
+    63.0,
+    0.2,
+    3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    63.0,
+    15.8,
+    4.4
+   ]
+  },
+  {
+   "id": "cable-1-11",
+   "kind": "cable",
+   "position": [
+    63.0,
+    15.8,
+    4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    66.0,
+    11.6,
+    4.4
+   ]
+  },
+  {
+   "id": "hanger-1-11",
+   "kind": "cable",
+   "position": [
+    66.0,
+    0.2,
+    3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    66.0,
+    11.6,
+    4.4
+   ]
+  },
+  {
+   "id": "cable-1-12",
+   "kind": "cable",
+   "position": [
+    66.0,
+    11.6,
+    4.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    69.0,
+    7.4,
+    4.4
+   ]
+  },
+  {
+   "id": "hanger-1-12",
+   "kind": "cable",
+   "position": [
+    69.0,
+    0.2,
+    3.4
+   ],
+   "size": [
+    1,
+    1,
+    1
+   ],
+   "to": [
+    69.0,
+    7.4,
+    4.4
+   ]
+  },
+  {
+   "id": "sign-brooklyn",
+   "kind": "billboard",
+   "position": [
+    89.2,
+    6,
+    0
+   ],
+   "size": [
+    10,
+    2.4,
+    0.1
+   ],
+   "text": "BROOKLYN",
+   "color": "#ff8a1f",
+   "rotationY": -90
+  },
+  {
+   "id": "river",
+   "kind": "water",
+   "position": [
+    40,
+    -38,
+    0
+   ],
+   "size": [
+    600,
+    0.01,
+    600
+   ]
+  },
+  {
+   "id": "traffic-av-0",
+   "kind": "traffic",
+   "position": [
+    -30,
+    -16,
+    0
+   ],
+   "size": [
+    5,
+    1,
+    150
+   ],
+   "count": 44
+  },
+  {
+   "id": "traffic-av-1",
+   "kind": "traffic",
+   "position": [
+    -10,
+    -16,
+    0
+   ],
+   "size": [
+    5,
+    1,
+    150
+   ],
+   "count": 44
+  },
+  {
+   "id": "traffic-av-2",
+   "kind": "traffic",
+   "position": [
+    10,
+    -16,
+    0
+   ],
+   "size": [
+    5,
+    1,
+    150
+   ],
+   "count": 44
+  },
+  {
+   "id": "traffic-av-3",
+   "kind": "traffic",
+   "position": [
+    30,
+    -16,
+    0
+   ],
+   "size": [
+    5,
+    1,
+    150
+   ],
+   "count": 44
+  },
+  {
+   "id": "traffic-st-0",
+   "kind": "traffic",
+   "position": [
+    -10,
+    -16,
+    -30
+   ],
+   "size": [
+    130,
+    1,
+    5
+   ],
+   "count": 40
+  },
+  {
+   "id": "traffic-st-1",
+   "kind": "traffic",
+   "position": [
+    -10,
+    -16,
+    -10
+   ],
+   "size": [
+    130,
+    1,
+    5
+   ],
+   "count": 40
+  },
+  {
+   "id": "traffic-st-2",
+   "kind": "traffic",
+   "position": [
+    -10,
+    -16,
+    10
+   ],
+   "size": [
+    130,
+    1,
+    5
+   ],
+   "count": 40
+  },
+  {
+   "id": "traffic-st-3",
+   "kind": "traffic",
+   "position": [
+    -10,
+    -16,
+    30
+   ],
+   "size": [
+    130,
+    1,
+    5
+   ],
+   "count": 40
+  },
+  {
+   "id": "skylane-a",
+   "kind": "traffic",
+   "position": [
+    0,
+    26,
+    -48
+   ],
+   "size": [
+    260,
+    1,
+    4
+   ],
+   "count": 18
+  },
+  {
+   "id": "skylane-b",
+   "kind": "traffic",
+   "position": [
+    -48,
+    32,
+    0
+   ],
+   "size": [
+    4,
+    1,
+    260
+   ],
+   "count": 18
+  },
+  {
+   "id": "skylane-c",
+   "kind": "traffic",
+   "position": [
+    60,
+    22,
+    30
+   ],
+   "size": [
+    4,
+    1,
+    220
+   ],
+   "count": 14
+  },
+  {
+   "id": "searchlight-0",
+   "kind": "searchlight",
+   "position": [
+    20,
+    38,
+    -20
+   ],
+   "size": [
+    2.2,
+    110,
+    2.2
+   ],
+   "color": "#9ec7fa"
+  },
+  {
+   "id": "searchlight-1",
+   "kind": "searchlight",
+   "position": [
+    -20,
+    52,
+    -20
+   ],
+   "size": [
+    2.2,
+    110,
+    2.2
+   ],
+   "color": "#f7aee0"
+  },
+  {
+   "id": "searchlight-2",
+   "kind": "searchlight",
+   "position": [
+    95,
+    -2,
+    16
+   ],
+   "size": [
+    2.2,
+    110,
+    2.2
+   ],
+   "color": "#00e1ff"
+  },
+  {
+   "id": "searchlight-3",
+   "kind": "searchlight",
+   "position": [
+    -70,
+    -2,
+    -60
+   ],
+   "size": [
+    2.2,
+    110,
+    2.2
+   ],
+   "color": "#c69dfa"
+  },
+  {
+   "id": "searchlight-4",
+   "kind": "searchlight",
+   "position": [
+    60,
+    -2,
+    -70
+   ],
+   "size": [
+    2.2,
+    110,
+    2.2
+   ],
+   "color": "#ff2fb9"
+  },
+  {
+   "id": "liberty",
+   "kind": "statue",
+   "position": [
+    -62,
+    -10.5,
+    72
+   ],
+   "size": [
+    10,
+    55,
+    10
+   ],
+   "rotationY": 40
+  },
+  {
+   "id": "void-tower-0",
+   "kind": "tower",
+   "position": [
+    -12,
+    -25,
+    41
+   ],
+   "size": [
+    6,
+    26,
+    6
+   ]
+  },
+  {
+   "id": "void-tower-1",
+   "kind": "tower",
+   "position": [
+    12,
+    -25,
+    44
+   ],
+   "size": [
+    6,
+    26,
+    6
+   ]
+  },
+  {
+   "id": "void-tower-2",
+   "kind": "tower",
+   "position": [
+    -40,
+    -25,
+    -14
+   ],
+   "size": [
+    6,
+    26,
+    6
+   ]
+  },
+  {
+   "id": "void-tower-3",
+   "kind": "tower",
+   "position": [
+    -44,
+    -25,
+    16
+   ],
+   "size": [
+    6,
+    26,
+    6
+   ]
+  },
+  {
+   "id": "void-tower-4",
+   "kind": "tower",
+   "position": [
+    8,
+    -25,
+    -44
+   ],
+   "size": [
+    6,
+    26,
+    6
+   ]
+  },
+  {
+   "id": "void-tower-5",
+   "kind": "tower",
+   "position": [
+    -14,
+    -25,
+    -46
+   ],
+   "size": [
+    6,
+    26,
+    6
+   ]
+  },
+  {
+   "id": "skyline-0",
+   "kind": "tower",
+   "position": [
+    7.08,
+    10.0,
+    -80.69
+   ],
+   "size": [
+    8,
+    88,
+    8
+   ]
+  },
+  {
+   "id": "skyline-1",
+   "kind": "tower",
+   "position": [
+    44.42,
+    -5.5,
+    57.93
+   ],
+   "size": [
+    9,
+    57,
+    9
+   ],
+   "cap": "spire",
+   "capHeight": 20
+  },
+  {
+   "id": "skyline-2",
+   "kind": "tower",
+   "position": [
+    -64.01,
+    9.0,
+    -11.32
+   ],
+   "size": [
+    10,
+    86,
+    10
+   ],
+   "cap": "stepped",
+   "capHeight": 8
+  },
+  {
+   "id": "skyline-3",
+   "kind": "tower",
+   "position": [
+    48.09,
+    -6.5,
+    -30.59
+   ],
+   "size": [
+    11,
+    55,
+    11
+   ]
+  },
+  {
+   "id": "skyline-4",
+   "kind": "tower",
+   "position": [
+    -24.4,
+    8.0,
+    90.78
+   ],
+   "size": [
+    6,
+    84,
+    6
+   ],
+   "cap": "spire",
+   "capHeight": 16
+  },
+  {
+   "id": "skyline-5",
+   "kind": "tower",
+   "position": [
+    -39.64,
+    -7.5,
+    -76.32
+   ],
+   "size": [
+    7,
+    53,
+    7
+   ],
+   "cap": "stepped",
+   "capHeight": 20
+  },
+  {
+   "id": "skyline-6",
+   "kind": "tower",
+   "position": [
+    -64.7,
+    -8.5,
+    26.71
+   ],
+   "size": [
+    9,
+    51,
+    9
+   ],
+   "cap": "spire",
+   "capHeight": 12
+  },
+  {
+   "id": "skyline-7",
+   "kind": "tower",
+   "position": [
+    26.28,
+    6.0,
+    -56.16
+   ],
+   "size": [
+    10,
+    80,
+    10
+   ],
+   "cap": "stepped",
+   "capHeight": 16
+  },
+  {
+   "id": "skyline-8",
+   "kind": "tower",
+   "position": [
+    16.16,
+    -9.5,
+    51.52
+   ],
+   "size": [
+    11,
+    49,
+    11
+   ]
+  },
+  {
+   "id": "skyline-9",
+   "kind": "tower",
+   "position": [
+    -78.74,
+    5.0,
+    -45.63
+   ],
+   "size": [
+    6,
+    78,
+    6
+   ],
+   "cap": "spire",
+   "capHeight": 8
+  },
+  {
+   "id": "skyline-10",
+   "kind": "tower",
+   "position": [
+    -8.61,
+    -11.5,
+    -66.44
+   ],
+   "size": [
+    9,
+    45,
+    9
+   ],
+   "cap": "spire",
+   "capHeight": 20
+  },
+  {
+   "id": "skyline-11",
+   "kind": "tower",
+   "position": [
+    45.12,
+    3.0,
+    38.02
+   ],
+   "size": [
+    10,
+    74,
+    10
+   ],
+   "cap": "stepped",
+   "capHeight": 8
+  },
+  {
+   "id": "skyline-12",
+   "kind": "tower",
+   "position": [
+    -95.92,
+    -12.5,
+    3.97
+   ],
+   "size": [
+    11,
+    43,
+    11
+   ]
+  },
+  {
+   "id": "skyline-13",
+   "kind": "tower",
+   "position": [
+    62.37,
+    2.0,
+    -62.08
+   ],
+   "size": [
+    6,
+    72,
+    6
+   ],
+   "cap": "spire",
+   "capHeight": 16
+  },
+  {
+   "id": "skyline-14",
+   "kind": "tower",
+   "position": [
+    -3.69,
+    -13.5,
+    79.91
+   ],
+   "size": [
+    7,
+    41,
+    7
+   ],
+   "cap": "stepped",
+   "capHeight": 20
+  },
+  {
+   "id": "skyline-15",
+   "kind": "tower",
+   "position": [
+    -46.13,
+    1.0,
+    -55.28
+   ],
+   "size": [
+    8,
+    70,
+    8
+   ]
+  },
+  {
+   "id": "skyline-16",
+   "kind": "tower",
+   "position": [
+    -45.97,
+    0.0,
+    31.99
+   ],
+   "size": [
+    10,
+    68,
+    10
+   ],
+   "cap": "stepped",
+   "capHeight": 16
+  },
+  {
+   "id": "skyline-17",
+   "kind": "tower",
+   "position": [
+    20.41,
+    -15.5,
+    -90.73
+   ],
+   "size": [
+    11,
+    37,
+    11
+   ]
+  },
+  {
+   "id": "skyline-18",
+   "kind": "tower",
+   "position": [
+    42.27,
+    -1.0,
+    73.75
+   ],
+   "size": [
+    6,
+    66,
+    6
+   ],
+   "cap": "spire",
+   "capHeight": 8
+  },
+  {
+   "id": "skyline-19",
+   "kind": "tower",
+   "position": [
+    -73.36,
+    -16.5,
+    -23.4
+   ],
+   "size": [
+    7,
+    35,
+    7
+   ],
+   "cap": "stepped",
+   "capHeight": 12
+  },
+  {
+   "id": "skyline-20",
+   "kind": "tower",
+   "position": [
+    -23.54,
+    -17.5,
+    56.27
+   ],
+   "size": [
+    9,
+    33,
+    9
+   ],
+   "cap": "spire",
+   "capHeight": 20
+  },
+  {
+   "id": "skyline-21",
+   "kind": "tower",
+   "position": [
+    -17.94,
+    -3.0,
+    -49.87
+   ],
+   "size": [
+    10,
+    62,
+    10
+   ],
+   "cap": "stepped",
+   "capHeight": 8
+  },
+  {
+   "id": "skyline-22",
+   "kind": "tower",
+   "position": [
+    79.67,
+    -18.5,
+    41.86
+   ],
+   "size": [
+    11,
+    31,
+    11
+   ]
+  },
+  {
+   "id": "skyline-23",
+   "kind": "tower",
+   "position": [
+    -79.29,
+    -4.0,
+    20.91
+   ],
+   "size": [
+    6,
+    60,
+    6
+   ],
+   "cap": "spire",
+   "capHeight": 16
+  },
+  {
+   "id": "skyline-24",
+   "kind": "tower",
+   "position": [
+    40.02,
+    10.5,
+    -62.25
+   ],
+   "size": [
+    7,
+    89,
+    7
+   ],
+   "cap": "stepped",
+   "capHeight": 20
+  },
+  {
+   "id": "skyline-25",
+   "kind": "tower",
+   "position": [
+    11.19,
+    -5.0,
+    65.05
+   ],
+   "size": [
+    8,
+    58,
+    8
+   ]
+  },
+  {
+   "id": "skyline-26",
+   "kind": "tower",
+   "position": [
+    -45.86,
+    9.5,
+    -35.51
+   ],
+   "size": [
+    9,
+    87,
+    9
+   ],
+   "cap": "spire",
+   "capHeight": 12
+  },
+  {
+   "id": "skyline-27",
+   "kind": "tower",
+   "position": [
+    0.38,
+    -7.0,
+    -79.0
+   ],
+   "size": [
+    6,
+    54,
+    6
+   ],
+   "cap": "spire",
+   "capHeight": 8
+  },
+  {
+   "id": "skyline-28",
+   "kind": "tower",
+   "position": [
+    47.71,
+    7.5,
+    52.58
+   ],
+   "size": [
+    7,
+    83,
+    7
+   ],
+   "cap": "stepped",
+   "capHeight": 12
+  },
+  {
+   "id": "skyline-29",
+   "kind": "tower",
+   "position": [
+    -62.73,
+    -8.0,
+    -5.81
+   ],
+   "size": [
+    8,
+    52,
+    8
+   ]
+  },
+  {
+   "id": "skyline-30",
+   "kind": "tower",
+   "position": [
+    43.81,
+    6.5,
+    -33.26
+   ],
+   "size": [
+    9,
+    81,
+    9
+   ],
+   "cap": "spire",
+   "capHeight": 20
+  },
+  {
+   "id": "skyline-31",
+   "kind": "tower",
+   "position": [
+    -16.45,
+    -9.0,
+    90.52
+   ],
+   "size": [
+    10,
+    50,
+    10
+   ],
+   "cap": "stepped",
+   "capHeight": 8
+  },
+  {
+   "id": "skyline-32",
+   "kind": "tower",
+   "position": [
+    -44.75,
+    5.5,
+    -71.09
+   ],
+   "size": [
+    11,
+    79,
+    11
+   ]
+  },
+  {
+   "id": "skyline-33",
+   "kind": "tower",
+   "position": [
+    -60.49,
+    4.5,
+    31.06
+   ],
+   "size": [
+    7,
+    77,
+    7
+   ],
+   "cap": "stepped",
+   "capHeight": 20
+  },
+  {
+   "id": "skyline-34",
+   "kind": "tower",
+   "position": [
+    20.85,
+    -11.0,
+    -56.26
+   ],
+   "size": [
+    8,
+    46,
+    8
+   ]
+  },
+  {
+   "id": "skyline-35",
+   "kind": "tower",
+   "position": [
+    19.61,
+    3.5,
+    48.16
+   ],
+   "size": [
+    9,
+    75,
+    9
+   ],
+   "cap": "spire",
+   "capHeight": 12
+  },
+  {
+   "id": "skyline-36",
+   "kind": "tower",
+   "position": [
+    -80.43,
+    -12.0,
+    -38.1
+   ],
+   "size": [
+    10,
+    44,
+    10
+   ],
+   "cap": "stepped",
+   "capHeight": 16
+  },
+  {
+   "id": "skyline-37",
+   "kind": "tower",
+   "position": [
+    -36.9,
+    -13.0,
+    62.99
+   ],
+   "size": [
+    6,
+    42,
+    6
+   ],
+   "cap": "spire",
+   "capHeight": 8
+  },
+  {
+   "id": "skyline-38",
+   "kind": "tower",
+   "position": [
+    -13.66,
+    1.5,
+    -63.55
+   ],
+   "size": [
+    7,
+    71,
+    7
+   ],
+   "cap": "stepped",
+   "capHeight": 12
+  },
+  {
+   "id": "skyline-39",
+   "kind": "tower",
+   "position": [
+    46.47,
+    -14.0,
+    33.0
+   ],
+   "size": [
+    8,
+    40,
+    8
+   ]
+  },
+  {
+   "id": "skyline-40",
+   "kind": "tower",
+   "position": [
+    -93.28,
+    0.5,
+    11.64
+   ],
+   "size": [
+    9,
+    69,
+    9
+   ],
+   "cap": "spire",
+   "capHeight": 20
+  },
+  {
+   "id": "skyline-41",
+   "kind": "tower",
+   "position": [
+    55.73,
+    -15.0,
+    -65.5
+   ],
+   "size": [
+    10,
+    38,
+    10
+   ],
+   "cap": "stepped",
+   "capHeight": 8
+  },
+  {
+   "id": "skyline-42",
+   "kind": "tower",
+   "position": [
+    2.86,
+    -0.5,
+    77.95
+   ],
+   "size": [
+    11,
+    67,
+    11
+   ]
+  },
+  {
+   "id": "skyline-43",
+   "kind": "tower",
+   "position": [
+    -49.14,
+    -16.0,
+    -49.85
+   ],
+   "size": [
+    6,
+    36,
+    6
+   ],
+   "cap": "spire",
+   "capHeight": 16
+  },
+  {
+   "id": "skyline-44",
+   "kind": "tower",
+   "position": [
+    -41.62,
+    -17.0,
+    34.4
+   ],
+   "size": [
+    8,
+    34,
+    8
+   ]
+  },
+  {
+   "id": "skyline-45",
+   "kind": "tower",
+   "position": [
+    12.56,
+    -2.5,
+    -90.13
+   ],
+   "size": [
+    9,
+    63,
+    9
+   ],
+   "cap": "spire",
+   "capHeight": 12
+  },
+  {
+   "id": "skyline-46",
+   "kind": "tower",
+   "position": [
+    47.08,
+    -18.0,
+    68.35
+   ],
+   "size": [
+    10,
+    32,
+    10
+   ],
+   "cap": "stepped",
+   "capHeight": 16
+  },
+  {
+   "id": "skyline-47",
+   "kind": "tower",
+   "position": [
+    -73.09,
+    -3.5,
+    -16.8
+   ],
+   "size": [
+    11,
+    61,
+    11
+   ]
+  },
+  {
+   "id": "bk-tower-0",
+   "kind": "tower",
+   "position": [
+    96,
+    -23.0,
+    -24
+   ],
+   "size": [
+    7,
+    44,
+    7
+   ]
+  },
+  {
+   "id": "bk-tower-1",
+   "kind": "tower",
+   "position": [
+    105,
+    -21.5,
+    -20
+   ],
+   "size": [
+    7,
+    47,
+    7
+   ]
+  },
+  {
+   "id": "bk-tower-2",
+   "kind": "tower",
+   "position": [
+    114,
+    -20.0,
+    -16
+   ],
+   "size": [
+    7,
+    50,
+    7
+   ]
+  },
+  {
+   "id": "bk-tower-3",
+   "kind": "tower",
+   "position": [
+    123,
+    -18.5,
+    -24
+   ],
+   "size": [
+    7,
+    53,
+    7
+   ]
+  },
+  {
+   "id": "bk-tower-4",
+   "kind": "tower",
+   "position": [
+    96,
+    -17.0,
+    28
+   ],
+   "size": [
+    7,
+    56,
+    7
+   ]
+  },
+  {
+   "id": "bk-tower-5",
+   "kind": "tower",
+   "position": [
+    105,
+    -15.5,
+    32
+   ],
+   "size": [
+    7,
+    59,
+    7
+   ]
+  },
+  {
+   "id": "bk-tower-6",
+   "kind": "tower",
+   "position": [
+    114,
+    -14.0,
+    24
+   ],
+   "size": [
+    7,
+    62,
+    7
+   ]
+  },
+  {
+   "id": "bk-tower-7",
+   "kind": "tower",
+   "position": [
+    123,
+    -12.5,
+    28
+   ],
+   "size": [
+    7,
+    65,
+    7
+   ]
+  }
+ ]
+}

@@ -5,9 +5,11 @@
  * client and read from disk by the server. Nothing in this module may
  * import Three.js or touch the DOM — the server imports it too.
  *
- * Deliberately minimal. `surface`, `conveyor` and `rotationY` were all
- * considered and left out: a field the engine does not implement is a
- * promise the format cannot keep. Add them when the behaviour exists.
+ * Deliberately minimal: a field the engine does not implement is a promise
+ * the format cannot keep. Every field here has behaviour behind it --
+ * `rotation` (ramps), `pads` (boost and jump, in the shared sim) and `decor`
+ * (visual only, never simulated) were each added together with the code
+ * that honours them.
  */
 
 export type Vec3 = [number, number, number];
@@ -41,6 +43,90 @@ export interface CourseSolid {
   size: Vec3;
   /** `#rrggbb`. Omit for the course default. */
   color?: string;
+  /**
+   * Euler rotation in DEGREES, applied X then Y then Z (Three's default
+   * order), about the box centre. This is what makes ramps. Omit for an
+   * axis-aligned box -- which is what almost everything should be, because
+   * the ground probe used for respawns only understands unrotated boxes.
+   */
+  rotation?: Vec3;
+  /**
+   * Visual style only -- physics never reads it. `building` renders the box as
+   * a lit city building (window grid, neon gradient) instead of the dark mass
+   * the walkable decks use.
+   */
+  style?: 'building';
+}
+
+/**
+ * A pad is a trigger volume with an effect, resolved inside the SHARED step
+ * (shared/sim.ts) so the client predicts it exactly like the server.
+ *
+ *   boost -- sets horizontal velocity to `direction` at boost speed and holds
+ *            a boosted top speed for a moment after leaving the pad.
+ *   jump  -- launches a grounded racer straight up, much higher than a jump.
+ */
+export type PadKind = 'boost' | 'jump';
+
+export interface CoursePad {
+  id: string;
+  kind: PadKind;
+  /** Centre of the trigger volume. Sit it on a surface, a little proud of it. */
+  position: Vec3;
+  /** Full extents of the trigger volume. */
+  size: Vec3;
+  /** Boost only: horizontal direction [x, z], normalised on parse. */
+  direction?: [number, number];
+}
+
+/**
+ * Scenery. Rendered by the client, ignored by the server and the simulation:
+ * nothing here collides. So it must never sit where a racer can walk, or
+ * people will run through what looks like a wall.
+ *
+ *   tower -- a box building, optionally capped with a `spire` (a four-sided
+ *            point, One World Trade style) or `stepped` setbacks (Chrysler
+ *            style). `capHeight` is the cap's height above the box.
+ *   ring  -- a flat glowing ring; `size[0]` is its diameter.
+ *   block -- a plain floating box.
+ *   billboard  -- a holographic sign showing `text`, facing `rotationY`.
+ *   tree       -- a low-poly neon tree canopy (pair it with a solid trunk).
+ *   watertower -- the classic New York rooftop tank (pair with a solid base).
+ *   statue     -- a neon Statue of Liberty, `size[1]` tall.
+ *   traffic    -- a stream of `count` car lights flowing along the box's long
+ *                 horizontal axis, both directions.
+ *   searchlight -- a sky beam that sweeps slowly, rooted at `position`.
+ *   water      -- a river plane with drifting neon reflections.
+ *   cable      -- a straight glowing cable from `position` to `to`.
+ *   ball       -- a faceted glowing sphere (the Times Square ball).
+ */
+export type DecorKind =
+  | 'tower' | 'ring' | 'block' | 'billboard' | 'tree' | 'watertower'
+  | 'statue' | 'traffic' | 'searchlight' | 'water' | 'cable' | 'ball';
+const DECOR_KINDS: readonly string[] = [
+  'tower', 'ring', 'block', 'billboard', 'tree', 'watertower',
+  'statue', 'traffic', 'searchlight', 'water', 'cable', 'ball',
+];
+export type DecorCap = 'spire' | 'stepped';
+
+export interface CourseDecor {
+  id: string;
+  kind: DecorKind;
+  /** Centre of the box (tower/block) or of the ring. */
+  position: Vec3;
+  size: Vec3;
+  cap?: DecorCap;
+  capHeight?: number;
+  /** Rotation about the vertical axis, degrees. */
+  rotationY?: number;
+  /** Billboard copy. */
+  text?: string;
+  /** Traffic: how many cars. */
+  count?: number;
+  /** Cable: the far end. */
+  to?: Vec3;
+  /** `#rrggbb` accent; each kind has its own default. */
+  color?: string;
 }
 
 export interface CourseGoal {
@@ -69,6 +155,15 @@ export interface Course {
    */
   coreSpawn?: Vec3;
   solids: CourseSolid[];
+  /** Gameplay trigger pads. Empty when absent. */
+  pads: CoursePad[];
+  /** Visual-only scenery. Empty when absent. */
+  decor: CourseDecor[];
+  /**
+   * The course brings its own city, so the client hides the generic ground
+   * grid and far-field platforms (see core/stage.ts `useOwnCity`).
+   */
+  ownCity?: boolean;
 }
 
 export interface Aabb {
@@ -166,7 +261,92 @@ export function parseCourse(raw: unknown, source: string): Course {
       solid.color = asHexColor(so.color, source, `${path}.color`);
     }
 
+    if (so.style !== undefined) {
+      if (so.style !== 'building') fail(source, `${path}.style`, `unsupported style "${String(so.style)}"`);
+      solid.style = 'building';
+    }
+
+    if (so.rotation !== undefined) {
+      const rotation = asVec3(so.rotation, source, `${path}.rotation`);
+      for (let i = 0; i < 3; i++) {
+        if (Math.abs(rotation[i]) > 60) {
+          fail(source, `${path}.rotation[${i}]`, `${rotation[i]} degrees is not a ramp; keep within +/-60`);
+        }
+      }
+      solid.rotation = rotation;
+    }
+
     return solid;
+  });
+
+  const pads: CoursePad[] = optionalArray(root.pads, source, 'pads').map((entry, index) => {
+    const path = `pads[${index}]`;
+    const po = asObject(entry, source, path);
+    const id = asString(po.id, source, `${path}.id`);
+    if (seenIds.has(id)) fail(source, `${path}.id`, `duplicate id "${id}"`);
+    seenIds.add(id);
+
+    const kind = asString(po.kind, source, `${path}.kind`);
+    if (kind !== 'boost' && kind !== 'jump') {
+      fail(source, `${path}.kind`, `unsupported pad kind "${kind}" -- "boost" or "jump"`);
+    }
+    const size = asVec3(po.size, source, `${path}.size`);
+    requirePositive(size, source, `${path}.size`);
+    const pad: CoursePad = { id, kind, position: asVec3(po.position, source, `${path}.position`), size };
+
+    if (kind === 'boost') {
+      const dir = po.direction;
+      if (!Array.isArray(dir) || dir.length !== 2) {
+        fail(source, `${path}.direction`, 'a boost pad needs a direction [x, z]');
+      }
+      const dx = asNumber(dir[0], source, `${path}.direction[0]`);
+      const dz = asNumber(dir[1], source, `${path}.direction[1]`);
+      const length = Math.hypot(dx, dz);
+      if (length < 1e-6) fail(source, `${path}.direction`, 'direction must not be zero');
+      pad.direction = [dx / length, dz / length];
+    }
+    return pad;
+  });
+
+  const decor: CourseDecor[] = optionalArray(root.decor, source, 'decor').map((entry, index) => {
+    const path = `decor[${index}]`;
+    const d = asObject(entry, source, path);
+    const id = asString(d.id, source, `${path}.id`);
+    if (seenIds.has(id)) fail(source, `${path}.id`, `duplicate id "${id}"`);
+    seenIds.add(id);
+
+    const kind = asString(d.kind, source, `${path}.kind`);
+    if (!DECOR_KINDS.includes(kind)) {
+      fail(source, `${path}.kind`, `unsupported decor kind "${kind}"`);
+    }
+    const size = asVec3(d.size, source, `${path}.size`);
+    requirePositive(size, source, `${path}.size`);
+    const item: CourseDecor = {
+      id,
+      kind: kind as DecorKind,
+      position: asVec3(d.position, source, `${path}.position`),
+      size,
+    };
+    if (d.rotationY !== undefined) item.rotationY = asNumber(d.rotationY, source, `${path}.rotationY`);
+    if (d.text !== undefined) item.text = asString(d.text, source, `${path}.text`).slice(0, 24);
+    if (d.count !== undefined) {
+      item.count = asNumber(d.count, source, `${path}.count`);
+      if (item.count < 1 || item.count > 200) fail(source, `${path}.count`, 'must be 1..200');
+    }
+    if (d.to !== undefined) item.to = asVec3(d.to, source, `${path}.to`);
+    if (d.color !== undefined) item.color = asHexColor(d.color, source, `${path}.color`);
+    if (kind === 'billboard' && !item.text) fail(source, `${path}.text`, 'a billboard needs text');
+    if (kind === 'cable' && !item.to) fail(source, `${path}.to`, 'a cable needs an end point');
+
+    if (d.cap !== undefined) {
+      const cap = asString(d.cap, source, `${path}.cap`);
+      if (cap !== 'spire' && cap !== 'stepped') fail(source, `${path}.cap`, `unsupported cap "${cap}"`);
+      if (kind !== 'tower') fail(source, `${path}.cap`, 'only towers take a cap');
+      item.cap = cap;
+      item.capHeight = asNumber(d.capHeight, source, `${path}.capHeight`);
+      if (item.capHeight <= 0) fail(source, `${path}.capHeight`, 'must be greater than zero');
+    }
+    return item;
   });
 
   const course: Course = {
@@ -175,9 +355,12 @@ export function parseCourse(raw: unknown, source: string): Course {
     spawn,
     killY,
     solids,
+    pads,
+    decor,
   };
   // Assigned only when present so a race course round-trips without stray
   // `undefined` keys.
+  if (root.ownCity === true) course.ownCity = true;
   if (goal) course.goal = goal;
   if (coreSpawn) course.coreSpawn = coreSpawn;
   return course;
@@ -214,6 +397,13 @@ function asVec3(value: unknown, source: string, path: string): Vec3 {
   }
   for (let i = 0; i < 3; i++) asNumber(value[i], source, `${path}[${i}]`);
   return value as Vec3;
+}
+
+/** An optional array field: absent is empty, present-but-not-an-array fails. */
+function optionalArray(value: unknown, source: string, path: string): unknown[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) fail(source, path, 'expected an array');
+  return value;
 }
 
 function requirePositive(size: Vec3, source: string, path: string): void {

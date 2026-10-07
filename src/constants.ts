@@ -79,6 +79,22 @@ export const DASH = {
   cooldownTicks: 48,
 } as const;
 
+/**
+ * Boost pads. Touching one snaps horizontal velocity to the pad's direction at
+ * `speed`, then the racer keeps that top speed (steerable) for `ticks` after
+ * leaving it. Integer ticks, synced, for rollback -- see DASH.
+ */
+export const BOOST = {
+  speed: 26,
+  /** 36 ticks is 0.6s of boosted top speed after the last pad contact. */
+  ticks: 36,
+} as const;
+
+/** Jump pads launch a grounded racer up at this speed: apex ~3.6 at GRAVITY -40. */
+export const JUMP_PAD = {
+  speed: 17,
+} as const;
+
 /** Core Rush rules. All tunable; none of these are final until playtested. */
 export const CORE = {
   /** A dashing racer this close (centre to centre) to the carrier steals the Core. */
