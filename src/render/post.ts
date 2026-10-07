@@ -6,7 +6,12 @@
  *
  * The chain, in order:
  *
- *   scene -> + bloom -> vignette -> dither -> grain -> tone map -> screen
+ *   scene -> chromatic split -> + bloom -> + speed lines -> vignette
+ *         -> dither -> grain -> tone map -> screen
+ *
+ * The chromatic split and the speed lines are driven by the feel bus
+ * (render/fx.ts) and sit at zero most of the time: they are punctuation for
+ * dashes and steals, not a permanent look.
  *
  * Bloom goes on before the vignette so the glow itself gets darkened at the
  * corners rather than floating over them. Grain and dither go last because they
@@ -26,7 +31,11 @@
 import * as THREE from 'three/webgpu';
 import {
   add,
+  abs,
+  atan,
   div,
+  fract,
+  hash,
   floor,
   float,
   length,
@@ -46,7 +55,8 @@ import {
 } from 'three/tsl';
 import { bloom } from 'three/examples/jsm/tsl/display/BloomNode.js';
 
-import { POST } from './palette.ts';
+import { NEON, POST } from './palette.ts';
+import { fxAberration, fxSpeed } from './fx.ts';
 
 export interface PostChain {
   /** Render through this instead of calling `renderer.render()`. */
@@ -62,22 +72,51 @@ export function createPostChain(
   // Render the scene into a texture we can sample. Everything downstream
   // operates on this node rather than on the scene directly.
   const scenePass = pass(scene, camera);
-  const color = scenePass.getTextureNode();
+  const sceneTex = scenePass.getTextureNode();
+
+  // Aspect-corrected from the live framebuffer size rather than a constant, so
+  // radial effects stay circular when a phone rotates. Without the correction
+  // they are ellipses stretched to the viewport, which reads as a smear.
+  const aspect = div(screenSize.x, screenSize.y);
+  const centred = sub(screenUV, 0.5);
+  const radius = length(vec2(mul(centred.x, aspect), centred.y));
+
+  // --- chromatic split -------------------------------------------------------
+  // Red pushed outward, blue pulled inward, radially, so the centre of the
+  // frame (where you are) stays sharp and the edges tear. Scaled by the feel
+  // bus, so at rest this is three samples of the same texel.
+  const split = mul(centred, mul(fxAberration, 0.022));
+  const red = sceneTex.sample(add(screenUV, split)).r;
+  const blue = sceneTex.sample(sub(screenUV, split)).b;
+  const color = vec4(red, sceneTex.g, blue, sceneTex.a);
 
   // --- bloom ---------------------------------------------------------------
   // `bloom()` returns the glow *contribution*, not a composited image, so it has
   // to be added back by hand. This is the pattern from three's own examples.
-  const bloomPass = bloom(color, POST.bloomStrength, POST.bloomRadius, POST.bloomThreshold);
+  // Bloom reads the clean scene texture; the split is applied to what it adds to.
+  const bloomPass = bloom(sceneTex, POST.bloomStrength, POST.bloomRadius, POST.bloomThreshold);
   let node = add(color, bloomPass);
 
+  // --- speed lines -----------------------------------------------------------
+  // Thin rays from the centre, only at the edges of the frame, with dashes
+  // that STREAM outward rather than flicker -- motion, not flashing, so no
+  // part of this strobes. Each of 160 angular buckets is either a ray or not,
+  // fixed by a hash, so the pattern is stable and only its flow moves. Narrow
+  // rays (a sliver of each bucket) and sparse ones, so they read as streaks
+  // of light rather than as a sunburst painted over the frame.
+  const angle = atan(centred.y, mul(centred.x, aspect));
+  const slot = mul(add(angle, 3.1416), 240 / 6.2832);
+  const bucket = floor(slot);
+  // Distance from the bucket's centre line: only the middle sliver is lit.
+  const thin = sub(1, smoothstep(0.04, 0.16, abs(sub(fract(slot), 0.5))));
+  const isRay = mul(smoothstep(0.78, 0.82, hash(bucket)), thin);
+  const flow = pow(fract(add(sub(mul(radius, 3.0), mul(time, 4.5)), mul(hash(add(bucket, 17)), 9))), 8);
+  const edge = smoothstep(0.34, 0.7, radius);
+  const lines = mul(mul(mul(isRay, flow), edge), mul(fxSpeed, 0.9));
+  const lineTint = new THREE.Color(NEON.blue);
+  node = add(node, vec4(mul(lines, lineTint.r), mul(lines, lineTint.g), mul(lines, lineTint.b), 0));
+
   // --- vignette ------------------------------------------------------------
-  // Aspect-corrected from the live framebuffer size rather than a constant, so
-  // the darkening stays circular when a phone rotates. Without the correction
-  // the vignette is an ellipse stretched to the viewport, which reads as a
-  // gradient smear rather than as lens falloff.
-  const aspect = div(screenSize.x, screenSize.y);
-  const centred = sub(screenUV, 0.5);
-  const radius = length(vec2(mul(centred.x, aspect), centred.y));
 
   // Fully lit at the centre, zero by 0.78.
   //

@@ -22,7 +22,12 @@ export const MAX_FRAME_DELTA = 0.25;
 
 // ---------------------------------------------------------------- world
 
-export const GRAVITY = { x: 0, y: -26, z: 0 };
+/**
+ * Heavy on purpose. Paired with a fast jump it keeps the apex where the arena
+ * was laid out for (jumpSpeed^2 / 2g ~= 1.57) while halving the hang time:
+ * floaty jumps read as slow, snappy ones as fast.
+ */
+export const GRAVITY = { x: 0, y: -40, z: 0 };
 
 /** Contact material for course colliders. */
 export const WORLD = {
@@ -44,15 +49,71 @@ export const PLAYER = {
 } as const;
 
 export const MOVE = {
-  walkSpeed: 7,
-  sprintSpeed: 12,
+  /**
+   * Top running speed, units/s. One speed, no sprint: in an arena the size of
+   * a Core Rush map a sprint key is noise, and Shift now belongs to the dash.
+   */
+  runSpeed: 13,
   /** Ground acceleration, units/s^2. Higher = snappier starts. */
-  accel: 70,
+  accel: 160,
   /** Ground deceleration when no input, units/s^2. */
-  friction: 55,
+  friction: 110,
   /** Fraction of acceleration usable while airborne. */
-  airControl: 0.3,
-  jumpSpeed: 9,
+  airControl: 0.5,
+  jumpSpeed: 11.2,
+} as const;
+
+/**
+ * The dash -- the only way to steal the Core.
+ *
+ * Durations are in fixed TICKS, not seconds, on purpose: tick counts are
+ * integers that rollback restores exactly, where accumulated float seconds
+ * would drift between the client's replay and the server.
+ */
+export const DASH = {
+  /** Horizontal speed during the dash, units/s. */
+  speed: 32,
+  /** Length of the dash. 9 ticks at 60 Hz is 0.15s, ~4.8 units. */
+  durationTicks: 9,
+  /** Ticks after a dash ENDS before the next one may start. 48 is 0.8s. */
+  cooldownTicks: 48,
+} as const;
+
+/**
+ * Boost pads. Touching one snaps horizontal velocity to the pad's direction at
+ * `speed`, then the racer keeps that top speed (steerable) for `ticks` after
+ * leaving it. Integer ticks, synced, for rollback -- see DASH.
+ */
+export const BOOST = {
+  speed: 26,
+  /** 36 ticks is 0.6s of boosted top speed after the last pad contact. */
+  ticks: 36,
+} as const;
+
+/** Jump pads launch a grounded racer up at this speed: apex ~3.6 at GRAVITY -40. */
+export const JUMP_PAD = {
+  speed: 17,
+} as const;
+
+/** Core Rush rules. All tunable; none of these are final until playtested. */
+export const CORE = {
+  /** A dashing racer this close (centre to centre) to the carrier steals the Core. */
+  stealRadius: 1.4,
+  /** A free Core is picked up by any racer this close, no dash needed. */
+  pickupRadius: 1.2,
+  /** After a steal, the new carrier cannot be robbed for this long. */
+  immunityMs: 1500,
+  /** The carrier runs at this fraction of `MOVE.runSpeed`, and cannot dash. */
+  carrierSpeedFactor: 0.9,
+  /** Height of the Core above the carrier's body centre. */
+  carryHeight: 1.6,
+} as const;
+
+/** Match flow: ready -> countdown -> playing -> results -> ready. */
+export const MATCH = {
+  countdownMs: 3_000,
+  durationMs: 120_000,
+  resultsMs: 10_000,
 } as const;
 
 export const PHYSICS = {
@@ -83,7 +144,7 @@ export const GOAL = {
 // ---------------------------------------------------------------- camera
 
 export const CAMERA = {
-  fov: 70,
+  fov: 72,
   near: 0.1,
   far: 600,
 
@@ -93,9 +154,9 @@ export const CAMERA = {
    * Replaces the old `distance`/`height` pair. Those described a fixed offset on
    * one axis, which cannot orbit; a radius and a pitch can.
    */
-  distance: 10.3,
+  distance: 8,
   /** Starting pitch in radians. Positive puts the camera above, looking down. */
-  pitch: 0.5,
+  pitch: 0.42,
   /**
    * Pitch limits, radians.
    *

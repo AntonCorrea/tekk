@@ -10,26 +10,12 @@
  */
 
 import * as THREE from 'three/webgpu';
-import {
-  cameraPosition,
-  clamp,
-  color,
-  dot,
-  mix,
-  mul,
-  normalize,
-  normalWorld,
-  oneMinus,
-  pow,
-  positionWorld,
-  saturate,
-  sub,
-  uniform,
-} from 'three/tsl';
 
 import type { Stage } from '../core/stage.ts';
-import { CAMERA, PLAYER } from '../constants.ts';
-import { NEON, PALETTE, POST, RAMP } from './palette.ts';
+import { CAMERA, MOVE } from '../constants.ts';
+import { fxSpeed, reducedMotion } from './fx.ts';
+import { NEON, PALETTE, RACER_IDENTITY, RAMP } from './palette.ts';
+import { createCharacter } from './character.ts';
 import type { Pose } from '../physics/player.ts';
 
 /**
@@ -40,7 +26,15 @@ import type { Pose } from '../physics/player.ts';
  * confirmed. The render layer has no business knowing where that came from.
  */
 export interface LocalPose extends Pose {
+  /** Predicted horizontal velocity and speed: facing and the run cycle. */
+  vx: number;
+  vz: number;
+  speed: number;
   grounded: boolean;
+  /** You hold the Core: the capsule burns white, like a remote carrier. */
+  carrying: boolean;
+  /** Predicted dash in progress (`sim.dashTicks > 0`). */
+  dashing: boolean;
 }
 
 export interface SceneVisuals {
@@ -61,6 +55,12 @@ export interface SceneVisuals {
    * nothing here is sent to the server.
    */
   orbit(yaw: number, pitch: number): void;
+
+  /**
+   * Add screen-shake trauma, 0..1. Trauma decays on its own and shake grows
+   * with its square, so small kicks stay subtle and big ones land hard.
+   */
+  kick(trauma: number): void;
 
   dispose(): void;
 }
@@ -121,48 +121,9 @@ export function buildScene(stage: Stage): SceneVisuals {
   scene.add(rimMagenta);
 
   // --- local racer ---------------------------------------------------------
-  // The capsule is a dark body carrying an iridescent emissive shell rather than
-  // a coloured solid.
-  //
-  // A solid bright capsule reads as a game character. What sells "premium" here
-  // is the opposite: an almost-black body whose light comes entirely from a
-  // view-dependent rim, so the racer looks like a piece of lit glass. It also
-  // means the bloom pass has something to work with — emissive values above 1
-  // are what the bloom threshold is tuned to catch.
-  const glowTint = uniform(new THREE.Color(NEON.violet));
-
-  const playerMesh = new THREE.Mesh(
-    new THREE.CapsuleGeometry(PLAYER.radius, PLAYER.halfHeight * 2, 8, 16),
-    new THREE.MeshStandardMaterial({
-      color: new THREE.Color(PALETTE.mass),
-      roughness: 0.35,
-      metalness: 0.1,
-    }),
-  );
-
-  // Fresnel term: 0 facing the camera, 1 at grazing angles. This is what makes
-  // the highlight hug the silhouette instead of sitting on the middle of the
-  // body facing the viewer. The exponent tightens it, so the rim stays a rim
-  // rather than washing over half the capsule.
-  const viewDir = normalize(sub(cameraPosition, positionWorld));
-  const fresnel = pow(oneMinus(saturate(dot(normalize(normalWorld), viewDir))), 2.6);
-
-  // Three-stop ramp: magenta where the body faces you, through the tint, to cyan
-  // at the silhouette. Two chained mixes rather than one, because a two-colour
-  // lerp gives a straight line through the ramp and reads as a colour wash
-  // instead of as an oil-slick shift.
-  const hueLow = mix(color(NEON.magenta), glowTint, clamp(mul(fresnel, 2), 0, 1));
-  const hue = mix(hueLow, color(NEON.cyan), clamp(mul(sub(fresnel, 0.5), 2), 0, 1));
-
-  // Amplitude above 1 on purpose: the bloom threshold is a luminance cutoff, so
-  // an emissive clamped to 1 would barely register as bright. `POST.emissiveGain`
-  // carries the per-platform budget — see the note on Scheme.
-  (playerMesh.material as THREE.MeshStandardMaterial).emissiveNode = mul(
-    hue,
-    mul(fresnel, POST.emissiveGain),
-  );
-
-  scene.add(playerMesh);
+  // The blocky mannequin from render/character.ts, the same one remote racers
+  // use. The physics capsule is invisible now; this only follows it.
+  const character = createCharacter(scene, RACER_IDENTITY[0]!);
 
   // A flat ring under the capsule reads as a contact cue, which makes grounded
   // vs airborne obvious without a shadow map. Neon rather than a dark shadow:
@@ -181,10 +142,15 @@ export function buildScene(stage: Stage): SceneVisuals {
   scene.add(marker);
 
   const tint = new THREE.Color();
-  const groundedTint = new THREE.Color(NEON.violet);
-  const airborneTint = new THREE.Color(NEON.amber);
+  // Your identity colour. The body no longer shifts to amber in the air: with
+  // saturated racer hues that would strip your identity on every jump. The
+  // ground ring below still carries the airborne cue.
+  const identityTint = new THREE.Color(RACER_IDENTITY[0]!);
   const groundedMarker = new THREE.Color(NEON.cyan);
   const airborneMarker = new THREE.Color(NEON.amber);
+  // Same white as remote carriers (net/remotes.ts), so the cue reads identically
+  // whether it is you or someone else holding the Core.
+  const carrierTint = new THREE.Color(NEON.white);
 
   const followTarget = new THREE.Vector3();
   const followPoint = new THREE.Vector3();
@@ -196,9 +162,26 @@ export function buildScene(stage: Stage): SceneVisuals {
   let pitch: number = CAMERA.pitch;
   let snapping = true;
 
+  // --- feel ------------------------------------------------------------------
+  // Field of view opens with speed and punches wide on a dash: the cheapest,
+  // strongest "this is fast" cue there is. Shake is trauma-based -- kicks add
+  // trauma, it decays, and the offset is trauma squared -- so overlapping kicks
+  // compound instead of fighting. Both respect reduced motion.
+  let fov: number = CAMERA.fov;
+  let trauma = 0;
+  let shakeClock = 0;
+  let wasDashing = false;
+  let airTime = 0;
+  let speedFx = 0;
+
+  const kick = (amount: number): void => {
+    if (reducedMotion) return;
+    trauma = Math.min(1, trauma + amount);
+  };
+
   return {
     sync(pose, dt) {
-      playerMesh.position.set(pose.x, pose.y, pose.z);
+      character.update(pose, dt);
 
       // The ring stays at ground level rather than following the capsule, so it
       // doubles as a height cue while airborne.
@@ -211,9 +194,18 @@ export function buildScene(stage: Stage): SceneVisuals {
       // tint, because the base colour is now almost black and tinting it does
       // nothing visible. The hue is the same amber it always was, so the cue
       // keeps meaning the same thing.
-      tint.copy(pose.grounded ? groundedTint : airborneTint);
-      glowTint.value.lerp(tint, 0.25);
-      markerMaterial.color.lerp(pose.grounded ? groundedMarker : airborneMarker, 0.25);
+      tint.copy(pose.carrying ? carrierTint : identityTint);
+      character.tint.lerp(tint, 0.25);
+      markerMaterial.color.lerp(
+        pose.carrying ? carrierTint : pose.grounded ? groundedMarker : airborneMarker,
+        0.25,
+      );
+
+      // Carrier burns hardest, a dash is a brief flare. Same multipliers as
+      // remote racers. Eased rather than switched so a 9-tick dash reads as a
+      // pulse instead of a flicker.
+      const gainTarget = pose.carrying ? 2.4 : pose.dashing ? 1.9 : 1;
+      character.glow += (gainTarget - character.glow) * 0.3;
 
       // --- follow camera ---------------------------------------------------
       // Position is offset from the racer by a fixed spherical rig (see
@@ -240,7 +232,52 @@ export function buildScene(stage: Stage): SceneVisuals {
       orbitOffset(cameraOffset, yaw, pitch);
       stage.camera.position.copy(followPoint).add(cameraOffset);
       stage.camera.lookAt(followPoint);
+
+      // --- feel: kicks from your own movement -------------------------------
+      if (pose.dashing && !wasDashing) kick(0.22);
+      wasDashing = pose.dashing;
+      // A landing only shakes after a real fall, not after stepping off a kerb.
+      if (!pose.grounded) airTime += dt;
+      else {
+        if (airTime > 0.35) kick(Math.min(0.35, airTime * 0.4));
+        airTime = 0;
+      }
+
+      // --- feel: FOV ---------------------------------------------------------
+      const run = Math.min(1, pose.speed / MOVE.runSpeed);
+      const fovTarget = reducedMotion
+        ? CAMERA.fov
+        : CAMERA.fov + 9 * run + (pose.dashing ? 16 : 0);
+      // Opens fast, closes slower: the punch is the point, the recovery is not.
+      const fovRate = fovTarget > fov ? 18 : 5;
+      fov += (fovTarget - fov) * (1 - Math.exp(-fovRate * dt));
+      if (Math.abs(stage.camera.fov - fov) > 0.01) {
+        stage.camera.fov = fov;
+        stage.camera.updateProjectionMatrix();
+      }
+
+      // --- feel: shake -------------------------------------------------------
+      // Smooth pseudo-noise from incommensurate sines rather than random(): a
+      // random offset per frame is framerate-dependent jitter, this is motion.
+      trauma = Math.max(0, trauma - dt * 1.8);
+      shakeClock += dt;
+      if (trauma > 0) {
+        const amp = trauma * trauma;
+        const t = shakeClock * 38;
+        stage.camera.position.x += amp * 0.45 * Math.sin(t * 1.0 + 0.3);
+        stage.camera.position.y += amp * 0.35 * Math.sin(t * 1.37 + 1.1);
+        stage.camera.position.z += amp * 0.45 * Math.sin(t * 0.83 + 2.4);
+        stage.camera.rotateZ(amp * 0.05 * Math.sin(t * 1.21));
+      }
+
+      // --- feel: speed lines ---------------------------------------------------
+      // Mostly a dash effect; flat-out running only hints at it.
+      const speedTarget = reducedMotion ? 0 : pose.dashing ? 1 : Math.max(0, run - 0.85) * 0.8;
+      speedFx += (speedTarget - speedFx) * (1 - Math.exp(-(speedTarget > speedFx ? 20 : 6) * dt));
+      fxSpeed.value = speedFx;
     },
+
+    kick,
 
     orbit(y, p) {
       yaw = y;
@@ -248,9 +285,8 @@ export function buildScene(stage: Stage): SceneVisuals {
     },
 
     dispose() {
-      scene.remove(playerMesh, marker, hemi, key, rimCyan, rimMagenta);
-      playerMesh.geometry.dispose();
-      (playerMesh.material as THREE.Material).dispose();
+      scene.remove(marker, hemi, key, rimCyan, rimMagenta);
+      character.dispose();
       marker.geometry.dispose();
       markerMaterial.dispose();
     },

@@ -13,9 +13,24 @@ import * as THREE from 'three/webgpu';
 import type { Course } from '../shared/course.ts';
 import { GOAL } from '../constants.ts';
 import { NEON, PALETTE, POST } from '../render/palette.ts';
+import { fxBeat } from '../render/fx.ts';
+import { buildCity, createBuildingMaterial } from '../render/city.ts';
+import {
+  add,
+  fract,
+  mul,
+  pow,
+  sub,
+  time,
+  uv,
+  vec3,
+} from 'three/tsl';
 
 export interface CourseHandle {
-  readonly goalMesh: THREE.Mesh;
+  /** Null for goal-less courses such as the Core Rush arena. */
+  readonly goalMesh: THREE.Mesh | null;
+  /** Animate the city (traffic, searchlights, props). Real frame delta, seconds. */
+  update(dt: number): void;
   /** Remove every mesh from the scene. Colliders are disposed separately. */
   dispose(): void;
 }
@@ -91,6 +106,10 @@ export function buildCourse(scene: THREE.Scene, course: Course): CourseHandle {
   // look being asked for, and the bloom pass gives it the apparent thickness.
   const edgeGeometry = new THREE.EdgesGeometry(cube);
 
+  // Solids styled as buildings (the landmark towers you run around) get the
+  // lit-window city material; walkable decks keep the dark mass.
+  const buildingMaterial = createBuildingMaterial();
+
   const edgeMaterials = new Map<string, THREE.LineBasicMaterial>();
   const meshes: THREE.Mesh[] = [];
   const edges: THREE.LineSegments[] = [];
@@ -99,9 +118,11 @@ export function buildCourse(scene: THREE.Scene, course: Course): CourseHandle {
     const [sx, sy, sz] = solid.size;
     const [px, py, pz] = solid.position;
 
-    const mesh = new THREE.Mesh(cube, massMaterial);
+    const mesh = new THREE.Mesh(cube, solid.style === 'building' ? buildingMaterial : massMaterial);
     mesh.position.set(px, py, pz);
     mesh.scale.set(sx, sy, sz);
+    // Ramps. Same Euler order as the collider (shared/sim.ts), so they agree.
+    if (solid.rotation) mesh.rotation.set(...degrees(solid.rotation));
     scene.add(mesh);
     meshes.push(mesh);
 
@@ -109,89 +130,116 @@ export function buildCourse(scene: THREE.Scene, course: Course): CourseHandle {
     let edgeMaterial = edgeMaterials.get(key);
     if (!edgeMaterial) {
       edgeMaterial = new THREE.LineBasicMaterial({
-        color: neonFromHex(key, EDGE_GAIN),
         // Out of tone mapping so the neon reads at its authored brightness
         // rather than being compressed toward grey along with everything else.
         toneMapped: false,
       });
+      // The arena breathes with the kick drum: edges sit a little dim between
+      // beats and flare on each one. Beat-rate only (~2.2 Hz at 130 BPM), well
+      // under the 3 Hz flash limit -- see render/fx.ts.
+      const neon = neonFromHex(key, EDGE_GAIN);
+      edgeMaterial.colorNode = mul(vec3(neon.r, neon.g, neon.b), add(0.7, mul(fxBeat, 0.75)));
       edgeMaterials.set(key, edgeMaterial);
     }
 
     const edge = new THREE.LineSegments(edgeGeometry, edgeMaterial);
     edge.position.set(px, py, pz);
     edge.scale.set(sx, sy, sz);
+    if (solid.rotation) edge.rotation.set(...degrees(solid.rotation));
     scene.add(edge);
     edges.push(edge);
   }
 
+  const extras = new THREE.Group();
+  scene.add(extras);
+  const disposables: Array<{ dispose(): void }> = [];
+  buildPads(extras, course, disposables);
+  const city = buildCity(extras, course, cube, edgeGeometry);
+  disposables.push(city);
+
   // --- goal gate ---------------------------------------------------------
-  const [gx, gy, gz] = course.goal.position;
-  const [gw, gh, gd] = course.goal.size;
-
-  // The slab is the pulse target, so it is an unlit material: an unlit colour
-  // can be driven past 1.0 and bloom, which a lit one cannot without a very
-  // bright light pointed at it.
-  const goalMaterial = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(NEON.blue).multiplyScalar(0.9),
-    transparent: true,
-    opacity: GOAL.opacity,
-    toneMapped: false,
-  });
-  // `pulseGoal` is called from the frame loop with only the mesh, so the
-  // un-pulsed colour travels with the material rather than in a closure.
-  goalMaterial.userData['baseColor'] = new THREE.Color(NEON.blue);
-
-  const goalMesh = new THREE.Mesh(new THREE.BoxGeometry(gw, gh, gd), goalMaterial);
-  goalMesh.position.set(gx, gy, gz);
-  scene.add(goalMesh);
-
-  // A bright frame around the gate reads as a finish line rather than a floating
-  // box. Static, so it stays legible while the slab pulses behind it.
-  const frameMaterial = new THREE.LineBasicMaterial({
-    // '#' + hex. Passing the bare `fbfaf9` — which is exactly what
-    // `toString(16)` produces — looks like a valid colour and is not:
-    // THREE.Color parses a leading '#' or a `0x` prefix, and treats any other
-    // 6-character string as a named colour, fails, and silently falls back to
-    // black. Only the live browser console surfaced this; tsc is happy either
-    // way because the argument is still a string.
-    color: neonFromHex(`#${NEON.white.toString(16).padStart(6, '0')}`, EDGE_GAIN),
-    toneMapped: false,
-  });
-
+  // Only courses with a finish line get one; the arena has none.
+  let goalMesh: THREE.Mesh | null = null;
+  let goalMaterial: THREE.MeshBasicMaterial | null = null;
+  let frameMaterial: THREE.LineBasicMaterial | null = null;
   const frameParts: THREE.LineSegments[] = [];
-  const addFramePart = (offset: [number, number, number], size: [number, number, number]) => {
-    // `edgeGeometry`, not `cube`. A LineSegments built from the raw BoxGeometry
-    // would draw every triangle's edges including the face diagonals, turning
-    // the gate into a wireframe scribble instead of a frame.
-    const part = new THREE.LineSegments(edgeGeometry, frameMaterial);
-    part.position.set(gx + offset[0], gy + offset[1], gz + offset[2]);
-    part.scale.set(size[0], size[1], size[2]);
-    scene.add(part);
-    frameParts.push(part);
-  };
 
-  const t = GOAL.frameThickness;
-  addFramePart([0, gh / 2 + t / 2, 0], [gw + t * 2, t, t]);
-  addFramePart([0, -gh / 2 - t / 2, 0], [gw + t * 2, t, t]);
-  addFramePart([gw / 2 + t / 2, 0, 0], [t, gh, t]);
-  addFramePart([-gw / 2 - t / 2, 0, 0], [t, gh, t]);
+  if (course.goal) {
+    const [gx, gy, gz] = course.goal.position;
+    const [gw, gh, gd] = course.goal.size;
+
+    // The slab is the pulse target, so it is an unlit material: an unlit colour
+    // can be driven past 1.0 and bloom, which a lit one cannot without a very
+    // bright light pointed at it.
+    goalMaterial = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(NEON.blue).multiplyScalar(0.9),
+      transparent: true,
+      opacity: GOAL.opacity,
+      toneMapped: false,
+    });
+    // `pulseGoal` is called from the frame loop with only the mesh, so the
+    // un-pulsed colour travels with the material rather than in a closure.
+    goalMaterial.userData['baseColor'] = new THREE.Color(NEON.blue);
+
+    goalMesh = new THREE.Mesh(new THREE.BoxGeometry(gw, gh, gd), goalMaterial);
+    goalMesh.position.set(gx, gy, gz);
+    scene.add(goalMesh);
+
+    // A bright frame around the gate reads as a finish line rather than a floating
+    // box. Static, so it stays legible while the slab pulses behind it.
+    // Local const so the closure below sees a non-null material; the outer
+    // `let` is only there for dispose().
+    const frameMat = new THREE.LineBasicMaterial({
+      // '#' + hex. Passing the bare `fbfaf9` — which is exactly what
+      // `toString(16)` produces — looks like a valid colour and is not:
+      // THREE.Color parses a leading '#' or a `0x` prefix, and treats any other
+      // 6-character string as a named colour, fails, and silently falls back to
+      // black. Only the live browser console surfaced this; tsc is happy either
+      // way because the argument is still a string.
+      color: neonFromHex(`#${NEON.white.toString(16).padStart(6, '0')}`, EDGE_GAIN),
+      toneMapped: false,
+    });
+
+    frameMaterial = frameMat;
+
+    const addFramePart =(offset: [number, number, number], size: [number, number, number]) => {
+      // `edgeGeometry`, not `cube`. A LineSegments built from the raw BoxGeometry
+      // would draw every triangle's edges including the face diagonals, turning
+      // the gate into a wireframe scribble instead of a frame.
+      const part = new THREE.LineSegments(edgeGeometry, frameMat);
+      part.position.set(gx + offset[0], gy + offset[1], gz + offset[2]);
+      part.scale.set(size[0], size[1], size[2]);
+      scene.add(part);
+      frameParts.push(part);
+    };
+
+    const t = GOAL.frameThickness;
+    addFramePart([0, gh / 2 + t / 2, 0], [gw + t * 2, t, t]);
+    addFramePart([0, -gh / 2 - t / 2, 0], [gw + t * 2, t, t]);
+    addFramePart([gw / 2 + t / 2, 0, 0], [t, gh, t]);
+    addFramePart([-gw / 2 - t / 2, 0, 0], [t, gh, t]);
+  }
 
   return {
     goalMesh,
+    update: (dt) => city.update(dt),
 
     dispose() {
       for (const mesh of meshes) scene.remove(mesh);
       for (const edge of edges) scene.remove(edge);
       for (const part of frameParts) scene.remove(part);
-      scene.remove(goalMesh);
+      scene.remove(extras);
+      for (const item of disposables) item.dispose();
+      if (goalMesh) scene.remove(goalMesh);
 
       cube.dispose();
       edgeGeometry.dispose();
-      goalMesh.geometry.dispose();
-      goalMaterial.dispose();
-      frameMaterial.dispose();
+      goalMesh?.geometry.dispose();
+      goalMaterial?.dispose();
+      frameMaterial?.dispose();
       for (const material of edgeMaterials.values()) material.dispose();
       massMaterial.dispose();
+      buildingMaterial.dispose();
     },
   };
 }
@@ -203,7 +251,8 @@ export function buildCourse(scene: THREE.Scene, course: Course): CourseHandle {
  * is now unlit — `emissiveIntensity` only means anything to a lit material, and
  * would silently do nothing here.
  */
-export function pulseGoal(mesh: THREE.Mesh, elapsedSeconds: number): void {
+export function pulseGoal(mesh: THREE.Mesh | null, elapsedSeconds: number): void {
+  if (!mesh) return;
   const material = mesh.material as THREE.MeshBasicMaterial;
   const base = material.userData['baseColor'] as THREE.Color | undefined;
   if (!base) return;
@@ -212,4 +261,108 @@ export function pulseGoal(mesh: THREE.Mesh, elapsedSeconds: number): void {
   // Below 1 at the trough. A gate that never dims reads as a static wall; the
   // pulse is what marks it as the thing to race toward.
   material.color.copy(base).multiplyScalar(0.75 + wave * 0.25);
+}
+const degrees = (r: [number, number, number]): [number, number, number] => [
+  THREE.MathUtils.degToRad(r[0]),
+  THREE.MathUtils.degToRad(r[1]),
+  THREE.MathUtils.degToRad(r[2]),
+];
+
+// ------------------------------------------------------------------- pads
+
+/**
+ * Boost pads are rows of chevrons pointing the way they throw you, lit in a
+ * running sequence so the direction reads even from behind; jump pads are a
+ * glowing plate with a column of light, so you can spot one across the map.
+ *
+ * The chase runs at ~1.6 Hz per chevron, under the 3 Hz flash limit.
+ */
+function buildPads(group: THREE.Group, course: Course, disposables: Array<{ dispose(): void }>): void {
+  if (course.pads.length === 0) return;
+
+  // One chevron, flat on the XZ plane, pointing +Z.
+  const chevronShape = new THREE.Shape();
+  chevronShape.moveTo(-0.5, -0.15);
+  chevronShape.lineTo(0, 0.25);
+  chevronShape.lineTo(0.5, -0.15);
+  chevronShape.lineTo(0.5, -0.4);
+  chevronShape.lineTo(0, 0);
+  chevronShape.lineTo(-0.5, -0.4);
+  chevronShape.closePath();
+  const chevron = new THREE.ShapeGeometry(chevronShape);
+  chevron.rotateX(Math.PI / 2); // shape +Y -> world +Z, face up
+  const plate = new THREE.PlaneGeometry(1, 1);
+  plate.rotateX(-Math.PI / 2);
+  const column = new THREE.CylinderGeometry(0.5, 0.5, 1, 24, 1, true);
+  disposables.push(chevron, plate, column);
+
+  const boostColor = new THREE.Color(NEON.cyan);
+  const jumpColor = new THREE.Color(NEON.magenta);
+  const unlit = (colorNode: THREE.Node<'vec3'>, opacity = 1): THREE.MeshBasicNodeMaterial => {
+    const material = new THREE.MeshBasicNodeMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+      opacity,
+    });
+    material.colorNode = colorNode;
+    disposables.push(material);
+    return material;
+  };
+  const gain = POST.edgeGain;
+  const rgb = (c: THREE.Color, k: number) => vec3(c.r * k, c.g * k, c.b * k);
+
+  const boostPlate = unlit(rgb(boostColor, 0.18 * gain));
+  const jumpPlate = unlit(mul(rgb(jumpColor, 0.35 * gain), add(0.7, mul(fxBeat, 0.6))));
+  // Brightest at the base, fading to nothing at the top (cylinder UV v runs
+  // 0 at the bottom to 1 at the top).
+  const columnFade = pow(sub(1, uv().y), 2);
+  const jumpColumn = unlit(mul(rgb(jumpColor, 0.12 * gain), columnFade));
+  const CHEVRONS = 3;
+  const chevronMats = Array.from({ length: CHEVRONS }, (_, i) =>
+    unlit(mul(rgb(boostColor, 0.9 * gain), add(0.25, pow(fract(sub(mul(time, 1.6), i / CHEVRONS)), 3)))),
+  );
+
+  for (const pad of course.pads) {
+    const [px, py, pz] = pad.position;
+    const [sx, sy, sz] = pad.size;
+    const floorY = py - sy / 2 + 0.015;
+
+    if (pad.kind === 'boost') {
+      const [dx, dz] = pad.direction ?? [0, 1];
+      const yaw = Math.atan2(dx, dz);
+      const base = new THREE.Mesh(plate, boostPlate);
+      base.position.set(px, floorY, pz);
+      base.scale.set(sx, 1, sz);
+      group.add(base);
+
+      // Chevrons laid along the throw direction, sized to the pad's width
+      // across that direction.
+      const along = Math.abs(dz) > Math.abs(dx) ? sz : sx;
+      const across = Math.abs(dz) > Math.abs(dx) ? sx : sz;
+      for (let i = 0; i < CHEVRONS; i++) {
+        const t = (i + 0.5) / CHEVRONS - 0.5;
+        const mesh = new THREE.Mesh(chevron, chevronMats[i]!);
+        mesh.position.set(px + dx * t * along, floorY + 0.01, pz + dz * t * along);
+        mesh.rotation.y = yaw;
+        mesh.scale.set(across * 0.7, 1, Math.min(along / CHEVRONS, across) * 0.9);
+        group.add(mesh);
+      }
+    } else {
+      const base = new THREE.Mesh(plate, jumpPlate);
+      base.position.set(px, floorY, pz);
+      base.scale.set(sx, 1, sz);
+      group.add(base);
+
+      const beam = new THREE.Mesh(column, jumpColumn);
+      const height = 6;
+      beam.position.set(px, floorY + height / 2, pz);
+      // Narrower than the plate and faint: a beam to spot from afar, not a pillar
+      // that reads as something you would bump into.
+      beam.scale.set(Math.min(sx, sz) * 0.45, height, Math.min(sx, sz) * 0.45);
+      group.add(beam);
+    }
+  }
 }

@@ -25,8 +25,13 @@ export const MoveInput = schema(
     moveX: t.number().default(0),
     /** Forward, -1 (back) .. 1 (forward). Forward is -Z. */
     moveZ: t.number().default(0),
-    sprint: t.boolean().default(false),
     jump: t.boolean().default(false),
+    /**
+     * Level-triggered like `jump`, for the same rollback reason. Holding it
+     * dashes again the moment the cooldown allows; the cooldown, not the key
+     * edge, is what limits the rate.
+     */
+    dash: t.boolean().default(false),
   },
   'MoveInput',
 );
@@ -45,8 +50,8 @@ export type MoveInputInstance = InstanceType<typeof MoveInput>;
 export interface MoveInputData {
   moveX: number;
   moveZ: number;
-  sprint: boolean;
   jump: boolean;
+  dash: boolean;
 }
 
 /** A fresh, all-zero input. Also what the server synthesizes for an idle tick. */

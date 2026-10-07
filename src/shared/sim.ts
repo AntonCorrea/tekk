@@ -24,9 +24,41 @@ import type {
   KinematicCharacterController,
 } from '@dimforge/rapier3d-compat';
 import { ColliderDesc, Cuboid, RigidBodyDesc } from '@dimforge/rapier3d-compat';
-import { GRAVITY, MOVE, PHYSICS, PLAYER, WORLD } from '../constants.ts';
-import type { Course } from './course.ts';
+import { BOOST, CORE, DASH, GRAVITY, JUMP_PAD, MOVE, PHYSICS, PLAYER, WORLD } from '../constants.ts';
+import type { Course, PadKind, Vec3 } from './course.ts';
 import type { MoveInputData } from './input.ts';
+
+/**
+ * Collision groups.
+ *
+ * Racers pass THROUGH each other, and that has to be a property of the shared
+ * step rather than a server-side nicety. The server holds every racer's capsule
+ * in one world; the client holds only its own. If the server's controller let
+ * one capsule block another, the client could never predict the shove -- it
+ * has no capsule to collide with -- and every brush past a rival would land as
+ * a correction. So a racer's controller sees course geometry and nothing else,
+ * which makes a body's trajectory identical whether it is alone or in a crowd.
+ *
+ * Rapier packs membership into the high 16 bits and the filter mask into the
+ * low 16; two colliders interact only if each one's membership is in the
+ * other's mask.
+ */
+const GROUP_COURSE = 0x0001;
+const GROUP_RACER = 0x0002;
+const groups = (membership: number, filter: number): number => (membership << 16) | filter;
+
+/** Course solids: members of COURSE, willing to touch anything. */
+const COURSE_GROUPS = groups(GROUP_COURSE, 0xffff);
+/** Racer capsules: members of RACER, touching only COURSE -- never each other. */
+const RACER_GROUPS = groups(GROUP_RACER, GROUP_COURSE);
+
+/**
+ * Below this horizontal speed, units/s, a dash with no stick input has no
+ * direction to borrow from momentum and does not fire. Small enough that any
+ * deliberate drift counts; large enough that friction's last crawl to zero
+ * cannot aim a 22 u/s dash at an arbitrary angle.
+ */
+const DASH_MIN_MOMENTUM = 0.5;
 
 /** Object-shaped 3-vector — the shape Rapier uses. */
 export interface Vec3Obj {
@@ -57,6 +89,49 @@ export interface SimBody {
   readonly killY: number;
   /** True only on the step this body was returned to its spawn point. */
   justRespawned: boolean;
+  /**
+   * Fixed ticks of dash remaining; greater than zero means dashing now.
+   *
+   * Integer ticks, never seconds: rollback restores these from PlayerState and
+   * a counter restores exactly where an accumulated float would drift. There is
+   * no stored dash DIRECTION -- during a dash the horizontal velocity IS the
+   * direction scaled to `DASH.speed`, and velocity is already part of truth.
+   */
+  dashTicks: number;
+  /** Fixed ticks until the next dash may start. Counts only while not dashing. */
+  dashCooldownTicks: number;
+  /**
+   * Holding the Core: slower, and cannot start a dash. Written from OUTSIDE --
+   * the server room on a pickup or steal, `adoptTruth` on the client -- and
+   * only ever read by the step.
+   */
+  carrying: boolean;
+  /**
+   * True if this body flew a dash step during the most recent `applyInput`.
+   *
+   * Output only -- the step never reads it, so it cannot change a trajectory.
+   * It exists for the server's steal rule: `dashTicks` already reads 0 after
+   * the LAST dash step, so "dashTicks > 0 after the step" would miss the final
+   * tick of every dash, the one most likely to land on the carrier.
+   */
+  dashedThisStep: boolean;
+  /**
+   * Fixed ticks of boosted top speed left after touching a boost pad. Synced
+   * and restored like the dash counters.
+   */
+  boostTicks: number;
+  /** The course's pads, pre-resolved to world AABBs once at creation. */
+  readonly pads: readonly SimPad[];
+}
+
+/** A pad as the step uses it: a world-space box plus its effect. */
+export interface SimPad {
+  readonly kind: PadKind;
+  readonly min: Vec3Obj;
+  readonly max: Vec3Obj;
+  /** Boost direction, unit length; zero for jump pads. */
+  readonly dirX: number;
+  readonly dirZ: number;
 }
 
 /**
@@ -87,7 +162,9 @@ export function createSimBody(world: World, course: Course, stepSeconds: number)
   // Friction 0: friction on a kinematic capsule does nothing useful against a
   // static world and only muddies the character controller's own handling.
   const collider = world.createCollider(
-    ColliderDesc.capsule(PLAYER.halfHeight, PLAYER.radius).setFriction(0),
+    ColliderDesc.capsule(PLAYER.halfHeight, PLAYER.radius)
+      .setFriction(0)
+      .setCollisionGroups(RACER_GROUPS),
     body,
   );
 
@@ -118,11 +195,38 @@ export function createSimBody(world: World, course: Course, stepSeconds: number)
     respawn: { x: feet.x, y: feet.y, z: feet.z },
     killY: course.killY,
     justRespawned: false,
+    dashTicks: 0,
+    dashCooldownTicks: 0,
+    carrying: false,
+    dashedThisStep: false,
+    boostTicks: 0,
+    pads: course.pads.map((pad) => ({
+      kind: pad.kind,
+      min: {
+        x: pad.position[0] - pad.size[0] / 2,
+        y: pad.position[1] - pad.size[1] / 2,
+        z: pad.position[2] - pad.size[2] / 2,
+      },
+      max: {
+        x: pad.position[0] + pad.size[0] / 2,
+        y: pad.position[1] + pad.size[1] / 2,
+        z: pad.position[2] + pad.size[2] / 2,
+      },
+      dirX: pad.direction?.[0] ?? 0,
+      dirZ: pad.direction?.[1] ?? 0,
+    })),
   };
 }
 
-/** Release a character's body and collider. */
+/**
+ * Release a character's body, collider and controller.
+ *
+ * Removing the body takes its collider with it, but the character controller
+ * is a separate WASM allocation the world tracks on its own. Without the second
+ * call every join on the server leaks one.
+ */
 export function destroySimBody(world: World, sim: SimBody): void {
+  world.removeCharacterController(sim.controller);
   world.removeRigidBody(sim.body);
 }
 
@@ -159,6 +263,13 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
     sim.justRespawned = true;
   }
 
+  // --- pads ----------------------------------------------------------------
+  // Tested against the position left by the previous step, like the fall
+  // check above, and for the same reason: both sides see the same overlap on
+  // the same tick. The capsule is treated as its AABB, which is exact enough
+  // for flat trigger slabs lying on a surface.
+  applyPads(sim);
+
   // --- horizontal intent -------------------------------------------------
   // `moveZ` is already signed forward-positive-negative (W = -Z), so it maps
   // straight onto the world axis.
@@ -167,28 +278,48 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
 
   // Normalise so diagonals aren't faster than cardinals.
   const wishLength = Math.hypot(wishX, wishZ);
-  if (wishLength > 1e-4) {
+  const hasWish = wishLength > 1e-4;
+  if (hasWish) {
     wishX /= wishLength;
     wishZ /= wishLength;
   }
 
-  const targetSpeed = input.sprint ? MOVE.sprintSpeed : MOVE.walkSpeed;
-  const control = sim.grounded ? 1 : MOVE.airControl;
-  const accel = MOVE.accel * control;
-  const decel = MOVE.friction * (sim.grounded ? 1 : MOVE.airControl);
+  // --- dash --------------------------------------------------------------
+  // While dashing, horizontal velocity is left exactly as the dash set it:
+  // steering, accel and friction are all skipped, so the dash flies straight.
+  // Once it ends the ordinary accel/friction below bleed the excess off.
+  const dashing = sim.dashTicks > 0 || tryStartDash(sim, input, wishX, wishZ, hasWish);
+  sim.dashedThisStep = dashing;
 
-  const targetVx = wishX * targetSpeed;
-  const targetVz = wishZ * targetSpeed;
+  if (!dashing) {
+    // A boost raises the top speed for a moment, and while it lasts letting
+    // go of the stick coasts instead of braking: a boost pad should carry you
+    // even if you are not touching anything.
+    const boosted = sim.boostTicks > 0;
+    const topSpeed = boosted ? BOOST.speed : MOVE.runSpeed;
+    const targetSpeed = sim.carrying ? topSpeed * CORE.carrierSpeedFactor : topSpeed;
+    const control = sim.grounded ? 1 : MOVE.airControl;
+    const accel = MOVE.accel * control;
+    const decel = MOVE.friction * (sim.grounded ? 1 : MOVE.airControl);
 
-  if (wishLength > 1e-4) {
-    velocity.x = approach(velocity.x, targetVx, accel * dt);
-    velocity.z = approach(velocity.z, targetVz, accel * dt);
-  } else {
-    velocity.x = approach(velocity.x, 0, decel * dt);
-    velocity.z = approach(velocity.z, 0, decel * dt);
+    if (hasWish) {
+      velocity.x = approach(velocity.x, wishX * targetSpeed, accel * dt);
+      velocity.z = approach(velocity.z, wishZ * targetSpeed, accel * dt);
+    } else if (boosted) {
+      // Coast: keep the boost's velocity.
+    } else {
+      velocity.x = approach(velocity.x, 0, decel * dt);
+      velocity.z = approach(velocity.z, 0, decel * dt);
+    }
   }
 
   // --- jump and gravity --------------------------------------------------
+  // Vertical motion is deliberately untouched by the dash: gravity keeps
+  // acting and a jump still works mid-dash. A flat, gravity-free air dash
+  // would turn every dash into a 4-unit hover across gaps the course was laid
+  // out to make you jump, and would need its own rule for what "grounded"
+  // means mid-air. Leaving Y alone keeps the dash a purely horizontal burst
+  // with one rule: the horizontal velocity is frozen, nothing else changes.
   if (input.jump && sim.grounded) {
     velocity.y = MOVE.jumpSpeed;
     sim.grounded = false;
@@ -204,7 +335,9 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
     z: velocity.z * dt,
   };
 
-  sim.controller.computeColliderMovement(sim.collider, desired);
+  // Filtered by the racer's own groups, so the sweep -- including autostep and
+  // snap-to-ground -- sees course geometry only. See GROUP_RACER.
+  sim.controller.computeColliderMovement(sim.collider, desired, undefined, RACER_GROUPS);
   const movement = sim.controller.computedMovement();
   sim.grounded = sim.controller.computedGrounded();
 
@@ -221,26 +354,158 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
   });
 
   sim.horizontalSpeed = Math.hypot(velocity.x, velocity.z);
+
+  // --- dash bookkeeping ---------------------------------------------------
+  // At the END of the step, so a dash lasts exactly `DASH.durationTicks`
+  // moving steps, the published `dashTicks` is "steps still to fly", and the
+  // tick a dash ends does not also burn a cooldown tick: the next dash can
+  // start no sooner than `DASH.cooldownTicks` whole non-dashing steps later.
+  if (dashing) {
+    sim.dashTicks -= 1;
+    if (sim.dashTicks === 0) sim.dashCooldownTicks = DASH.cooldownTicks;
+  } else if (sim.dashCooldownTicks > 0) {
+    sim.dashCooldownTicks -= 1;
+  }
+  if (sim.boostTicks > 0) sim.boostTicks -= 1;
 }
 
-/** Teleport to an arbitrary feet position and zero all velocity. */
+/**
+ * Start a dash if the rules allow one this step. Returns whether it started.
+ *
+ * Direction is the stick if there is one, else wherever momentum is already
+ * carrying the body. With neither there is nothing to aim at, so nothing fires
+ * and -- because no dash happened -- no cooldown is spent either; holding dash
+ * while standing still must not quietly eat the next one.
+ *
+ * Air dashes are allowed. A carrier can never start one: that is the whole
+ * cost of holding the Core. A dash already under way when the Core arrives
+ * (the steal itself happens mid-dash) is left to finish; only the START is
+ * gated, which keeps the rule a single check rather than a cancel path the
+ * client would have to predict on the exact tick the server hands it the Core.
+ */
+function tryStartDash(
+  sim: SimBody,
+  input: MoveInputData,
+  wishX: number,
+  wishZ: number,
+  hasWish: boolean,
+): boolean {
+  if (!input.dash || sim.carrying || sim.dashCooldownTicks !== 0) return false;
+
+  let dirX = wishX;
+  let dirZ = wishZ;
+  if (!hasWish) {
+    const speed = Math.hypot(sim.velocity.x, sim.velocity.z);
+    if (speed < DASH_MIN_MOMENTUM) return false;
+    dirX = sim.velocity.x / speed;
+    dirZ = sim.velocity.z / speed;
+  }
+
+  sim.velocity.x = dirX * DASH.speed;
+  sim.velocity.z = dirZ * DASH.speed;
+  sim.dashTicks = DASH.durationTicks;
+  return true;
+}
+
+/**
+ * Teleport to an arbitrary feet position, zero all velocity and clear any dash.
+ *
+ * The dash counters reset with the velocity: a dash that survived a teleport
+ * would fling the body out of its spawn at dash speed, and a leftover cooldown
+ * would make a fresh start feel broken. `carrying` is NOT touched -- whether a
+ * respawn costs the Core is a game rule the room owns.
+ */
 export function moveSimBody(sim: SimBody, feetX: number, feetY: number, feetZ: number): void {
+  sim.dashTicks = 0;
+  sim.dashCooldownTicks = 0;
+  sim.boostTicks = 0;
   sim.velocity.x = 0;
   sim.velocity.y = 0;
   sim.velocity.z = 0;
   sim.grounded = false;
   sim.horizontalSpeed = 0;
 
-  // setTranslation, not setNextKinematicTranslation: an instantaneous cut is
-  // not a step the simulation should interpolate toward.
-  sim.body.setTranslation(
-    {
-      x: feetX,
-      y: feetY + PLAYER.halfHeight + PLAYER.radius,
-      z: feetZ,
-    },
-    true,
-  );
+  teleportBody(sim, { x: feetX, y: feetY + PLAYER.halfHeight + PLAYER.radius, z: feetZ });
+}
+
+/**
+ * Cut the capsule to a body-centre position, instantly, body AND collider.
+ *
+ * setTranslation, not setNextKinematicTranslation: an instantaneous cut is not
+ * a step the simulation should interpolate toward.
+ *
+ * The collider is moved explicitly because Rapier only re-derives a collider's
+ * pose from its body inside `world.step()`. Moving the body alone leaves the
+ * collider where it was, and the very next `computeColliderMovement` sweeps
+ * from that stale pose. On the client that is a rollback bug: after adopting
+ * truth the first replayed step tests walls from the MISPREDICTED position,
+ * misses a rail the server hit, and the body ends up inside it. The harness
+ * caught exactly that on a mid-dash rollback beside the start rail. The
+ * capsule sits at the body origin, so the two translations are the same.
+ */
+export function teleportBody(sim: SimBody, centre: Vec3Obj): void {
+  sim.body.setTranslation(centre, true);
+  sim.collider.setTranslation(centre);
+}
+
+/**
+ * Apply every pad the body overlaps this step.
+ *
+ * Boost: if the racer is already moving the pad's way (any positive component
+ * along it), horizontal velocity snaps to the pad's direction at boost speed
+ * and the boost timer refills, every tick the racer is on it -- so a strip of
+ * boost pads is a conveyor that also straightens you out. Jump: a grounded racer is
+ * launched up; the next tick it is airborne, so it cannot re-trigger mid-climb.
+ */
+function applyPads(sim: SimBody): void {
+  if (sim.pads.length === 0) return;
+  const p = sim.body.translation();
+  const r = PLAYER.radius;
+  const h = PLAYER.halfHeight + PLAYER.radius;
+
+  for (const pad of sim.pads) {
+    if (
+      p.x + r <= pad.min.x || p.x - r >= pad.max.x ||
+      p.y + h <= pad.min.y || p.y - h >= pad.max.y ||
+      p.z + r <= pad.min.z || p.z - r >= pad.max.z
+    ) {
+      continue;
+    }
+    if (pad.kind === 'boost') {
+      // Directional: a boost only grabs a racer already moving its way. Run
+      // across it or against it and nothing happens. Without this, an outward
+      // boost on a lane you must run IN along was a trap: it threw you back,
+      // you ran at it again, it threw you back again.
+      if (sim.velocity.x * pad.dirX + sim.velocity.z * pad.dirZ <= 0) continue;
+      sim.velocity.x = pad.dirX * BOOST.speed;
+      sim.velocity.z = pad.dirZ * BOOST.speed;
+      sim.boostTicks = BOOST.ticks;
+    } else if (sim.grounded) {
+      sim.velocity.y = JUMP_PAD.speed;
+      sim.grounded = false;
+    }
+  }
+}
+
+/**
+ * Euler degrees (X, then Y, then Z) to a quaternion -- the same convention as
+ * Three's default Euler order, so the collider and the mesh agree. Written out
+ * here because this module may not import Three.
+ */
+export function eulerDegreesToQuat(rotation: Vec3): { x: number; y: number; z: number; w: number } {
+  const half = Math.PI / 360;
+  const c1 = Math.cos(rotation[0] * half);
+  const c2 = Math.cos(rotation[1] * half);
+  const c3 = Math.cos(rotation[2] * half);
+  const s1 = Math.sin(rotation[0] * half);
+  const s2 = Math.sin(rotation[1] * half);
+  const s3 = Math.sin(rotation[2] * half);
+  return {
+    x: s1 * c2 * c3 + c1 * s2 * s3,
+    y: c1 * s2 * c3 - s1 * c2 * s3,
+    z: c1 * c2 * s3 + s1 * s2 * c3,
+    w: c1 * c2 * c3 - s1 * s2 * s3,
+  };
 }
 
 /** Move `current` toward `target` by at most `maxDelta`. */
@@ -275,7 +540,9 @@ export function buildCourseColliders(world: World, course: Course): RigidBody {
       ColliderDesc.cuboid(sx / 2, sy / 2, sz / 2)
         .setTranslation(px, py, pz)
         .setFriction(WORLD.friction)
-        .setRestitution(WORLD.restitution),
+        .setRestitution(WORLD.restitution)
+        .setCollisionGroups(COURSE_GROUPS)
+        .setRotation(eulerDegreesToQuat(solid.rotation ?? [0, 0, 0])),
       staticBody,
     );
   }
@@ -303,6 +570,9 @@ export function probeGround(world: World, x: number, z: number, fromY: number): 
     // Only boxes exist in the course format today. If a second primitive is
     // added this must grow a branch rather than silently ignoring it.
     if (!(collider.shape instanceof Cuboid)) return;
+    // Ramps are rotated, and the containment test below is axis-aligned. A
+    // respawn point is never on a ramp, so they are simply not candidates.
+    if (Math.abs(collider.rotation().w) < 0.999999) return;
     const half = collider.shape.halfExtents;
 
     const t = collider.translation();

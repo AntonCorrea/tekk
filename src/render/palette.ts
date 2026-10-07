@@ -151,6 +151,35 @@ export const NEON = {
 } as const;
 
 /**
+ * Racer identity colours. Deliberately OUTSIDE the pastel ramp.
+ *
+ * The arena and UI stay pastel, and that is exactly why racers must not: a
+ * racer has to be the most saturated thing in their patch of screen, so the
+ * eye finds people before it finds architecture. Electric, fully saturated
+ * hues, spaced around the wheel so six racers stay tellable apart in motion.
+ *
+ * White is excluded on purpose -- it is the Core carrier's cue.
+ */
+export const RACER = {
+  hotPink: 0xff2fb9,
+  cyan: 0x00e1ff,
+  electricBlue: 0x3a6bff,
+  acid: 0xb8ff2e,
+  violet: 0xa24bff,
+  orange: 0xff8a1f,
+} as const;
+
+/** Identity order: the local racer takes the first, remotes cycle the rest. */
+export const RACER_IDENTITY: readonly number[] = [
+  RACER.hotPink,
+  RACER.cyan,
+  RACER.electricBlue,
+  RACER.acid,
+  RACER.violet,
+  RACER.orange,
+];
+
+/**
  * Which set of post weights and emissive gains to use.
  *
  * Not a taste distinction — a budget one. The WebGL2 fallback on a phone cannot

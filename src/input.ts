@@ -5,9 +5,17 @@
  * network input schema once per step, which keeps what the server simulates and
  * what the client predicts byte-identical.
  *
+ * Controls: WASD / arrows move, Space jumps, Shift (either) dashes. There is
+ * no sprint -- Shift belongs to the dash now.
+ *
  * `jump` is level-triggered here and stays level-triggered on the wire. A
  * queued keypress consumed by one step would be lost every time rollback
  * replayed past it — see shared/input.ts.
+ *
+ * `dash` is plain held state, not even queued like jump: holding Shift dashes
+ * again the moment the cooldown allows, and the cooldown (simulated, so both
+ * sides agree on it) is the only rate limit. A tap shorter than one fixed step
+ * can be missed; at 60 Hz that is a 16ms tap, which no hand produces.
  */
 
 import { CAMERA } from './constants.ts';
@@ -17,7 +25,7 @@ const FORWARD_KEYS = new Set(['KeyW', 'ArrowUp']);
 const BACK_KEYS = new Set(['KeyS', 'ArrowDown']);
 const LEFT_KEYS = new Set(['KeyA', 'ArrowLeft']);
 const RIGHT_KEYS = new Set(['KeyD', 'ArrowRight']);
-const SPRINT_KEYS = new Set(['ShiftLeft', 'ShiftRight']);
+const DASH_KEYS = new Set(['ShiftLeft', 'ShiftRight']);
 const JUMP_KEYS = new Set(['Space']);
 
 const held = new Set<string>();
@@ -182,10 +190,23 @@ export function stageInput(target: MoveInputData, yaw = 0): MoveInputData {
   // are exactly what that client predicted.
   const cos = Math.cos(yaw);
   const sin = Math.sin(yaw);
-  target.moveX = strafe * cos - forward * sin;
-  target.moveZ = -strafe * sin - forward * cos;
+  let moveX = strafe * cos - forward * sin;
+  let moveZ = -strafe * sin - forward * cos;
 
-  target.sprint = [...SPRINT_KEYS].some((code) => held.has(code));
+  // A held diagonal has length sqrt(2), and once rotated a single component can
+  // exceed 1 (yaw 0.3 gives moveZ -1.25). The server's `sanitize` clamps each
+  // axis to [-1, 1], so an unclamped vector here is a direction the server never
+  // simulates -- a correction on every tick. Scaling to unit length keeps both
+  // components inside the range and the direction unchanged.
+  const length = Math.hypot(moveX, moveZ);
+  if (length > 1) {
+    moveX /= length;
+    moveZ /= length;
+  }
+  target.moveX = moveX;
+  target.moveZ = moveZ;
+
+  target.dash = [...DASH_KEYS].some((code) => held.has(code));
   target.jump = jumpQueued;
 
   jumpQueued = false;
