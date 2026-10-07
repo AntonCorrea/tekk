@@ -9,7 +9,7 @@ intent and render state; they never decide where anybody is.
 Built for the [Monad Metropolis](https://monad.xyz/developers/hackathons/metropolis)
 hackathon.
 
-**Play it:** the deployed client is on Render (link in the repo description).
+**Play it:** [tekk-1.onrender.com](https://tekk-1.onrender.com/)
 
 ---
 
