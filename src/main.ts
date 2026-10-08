@@ -66,14 +66,25 @@ async function boot(): Promise<void> {
   // sends, using the same shared builder the server used.
   const world = createPhysicsWorld();
   const session = await connectSession(world, { endpoint: resolveEndpoint() });
-  const { course, sim } = session;
+  // `let`, not destructured once: a map swap replaces both of these, and the
+  // frame below re-reads them whenever `session.syncCourse()` fires. Holding
+  // the boot-time `sim` past a swap is a use-after-free on the Rapier heap.
+  let course = session.course;
+  let sim = session.sim;
 
-  const courseHandle = buildCourse(stage.scene, course);
+  let courseHandle = buildCourse(stage.scene, course);
   // A course with its own city drops the generic grid and far-field slabs.
-  if (course.ownCity) stage.useOwnCity();
+  stage.setOwnCity(course.ownCity === true);
   const visuals = buildScene(stage);
   const remotes = createRacerVisuals(stage.scene, session);
-  const hud = createHud(container);
+  const hud = createHud(container, {
+    // The card id comes from the catalog the server shipped; `sendVote` just
+    // puts it on the wire, and the server checks it against the same list.
+    onVote: (courseId) => session.sendVote(courseId),
+    // The pill echoes back the value it is showing, and the server only
+    // accepts the message while a match is running.
+    onSkip: (value) => session.sendSkip(value),
+  });
   const coreVisual = createCoreVisual(stage.scene);
 
   // Reused every frame: the loop below must not allocate.
@@ -86,6 +97,9 @@ async function boot(): Promise<void> {
   // hands twenty times does not fire a wave the moment you arrive.
   let lastTransfers = session.room.state.coreTransfers;
   let lastCarrier = session.room.state.carrierId;
+  // The previous frame's phase, so entering a lobby window can be seen as a
+  // transition (see the pointer-lock release in the frame).
+  let lastPhase = session.room.state.phase;
 
   // --- feel ----------------------------------------------------------------
   // Hit-stop: the image holds for a beat on a steal you were part of. Only the
@@ -144,14 +158,18 @@ async function boot(): Promise<void> {
     console.warn(`TEKK left the room (code ${code}${reason ? `: ${reason}` : ''})`);
   });
 
-  // Exposed for playtesting from the console: TEKK.state, TEKK.predict
+  // Exposed for playtesting from the console: TEKK.state, TEKK.predict.
+  // Both accessors are live — a map swap replaces the course and the local
+  // body, and a snapshot property here would hand out the destroyed ones.
   Object.assign(globalThis, {
     TEKK: {
-      course,
+      get course() {
+        return session.course;
+      },
       session,
       world,
       get player() {
-        return sim;
+        return session.sim;
       },
     },
   });
@@ -163,6 +181,19 @@ async function boot(): Promise<void> {
     // because the reconciler replays from the buffer — batching them into one
     // send would collapse several simulation steps into one.
     const steps = session.pump(now);
+
+    // --- a map swap, if the lobby voted one in ------------------------
+    // Checked before anything this frame reads `course` or `sim`: the swap
+    // rebuilds the prediction world (session) and the visuals (here), and the
+    // camera's teleport detection below then glides it over to the new map.
+    if (session.syncCourse()) {
+      course = session.course;
+      sim = session.sim;
+      courseHandle.dispose();
+      courseHandle = buildCourse(stage.scene, course);
+      stage.setOwnCity(course.ownCity === true);
+      console.info(`TEKK — map swapped to "${course.id}" (${course.name})`);
+    }
 
     // Read the look angles once per frame, not once per step: every step in
     // this batch must agree on the angles, and the values are sanitised on the
@@ -357,7 +388,19 @@ async function boot(): Promise<void> {
     // The arena and the Core breathe on the kick.
     fxBeat.value = techno.beat();
 
-    hud.update(state, session.sessionId, course.name, connection, sim);
+    // --- the ballot needs a free cursor --------------------------------
+    // Under pointer lock every click is swallowed by the canvas, so a locked
+    // player could never reach the vote cards. Released once per entry into a
+    // lobby window; clicking the scene simply re-engages the lock, and Esc
+    // releases it again while the cards matter.
+    if (state.phase !== lastPhase) {
+      if ((state.phase === 'ready' || state.phase === 'results') && document.pointerLockElement) {
+        document.exitPointerLock();
+      }
+      lastPhase = state.phase;
+    }
+
+    hud.update(state, session.sessionId, course, connection, sim);
     // During hit-stop the canvas simply keeps its last frame.
     if (now >= hitStopUntil) stage.render();
   };

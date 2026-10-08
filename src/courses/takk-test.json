@@ -1,0 +1,237 @@
+{
+  "id": "takk-test",
+  "name": "Test Lab",
+  "spawn": [
+    0,
+    1,
+    14
+  ],
+  "killY": -12,
+  "coreSpawn": [
+    0,
+    2.05,
+    0
+  ],
+  "solids": [
+    {
+      "id": "floor",
+      "kind": "box",
+      "position": [
+        0,
+        -1,
+        0
+      ],
+      "size": [
+        36,
+        2,
+        36
+      ],
+      "color": "#b35bf7"
+    },
+    {
+      "id": "rail-north",
+      "kind": "box",
+      "position": [
+        0,
+        0.8,
+        -17.7
+      ],
+      "size": [
+        34.8,
+        1.6,
+        0.6
+      ],
+      "color": "#f086b8"
+    },
+    {
+      "id": "rail-south",
+      "kind": "box",
+      "position": [
+        0,
+        0.8,
+        17.7
+      ],
+      "size": [
+        34.8,
+        1.6,
+        0.6
+      ],
+      "color": "#f086b8"
+    },
+    {
+      "id": "rail-east",
+      "kind": "box",
+      "position": [
+        17.7,
+        0.8,
+        0
+      ],
+      "size": [
+        0.6,
+        1.6,
+        34.8
+      ],
+      "color": "#f086b8"
+    },
+    {
+      "id": "rail-west",
+      "kind": "box",
+      "position": [
+        -17.7,
+        0.8,
+        0
+      ],
+      "size": [
+        0.6,
+        1.6,
+        34.8
+      ],
+      "color": "#f086b8"
+    },
+    {
+      "id": "dais",
+      "kind": "box",
+      "position": [
+        0,
+        0.525,
+        0
+      ],
+      "size": [
+        8,
+        1.05,
+        8
+      ],
+      "color": "#f7aee0"
+    },
+    {
+      "id": "dais-step-2",
+      "kind": "box",
+      "position": [
+        0,
+        0.35,
+        5
+      ],
+      "size": [
+        8,
+        0.7,
+        2
+      ],
+      "color": "#c69dfa"
+    },
+    {
+      "id": "dais-step-1",
+      "kind": "box",
+      "position": [
+        0,
+        0.175,
+        7
+      ],
+      "size": [
+        8,
+        0.35,
+        2
+      ],
+      "color": "#c69dfa"
+    },
+    {
+      "id": "ramp-east",
+      "kind": "box",
+      "position": [
+        11.5,
+        1.4,
+        0
+      ],
+      "size": [
+        9,
+        1,
+        7
+      ],
+      "color": "#4eabe8",
+      "rotation": [
+        0,
+        0,
+        15
+      ]
+    },
+    {
+      "id": "pillar-nw",
+      "kind": "box",
+      "position": [
+        -9,
+        1.5,
+        -9
+      ],
+      "size": [
+        2,
+        3,
+        2
+      ],
+      "color": "#808ff9"
+    },
+    {
+      "id": "pillar-sw",
+      "kind": "box",
+      "position": [
+        -9,
+        1.5,
+        9
+      ],
+      "size": [
+        2,
+        3,
+        2
+      ],
+      "color": "#808ff9"
+    }
+  ],
+  "pads": [
+    {
+      "id": "boost-s",
+      "kind": "boost",
+      "position": [
+        0,
+        0.25,
+        11
+      ],
+      "size": [
+        5,
+        0.5,
+        3
+      ],
+      "direction": [
+        0,
+        -1
+      ]
+    },
+    {
+      "id": "jump-nw",
+      "kind": "jump",
+      "position": [
+        -8,
+        0.25,
+        -13
+      ],
+      "size": [
+        3,
+        0.5,
+        3
+      ]
+    }
+  ],
+  "decor": [
+    {
+      "id": "core-ring",
+      "kind": "ring",
+      "position": [
+        0,
+        1.11,
+        0
+      ],
+      "size": [
+        8,
+        0.12,
+        8
+      ]
+    }
+  ]
+}

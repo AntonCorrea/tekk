@@ -58,11 +58,48 @@ export const PlayerState = schema(
     lastHeldAtMs: t.number().default(-1),
     /** Final standing, 1-based. 0 until the match reaches `results`. */
     rank: t.number().default(0),
+
+    /**
+     * Course id this racer has voted for in the current lobby window, or ''
+     * for no vote. A client may only ever name an id the server shipped in
+     * `GameState.catalog`; the server resolves ids to files itself.
+     */
+    votedFor: t.string().default(''),
+
+    /**
+     * Whether this racer wants to abandon the running match. Accepted only
+     * during `countdown`/`playing`, carried as an explicit boolean so a
+     * reconnect cannot invert the intent, and cleared when the lobby resets.
+     * A strict majority of the connected racers cancels the match straight
+     * back to `ready`.
+     */
+    votedToSkip: t.boolean().default(false),
   },
   'PlayerState',
 );
 
 export type PlayerStateInstance = InstanceType<typeof PlayerState>;
+
+/**
+ * One entry of the room's map catalog — what the lobby may vote on.
+ *
+ * Deliberately thin: id, display name and the two counts a card shows. The
+ * file path stays on the server (see server/catalog.ts); a vote is an id, and
+ * the server resolves it, so a client can never name a file on the server's
+ * disk.
+ */
+export const MapInfo = schema(
+  {
+    /** The course id clients vote on, and the key `votedFor` matches. */
+    id: t.string().default(''),
+    name: t.string().default(''),
+    solids: t.number().default(0),
+    pads: t.number().default(0),
+  },
+  'MapInfo',
+);
+
+export type MapInfoInstance = InstanceType<typeof MapInfo>;
 
 /**
  * Match phases, in the order they occur.
@@ -85,11 +122,18 @@ export const GameState = schema(
     phaseRemainingMs: t.number().default(0),
 
     /**
-     * The course, verbatim as JSON. Written once at room creation and never
-     * touched again, so it costs one packet at join and nothing thereafter.
-     * The client validates it through `parseCourse` before building a collider.
+     * The course, verbatim as JSON. Sent at room creation and again whenever
+     * the room swaps maps (see the lobby vote); the client re-validates it
+     * through `parseCourse` and rebuilds on every change.
      */
     courseJson: t.string().default(''),
+
+    /**
+     * The maps this room may vote to, in card order. Filled once at room
+     * creation — the catalog itself never changes mid-room, only which map is
+     * running does.
+     */
+    catalog: t.array(MapInfo),
 
     /** sessionId of whoever holds the Core, or '' when it is free. */
     carrierId: t.string().default(''),

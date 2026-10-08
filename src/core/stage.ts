@@ -16,13 +16,17 @@ export interface Stage {
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
   /**
-   * Strip the generic set dressing for a course that brings its own city:
-   * hides the ground grid (which sits at y~0, right under every void, so a
-   * fall looked like dropping through a floor) and the far-field platforms
-   * (placed around the original lane, and liable to sit inside a bigger map).
-   * The course's own decor supplies the skyline instead.
+   * Strip or restore the generic set dressing, per whether the running course
+   * brings its own city. A course with `ownCity` drops the ground grid (which
+   * sits at y~0, right under every void, so a fall looked like dropping
+   * through a floor) and the far-field platforms (placed around the original
+   * lane, and liable to sit inside a bigger map); its own decor supplies the
+   * skyline instead.
+   *
+   * A toggle, not a one-shot: a map swap can move either way — a city course
+   * to an arena that wants its grid back, or the reverse.
    */
-  useOwnCity(): void;
+  setOwnCity(active: boolean): void;
   render(): void;
   dispose(): void;
 }
@@ -116,11 +120,11 @@ export async function createStage(container: HTMLElement): Promise<Stage> {
     renderer,
     scene,
     camera,
-    useOwnCity: () => {
-      grid.visible = false;
+    setOwnCity: (active: boolean) => {
+      grid.visible = !active;
       // The whole far field: its pastel horizon towers read as flat columns
       // next to a course's own lit skyline.
-      farField.group.visible = false;
+      farField.group.visible = !active;
     },
     render: () => post.pipeline.render(),
     dispose: () => {

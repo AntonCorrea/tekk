@@ -13,7 +13,8 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { Server } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
-import { DEFAULT_COURSE_PATH } from './course.ts';
+import { loadCourse, resolveCoursePath } from './course.ts';
+import { loadCatalog } from './catalog.ts';
 import { RaceRoom } from './room.ts';
 import { DEFAULT_TIMINGS, type MatchTimings } from './rules.ts';
 
@@ -24,8 +25,9 @@ export interface GameServerOptions {
    */
   matchTimings?: Partial<MatchTimings>;
   /**
-   * Course file. Production never passes this and gets the default course; the
-   * harness pins its wire tests to a course whose layout they were written for.
+   * Course file. Production never passes this and gets the selected course
+   * (`COURSE` env, else the default); the harness pins its wire tests to a
+   * course whose layout they were written for.
    */
   coursePath?: string;
 }
@@ -73,10 +75,13 @@ export function createGameServer(options: GameServerOptions = {}) {
   //
   // `coursePath` too, and ALWAYS as a concrete string: it is a path on this
   // server's disk, so a client-supplied value must never survive the merge.
-  // Leaving the key out would let a client's own `coursePath` through.
+  // Leaving the key out would let a client's own `coursePath` through. The
+  // fallback is resolved here, once, so the file being served is decided at
+  // define time (COURSE env, else the default) and the room only ever sees
+  // the resulting path.
   gameServer.define('race', RaceRoom, {
     timings: { ...DEFAULT_TIMINGS, ...options.matchTimings },
-    coursePath: options.coursePath ?? DEFAULT_COURSE_PATH,
+    coursePath: options.coursePath ?? resolveCoursePath(),
   });
 
   return { gameServer, httpServer };
@@ -119,12 +124,25 @@ if (isEntryPoint) {
   const PORT = Number(process.env['PORT'] ?? 2567);
   const HOST = process.env['HOST'] ?? '0.0.0.0';
 
+  // Resolve and parse the selected course BEFORE listening: a bad COURSE
+  // value should fail at boot with the file named, not as a join error on
+  // the first match. Rooms re-read the file per match (room.ts), so course
+  // edits still go live on the next match without a server restart.
+  const course = loadCourse(resolveCoursePath());
+  // The vote ballot, scanned the same way each room scans it: logged so the
+  // boot line shows at a glance which maps a lobby can actually pick. Files
+  // that do not parse are skipped with their own warning, not fatal here.
+  const catalog = loadCatalog();
+
   const { gameServer } = createGameServer();
   await gameServer.listen(PORT, HOST);
 
   console.info(
     `TEKK server listening on http://${HOST}:${PORT}  ` +
-      `(room "race", node ${process.version})`,
+      `(room "race", course "${course.id}" -- ${course.name}, ` +
+      `${course.solids.length} solids, ` +
+      `${catalog.length} maps in the vote [${catalog.map((entry) => entry.id).join(', ')}], ` +
+      `node ${process.version})`,
   );
 
   installShutdownHandlers(gameServer);

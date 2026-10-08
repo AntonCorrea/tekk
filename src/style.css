@@ -570,6 +570,214 @@ body {
   text-shadow: none;
 }
 
+/* ---------------------------------------------------------------- lobby */
+
+/*
+ * The map ballot: the two lobby windows only (ready, results). Bottom-centre,
+ * clear of the dash meter's slot and — on phones — of the stick, the action
+ * buttons and the mute pill. Above the touch layer (30) so a thumb reaches the
+ * cards, and bounded to a row so a press outside it still lands on the camera.
+ * Interactive, so unlike the HUD it does take pointer events.
+ */
+.lobby {
+  position: fixed;
+  bottom: 96px;
+  left: 50%;
+  z-index: 35;
+  transform: translateX(-50%);
+  width: min(680px, calc(100vw - 48px));
+  text-align: center;
+  color: var(--ink);
+  font-family: var(--grotesk);
+  pointer-events: auto;
+}
+
+.lobby[hidden] {
+  display: none;
+}
+
+.lobby-head {
+  margin-bottom: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.24em;
+  text-indent: 0.24em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.lobby-cards {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+/* A hairline and a slight scrim rather than a panel: the scene stays visible
+   under the ballot, the way every other readout leaves it alone. */
+.map-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 168px;
+  padding: 10px 16px 12px;
+  border: 1px solid var(--hairline);
+  background: rgba(2, 2, 2, 0.55);
+  color: var(--ink);
+  font-family: var(--grotesk);
+  text-align: left;
+  cursor: pointer;
+}
+
+.map-card:hover {
+  border-color: var(--lavender);
+}
+
+.map-name {
+  font-family: var(--condensed);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-stats {
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.map-votes {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--light-blue);
+}
+
+.map-now {
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--lavender);
+}
+
+/* Declared after is-current on purpose: if your pick is also the running map,
+   cyan wins the border, so "what I chose" is never masked by "what is now". */
+.map-card.is-current {
+  border-color: var(--accent);
+}
+
+.map-card.is-voted {
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 16px rgba(78, 171, 232, 0.35);
+}
+
+.lobby-hint {
+  margin-top: 10px;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* Phones: lift the ballot over the 132px stick (bottom 24) and the mute pill,
+   and let cards go two-up so a third map wraps instead of shrinking. */
+@media (max-width: 560px) {
+  .lobby {
+    bottom: 172px;
+    width: calc(100vw - 32px);
+  }
+
+  .map-card {
+    min-width: 0;
+    flex: 1 1 44%;
+    padding: 8px 12px 10px;
+  }
+
+  .map-name {
+    font-size: 15px;
+  }
+}
+
+/* ----------------------------------------------------------- skip vote */
+
+/* Mid-match cancel: a pill stacked above the dash meter. Bottom centre is
+   free in both skip windows because the ballot owns the very bottom only in
+   lobby windows, and the two are never on screen together. Above the touch
+   overlay so a thumb can reach it, and clear of the stick, the action
+   buttons, the standings and the banner countdown on every layout. */
+.skip {
+  position: fixed;
+  bottom: 112px;
+  left: 50%;
+  z-index: 35;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  font-family: var(--grotesk);
+}
+
+.skip[hidden] {
+  display: none;
+}
+
+.skip-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: rgba(2, 2, 2, 0.55);
+  color: var(--ink-dim);
+  font-family: var(--condensed);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.skip-btn:hover {
+  border-color: var(--lavender);
+}
+
+/* Voted: the same cyan as a chosen map card — your ballot is in. */
+.skip-btn.is-voted {
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+  box-shadow: 0 0 16px rgba(78, 171, 232, 0.35);
+}
+
+.skip-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+}
+
+.skip-btn.is-voted .skip-count {
+  color: var(--neon-cyan);
+}
+
+/* Narrow windows and portrait phones: bottom-right rather than
+   bottom-centre, so the pill clears the stick on the left and the mute
+   pill in the middle. */
+@media (max-width: 560px) {
+  .skip {
+    right: 16px;
+    left: auto;
+    bottom: 104px;
+    transform: none;
+  }
+}
+
 @media (max-width: 640px) {
   .announce {
     font-size: 40px;

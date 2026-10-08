@@ -135,6 +135,70 @@ export function rankStandings(scores: readonly Score[]): Standings {
   };
 }
 
+// -------------------------------------------------------------- map votes
+
+/**
+ * Which map the next match runs on, from the votes cast.
+ *
+ * Plurality of the votes actually cast: the catalog id with the most votes
+ * wins — but only if exactly one id holds the top count. A tie, no votes, or
+ * votes that only reach ids outside the catalog all return `currentId`: the
+ * room stays on the map it is already running, which is the outcome nobody
+ * can call unfair after the fact.
+ *
+ * Iterated over `catalogIds` rather than the tally's own keys, so the winner
+ * cannot depend on the order players happened to vote in. Abstaining (an
+ * empty `votedFor`) is simply not a vote; one player out of four can still
+ * pick the map if nobody contests it.
+ */
+export function chooseMapVote(
+  votes: readonly string[],
+  catalogIds: readonly string[],
+  currentId: string,
+): string {
+  const tally = new Map<string, number>();
+  for (const id of votes) {
+    if (id === '') continue;
+    tally.set(id, (tally.get(id) ?? 0) + 1);
+  }
+  if (tally.size === 0) return currentId;
+
+  let bestId = '';
+  let bestCount = 0;
+  let tied = false;
+  for (const id of catalogIds) {
+    const count = tally.get(id) ?? 0;
+    if (count === 0) continue;
+    if (count > bestCount) {
+      bestId = id;
+      bestCount = count;
+      tied = false;
+    } else if (count === bestCount) {
+      tied = true;
+    }
+  }
+
+  // `bestId === ''` means every vote named an id outside the catalog, which
+  // the room never accepts — belt and braces against the same stay-put rule.
+  return tied || bestId === '' ? currentId : bestId;
+}
+
+// ------------------------------------------------------------ mid-match skip
+
+/**
+ * Whether a running match has been voted out: a strict majority of every
+ * racer currently connected wants to skip.
+ *
+ * Half the room is not a majority — with two players that means both of
+ * them, so a minority can never force out a match the other player wants to
+ * finish. The denominator is the whole room rather than the voters:
+ * abstaining is a vote to play on, and a racer who disconnects takes their
+ * own flag out of the count the moment they leave.
+ */
+export function hasSkipMajority(skipVotes: number, players: number): boolean {
+  return skipVotes * 2 > players;
+}
+
 // ---------------------------------------------------------------- match flow
 
 /** Phase lengths in ms. Production uses `MATCH`; tests may shorten them. */

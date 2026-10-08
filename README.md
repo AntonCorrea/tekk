@@ -263,6 +263,11 @@ The local racer renders from the reconciler's interpolated pose, never from
   hard. Not yet measured.
 - **No GPU shows the raw error.** A device without WebGPU or WebGL2 gets the
   renderer's own message rather than a friendly one.
+- **The tab title reads `TAKK`; everything else reads `TEKK`.** The README, the
+  repository and every console message say TEKK, but `index.html` says
+  `TAKK — Core Rush`, as do the course ids (`takk-newyork`, `takk-arena`) and
+  the mute preference key. Left alone for now: picking a spelling is a
+  separate job, and the `index.html` half of it is one line.
 - **One unresolved bug.** In an early session the server stopped responding to
   HTTP entirely while the process stayed alive at 0% CPU — no spin, just no
   answers, with sockets leaked in `CloseWait`. It has not reproduced since, so

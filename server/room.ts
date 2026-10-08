@@ -21,7 +21,7 @@
 
 import type { Client } from '@colyseus/core';
 import { Room } from '@colyseus/core';
-import type { World } from '@dimforge/rapier3d-compat';
+import type { RigidBody, World } from '@dimforge/rapier3d-compat';
 
 import { CORE, FIXED_TIMESTEP } from '../src/constants.ts';
 import type { Course, Vec3 } from '../src/shared/course.ts';
@@ -35,14 +35,17 @@ import {
   moveSimBody,
   type SimBody,
 } from '../src/shared/sim.ts';
-import { GameState, PlayerState } from '../src/shared/state.ts';
+import { GameState, MapInfo, PlayerState } from '../src/shared/state.ts';
 import type { GameStateInstance, MatchPhase, PlayerStateInstance } from '../src/shared/state.ts';
 import { createPhysicsWorld, initPhysics } from '../src/physics/world.ts';
-import { loadCourse } from './course.ts';
+import { DEFAULT_COURSE_PATH, loadCourse } from './course.ts';
+import { catalogEntry, loadCatalog, type CatalogEntry } from './catalog.ts';
 import {
   advancePhase,
   chooseStealer,
   choosePickup,
+  chooseMapVote,
+  hasSkipMajority,
   rankStandings,
   resolveTimings,
   type Challenger,
@@ -106,9 +109,13 @@ export class RaceRoom extends Room<RaceRoomOptions> {
   });
 
   private course!: Course;
+  /** The course's collider body, kept so a map swap can remove it. */
+  private courseBody!: RigidBody;
   private coreSpawn!: Vec3;
   private world!: World;
   private timings!: MatchTimings;
+  /** Every map this room may be voted to. `path` never leaves the server. */
+  private catalog: CatalogEntry[] = [];
 
   /**
    * The match clock, in fixed ticks. See `PhaseClock` in rules.ts for why it
@@ -132,14 +139,70 @@ export class RaceRoom extends Room<RaceRoomOptions> {
 
     await initPhysics();
     this.world = createPhysicsWorld();
-    buildCourseColliders(this.world, this.course);
+    this.courseBody = buildCourseColliders(this.world, this.course);
 
     this.setState(new GameState());
 
-    // The course definition, sent once. The client parses and validates it with
-    // the same `parseCourse` the server used, then builds identical colliders
-    // from it via the shared builder.
+    // The course definition. The client parses and validates it with the
+    // same `parseCourse` the server used, then builds identical colliders
+    // from it via the shared builder. Rewritten on a map swap, and that
+    // rewrite is the client's signal to rebuild.
     this.state.courseJson = JSON.stringify(this.course);
+
+    // --- the ballot --------------------------------------------------------
+    // Every playable map next to the default course, plus this room's own
+    // course if it lives elsewhere (a path-form `COURSE`, or the harness's
+    // pinned file). Shipped to clients as UI; the paths behind it stay here.
+    this.catalog = loadCatalog();
+    if (!this.catalog.some((entry) => entry.id === this.course.id)) {
+      this.catalog.unshift(catalogEntry(this.course, options?.coursePath ?? DEFAULT_COURSE_PATH));
+    }
+    for (const entry of this.catalog) {
+      const info = new MapInfo();
+      info.id = entry.id;
+      info.name = entry.name;
+      info.solids = entry.solids;
+      info.pads = entry.pads;
+      this.state.catalog.push(info);
+    }
+
+    // --- map votes ---------------------------------------------------------
+    // Accepted only in the two lobby windows, and only for ids the catalog
+    // ships. Both checks live here: the wire message is a bare course id, so
+    // a client can never vote for a file, for a phase it is not in, or for a
+    // map this room never offered.
+    this.onMessage('vote', (client, message: unknown) => {
+      if (this.state.phase !== 'ready' && this.state.phase !== 'results') return;
+
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+
+      const courseId = (message as { courseId?: unknown } | null)?.courseId;
+      if (typeof courseId !== 'string') return;
+      if (!this.catalog.some((entry) => entry.id === courseId)) return;
+
+      player.votedFor = courseId;
+      log(`${player.name} voted for "${courseId}"`);
+    });
+
+    // --- mid-match skip -----------------------------------------------------
+    // The mirror of the vote, with its window inverted: this one exists only
+    // while a match is running, and it carries the explicit desired value
+    // rather than a flip, so a stale click or a reconnect cannot invert what
+    // was meant. `value: false` is how a vote is withdrawn.
+    this.onMessage('skip', (client, message: unknown) => {
+      if (this.state.phase !== 'countdown' && this.state.phase !== 'playing') return;
+
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+
+      const value = (message as { value?: unknown } | null)?.value;
+      if (typeof value !== 'boolean') return;
+
+      player.votedToSkip = value;
+      log(`${player.name} ${value ? 'voted to skip the match' : 'withdrew the skip'}`);
+    });
+
     this.freeCore();
 
     // 20 state patches/sec. Position is predicted locally, so this only carries
@@ -238,6 +301,24 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     this.clockState = advance.clock;
     if (advance.entered) this.enterPhase(advance.entered);
     this.state.phaseRemainingMs = advance.remainingMs;
+
+    // --- the mid-match skip -------------------------------------------------
+    // After the clock, so a countdown that just ran out or a match that just
+    // reached results has already moved on: this only ever cuts a match that
+    // is still running. It lands in `enterReady`, which rewinds the clock
+    // itself, clears the scores, and settles a ballot that cannot exist here
+    // (the vote handler only runs in lobby windows) — skipping ends the
+    // match, it never picks the next map.
+    if (this.state.phase === 'countdown' || this.state.phase === 'playing') {
+      let skips = 0;
+      for (const player of this.state.players.values()) {
+        if (player.votedToSkip) skips += 1;
+      }
+      if (hasSkipMajority(skips, this.state.players.size)) {
+        log(`match skipped by vote (${skips}/${this.state.players.size} wanted out)`);
+        this.enterPhase('ready');
+      }
+    }
 
     // --- publish ----------------------------------------------------------
     this.placeCore();
@@ -357,6 +438,10 @@ export class RaceRoom extends Room<RaceRoomOptions> {
   private enterPhase(phase: MatchPhase): void {
     switch (phase) {
       case 'countdown':
+        // Whoever moved also committed the lobby: the ready-window's votes
+        // settle exactly here, which may rebuild the room onto a new map —
+        // everyone landing on its spawn before the countdown runs out.
+        this.settleVotes();
         this.state.phase = 'countdown';
         log('countdown');
         break;
@@ -415,8 +500,16 @@ export class RaceRoom extends Room<RaceRoomOptions> {
    */
   private enterReady(): void {
     this.clockState = { phase: 'ready', ticks: 0 };
+    // The results-window's votes settle here, before the reset: on a swap
+    // that means the respawn below already uses the new map's spawn.
+    this.settleVotes();
     this.respawnAll();
-    for (const state of this.state.players.values()) clearScore(state);
+    // Scores and skip flags both die with the lobby reset: the flags are how
+    // the previous match ended, not a standing request about the next one.
+    for (const state of this.state.players.values()) {
+      clearScore(state);
+      state.votedToSkip = false;
+    }
     this.freeCore();
     this.state.winnerId = '';
     this.state.phase = 'ready';
@@ -430,6 +523,90 @@ export class RaceRoom extends Room<RaceRoomOptions> {
       const state = this.state.players.get(sessionId);
       if (state) publishBody(state, sim);
     }
+  }
+
+  // ------------------------------------------------------------------ lobby
+
+  /**
+   * Settle the pending map vote and clear it, whichever way it goes.
+   *
+   * Called at exactly the two points a lobby window closes — ready →
+   * countdown and results → ready — so a vote is consumed by one transition
+   * and can never linger into a window where it would mean something else.
+   * A tie, an empty ballot, or votes for a map that went missing all keep
+   * the current course; that is `chooseMapVote`'s call, not this one's.
+   *
+   * Returns whether the room actually swapped maps.
+   */
+  private settleVotes(): boolean {
+    const votes: string[] = [];
+    for (const player of this.state.players.values()) votes.push(player.votedFor);
+
+    const winnerId = chooseMapVote(votes, this.catalog.map((entry) => entry.id), this.course.id);
+
+    // Consumed either way. Even a tie that keeps the map is a decision, and
+    // holding the votes over would let them stack into the next window.
+    for (const player of this.state.players.values()) player.votedFor = '';
+
+    if (winnerId === this.course.id) return false;
+    const entry = this.catalog.find((candidate) => candidate.id === winnerId);
+    if (!entry) return false;
+    return this.swapCourse(entry);
+  }
+
+  /**
+   * Rebuild the room onto another course.
+   *
+   * Every racer's body is destroyed and recreated rather than patched in
+   * place: `SimBody.respawn` and `pads` are baked from the course at
+   * creation, so a body left over from the old map would respawn into
+   * geometry that no longer exists. The bodies keep their session ids, so
+   * the players map, the score records and every client's truth keep
+   * working untouched — only the world under them changed.
+   *
+   * The Core is freed as part of the swap. Both swap points are match
+   * boundaries where it belongs on its dais anyway, and its dais just moved.
+   *
+   * Returns false — staying put — if the file went away or lost its
+   * `coreSpawn` between the catalog being read and this swap: a stale vote
+   * is not worth crashing a live room over.
+   */
+  private swapCourse(entry: CatalogEntry): boolean {
+    let next: Course;
+    try {
+      next = loadCourse(entry.path);
+    } catch (err) {
+      log(
+        `map "${entry.id}" is unreadable (${err instanceof Error ? err.message : String(err)}); ` +
+          `staying on "${this.course.id}"`,
+      );
+      return false;
+    }
+    if (!next.coreSpawn) {
+      log(`map "${entry.id}" has no coreSpawn; staying on "${this.course.id}"`);
+      return false;
+    }
+
+    for (const sim of this.racers.values()) destroySimBody(this.world, sim);
+    this.world.removeRigidBody(this.courseBody);
+
+    this.course = next;
+    this.coreSpawn = next.coreSpawn;
+    this.courseBody = buildCourseColliders(this.world, next);
+    for (const [sessionId] of this.racers) {
+      this.racers.set(sessionId, createSimBody(this.world, next, FIXED_TIMESTEP));
+    }
+
+    // The rebuild signal: the client re-parses this string, swaps its own
+    // colliders and body, and rebuilds the course visuals to match.
+    this.state.courseJson = JSON.stringify(next);
+    this.freeCore();
+    // The fresh bodies sit at the nominal spawn; this lands them on its
+    // surface and publishes the cut, so every client sees the truth at once.
+    this.respawnAll();
+
+    log(`map swapped to "${next.id}" -- ${next.solids.length} solids, ${next.pads.length} pads`);
+    return true;
   }
 }
 

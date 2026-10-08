@@ -43,7 +43,9 @@ import {
   advancePhase,
   chooseStealer,
   choosePickup,
+  chooseMapVote,
   DEFAULT_TIMINGS,
+  hasSkipMajority,
   rankStandings,
   resolveTimings,
   type Challenger,
@@ -750,6 +752,44 @@ function testRules(course: Course) {
     check('timings: a zero-length phase is rejected', threw);
   }
 
+  // --- the lobby's map vote -----------------------------------------------
+  // Plurality of the votes cast. Every non-decision -- a tie, an empty ballot,
+  // votes only for ids the catalog never shipped -- abstains to the current
+  // map, and the tally is walked in catalog order so the winner cannot depend
+  // on who happened to vote first.
+  {
+    const catalog = ['alpha', 'beta', 'gamma'];
+    check('vote: a plurality of the votes cast wins',
+      chooseMapVote(['beta', 'alpha', 'beta'], catalog, 'alpha') === 'beta');
+    check('vote: a tie abstains to the current map',
+      chooseMapVote(['alpha', 'gamma'], catalog, 'beta') === 'beta');
+    check('vote: an all-abstain ballot keeps the current map',
+      chooseMapVote(['', ''], catalog, 'gamma') === 'gamma');
+    check('vote: abstentions do not dilute a real vote',
+      chooseMapVote(['', 'beta'], catalog, 'alpha') === 'beta' &&
+        chooseMapVote(['beta', ''], catalog, 'alpha') === 'beta');
+    check('vote: ids outside the catalog neither win nor steal a win',
+      chooseMapVote(['nuke', 'nuke', 'beta'], catalog, 'alpha') === 'beta' &&
+        chooseMapVote(['nuke', 'nuke'], catalog, 'alpha') === 'alpha');
+    check('vote: the result does not depend on the order votes arrived in',
+      chooseMapVote(['gamma', 'alpha', 'gamma'], catalog, 'beta') === 'gamma' &&
+        chooseMapVote(['alpha', 'gamma', 'gamma'], catalog, 'beta') === 'gamma');
+  }
+
+  // --- the mid-match skip threshold ---------------------------------------
+  // Strict majority of the whole room: half is not a majority, abstaining
+  // counts as a vote to play on, and an empty room cannot vote itself out.
+  {
+    check('skip: no votes never cancels a match',
+      !hasSkipMajority(0, 1) && !hasSkipMajority(0, 2) && !hasSkipMajority(0, 0));
+    check('skip: half the room is not a majority',
+      !hasSkipMajority(1, 2) && !hasSkipMajority(2, 4));
+    check('skip: one vote over half cancels',
+      hasSkipMajority(2, 3) && hasSkipMajority(3, 5) && hasSkipMajority(1, 1));
+    check('skip: a unanimous room always cancels',
+      hasSkipMajority(2, 2) && hasSkipMajority(3, 3) && hasSkipMajority(6, 6));
+  }
+
   // --- the dash flag the steal rule reads ----------------------------------
   // `dashTicks` publishes 0 after the last dash step, so the steal rule reads
   // `dashedThisStep` instead. Pin that it covers every flying step exactly.
@@ -1086,6 +1126,322 @@ async function testWire(course: Course) {
   await gameServer.gracefullyShutdown(false);
 }
 
+// ============================================================ E: map vote
+
+/**
+ * Phases for the vote suite: short enough that three lobby -> match -> lobby
+ * cycles fit in a test run, long enough for a vote to land between patches.
+ */
+const VOTE_TIMINGS = { countdownMs: 500, durationMs: 2000, resultsMs: 500 };
+
+/**
+ * The lobby ballot over the wire: what syncs down, what the server accepts,
+ * and what each of the two settlement points actually does to the room.
+ *
+ * Three matches walk the whole decision set — a unanimous swap out of ready,
+ * a unanimous swap out of results, a tie that stays put, and a skip ballot
+ * that cancels a running match — plus a solo vote (abstentions are not
+ * votes) and the rejections that must never move anything: bad payloads,
+ * unknown ids, votes outside their window.
+ */
+async function testMapVote(): Promise<void> {
+  console.log('\n=== E. lobby map vote (wire) ===');
+
+  const { createGameServer } = await import('../server/index.ts');
+  const { parseCourse } = await import('../src/shared/course.ts');
+
+  const PORT = 26100 + Math.floor(Math.random() * 400);
+  // Pinned to Arena 01, like the wire suite: a small known course to start
+  // from, so every swap below reads as `courseJson` changing id.
+  const { gameServer } = createGameServer({
+    matchTimings: VOTE_TIMINGS,
+    coursePath: join(dirname(DEFAULT_COURSE_PATH), 'takk-arena.json'),
+  });
+  await gameServer.listen(PORT, '127.0.0.1');
+  check('vote suite: server boots and listens', true, `port ${PORT}`);
+
+  const client = new Client(`ws://localhost:${PORT}`);
+  const roomA = await client.joinOrCreate('race', { name: 'VoteFox' });
+  const roomB = await client.joinOrCreate('race', { name: 'VoteHare' });
+  const A = roomA.sessionId;
+  const B = roomB.sessionId;
+  const s = () => roomA.state;
+  const me = (id: string) => roomA.state.players.get(id);
+  check('vote suite: two clients join the same room',
+    !!A && !!B && roomA.roomId === roomB.roomId,
+    `A=${A.slice(0, 6)} B=${B.slice(0, 6)}`);
+
+  // --- helpers ------------------------------------------------------------
+  const hA = roomA.input({ type: MoveInput, mode: 'reliable' });
+  const hB = roomB.input({ type: MoveInput, mode: 'reliable' });
+  const send = (h: typeof hA, moveZ: number) => {
+    h.data.moveX = 0;
+    h.data.moveZ = moveZ;
+    h.data.dash = false;
+    h.data.jump = false;
+    h.send();
+  };
+  const idle = () => {
+    send(hA, 0);
+    send(hB, 0);
+  };
+  /** Wait while `cond` holds, idling both racers as you poll. */
+  const waitWhile = async (cond: () => boolean, ms: number) => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline && cond()) {
+      idle();
+      await sleep(16);
+    }
+    return !cond();
+  };
+  const idleFor = async (ms: number) => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      idle();
+      await sleep(16);
+    }
+  };
+  /** Move A until the room commits to a countdown (the ready-window settle point). */
+  const startCountdown = async () => {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && s().phase !== 'countdown') {
+      send(hA, -1);
+      send(hB, 0);
+      await sleep(16);
+    }
+    idle();
+    return s().phase === 'countdown';
+  };
+  const vote = (room: typeof roomA, courseId: unknown) => room.send('vote', { courseId });
+  const skipVote = (room: typeof roomA, value: unknown) => room.send('skip', { value });
+  const currentId = () => JSON.parse(s().courseJson).id as string;
+  const currentCourse = () => parseCourse(JSON.parse(s().courseJson), 'server');
+  const ballotOf = (id: string) => me(id)!.votedFor;
+
+  // --- the catalog syncs down ---------------------------------------------
+  /** The catalog card shape as it arrives over the wire (state is untyped here). */
+  type Card = { id: string; name: string; solids: number; pads: number };
+  await waitWhile(() => (s().courseJson ?? '') === '', 2000);
+  // The initial state snapshot carries courseJson and catalog together, so
+  // once one has landed, so has the other.
+  const cards: Card[] = s().catalog.map((entry: Card) => ({
+    id: entry.id,
+    name: entry.name,
+    solids: entry.solids,
+    pads: entry.pads,
+  }));
+  const ids = cards.map((card) => card.id);
+  check('the catalog arrives with the room state', ids.length > 0, `[${ids.join(', ')}]`);
+  check('catalog cards carry the counts the lobby shows',
+    cards.every((card) => card.name.length > 0 && card.solids > 0 && card.pads >= 0),
+    cards.map((card) => `${card.id}:${card.solids}s/${card.pads}p`).join(' '));
+  const laneId = loadCourse(join(dirname(DEFAULT_COURSE_PATH), 'tekk-01.json')).id;
+  check('the catalog lists only Core Rush courses (no coreSpawn, no ballot)',
+    !ids.includes(laneId), `${laneId} ${ids.includes(laneId) ? 'present' : 'absent'}`);
+
+  const startId = currentId();
+  const others = ids.filter((id) => id !== startId);
+  const target1 = others[0];
+  if (!target1) {
+    skip('vote suite: a second map exists to vote for', 'catalog has only the running map');
+    await roomA.leave();
+    await roomB.leave();
+    await gameServer.gracefullyShutdown(false);
+    return;
+  }
+
+  // --- what the server accepts ---------------------------------------------
+  vote(roomA, target1);
+  await waitWhile(() => ballotOf(A) !== target1, 1500);
+  check('a valid vote in ready is accepted and published',
+    ballotOf(A) === target1, `votedFor=${ballotOf(A) || "''"} want=${target1}`);
+
+  // A rejection must leave the standing vote exactly as it was — not clear
+  // it, not replace it, not throw on the wire.
+  vote(roomA, 42);
+  vote(roomA, {});
+  vote(roomA, 'no-such-map');
+  await idleFor(250);
+  check('bad payloads and unknown ids are rejected without touching the vote',
+    ballotOf(A) === target1, `votedFor=${ballotOf(A) || "''"}`);
+
+  vote(roomB, target1);
+  await waitWhile(() => ballotOf(B) !== target1, 1500);
+  check('a second racer\'s vote lands alongside the first',
+    ballotOf(A) === target1 && ballotOf(B) === target1,
+    `A=${ballotOf(A) || "''"} B=${ballotOf(B) || "''"}`);
+
+  // --- 1. unanimous ready-ballot swaps at the countdown --------------------
+  check('movement starts the countdown with votes pending', await startCountdown(),
+    `phase=${s().phase}`);
+  await waitWhile(() => currentId() === startId, 2000);
+  check('a unanimous ready-ballot swaps the map as the countdown starts',
+    currentId() === target1, `course=${currentId()}, wanted ${target1}`);
+  check('settling the vote clears every ballot',
+    ballotOf(A) === '' && ballotOf(B) === '',
+    `A=${ballotOf(A) || "''"} B=${ballotOf(B) || "''"}`);
+  const catalogAfterSwap = s().catalog.map((entry: { id: string }) => entry.id).join(',');
+  check('the catalog itself does not change with the swap',
+    catalogAfterSwap === ids.join(','), catalogAfterSwap);
+
+  const swapped1 = currentCourse();
+  await waitWhile(() => Math.abs(me(A)!.z - swapped1.spawn[2]) > 1, 2000);
+  check('racers respawn on the new map\'s spawn',
+    Math.abs(me(A)!.z - swapped1.spawn[2]) < 1 && Math.abs(me(B)!.z - swapped1.spawn[2]) < 1,
+    `A z=${me(A)!.z.toFixed(2)} B z=${me(B)!.z.toFixed(2)} spawn z=${swapped1.spawn[2]}`);
+  check('the Core sits on the new map\'s dais',
+    Math.abs(s().coreX - swapped1.coreSpawn![0]) < 1e-6 &&
+      Math.abs(s().coreY - swapped1.coreSpawn![1]) < 1e-6 &&
+      Math.abs(s().coreZ - swapped1.coreSpawn![2]) < 1e-6,
+    `core (${s().coreX}, ${s().coreY}, ${s().coreZ}) vs (${swapped1.coreSpawn!.join(', ')})`);
+
+  // Outside a lobby window the vote is ignored outright.
+  const duringCountdown = others[1] ?? target1;
+  vote(roomA, duringCountdown);
+  await idleFor(250);
+  check('votes are ignored outside the lobby windows (countdown)',
+    ballotOf(A) === '', `votedFor=${ballotOf(A) || "''"}`);
+
+  // --- 2. unanimous results-ballot swaps when the lobby resets -------------
+  await waitWhile(() => s().phase !== 'results', 20_000);
+  check('the match runs out into results', s().phase === 'results', `phase=${s().phase}`);
+
+  const target2 = others[1] ?? startId;
+  vote(roomA, target2);
+  vote(roomB, target2);
+  await waitWhile(() => ballotOf(A) !== target2 || ballotOf(B) !== target2, 1500);
+  check('votes are accepted during results',
+    ballotOf(A) === target2 && ballotOf(B) === target2,
+    `A=${ballotOf(A) || "''"} B=${ballotOf(B) || "''"}`);
+
+  await waitWhile(() => s().phase !== 'ready', 5000);
+  check('a unanimous results-ballot swaps the map when the lobby resets',
+    s().phase === 'ready' && currentId() === target2,
+    `phase=${s().phase} course=${currentId()}, wanted ${target2}`);
+  check('the reset also clears every ballot',
+    ballotOf(A) === '' && ballotOf(B) === '',
+    `A=${ballotOf(A) || "''"} B=${ballotOf(B) || "''"}`);
+
+  const swapped2 = currentCourse();
+  await waitWhile(() => Math.abs(me(A)!.z - swapped2.spawn[2]) > 1, 2000);
+  check('the results-swap respawn lands on the new map\'s spawn',
+    Math.abs(me(A)!.z - swapped2.spawn[2]) < 1 && Math.abs(me(B)!.z - swapped2.spawn[2]) < 1,
+    `A z=${me(A)!.z.toFixed(2)} spawn z=${swapped2.spawn[2]}`);
+
+  // --- the skip ballot only exists mid-match -------------------------------
+  // In a lobby window the ballot above already carries the decision, so a
+  // skip vote there is meaningless and must change nothing.
+  skipVote(roomA, true);
+  await idleFor(250);
+  check('skip votes are ignored outside a match',
+    me(A)!.votedToSkip === false,
+    `phase=${s().phase} votedToSkip=${String(me(A)!.votedToSkip)}`);
+  skipVote(roomA, false);
+
+  // --- 3. a tie stays put ---------------------------------------------------
+  const tieStayId = currentId();
+  const tieTargets = ids.filter((id) => id !== tieStayId);
+  if (tieTargets.length >= 2) {
+    const [tieA, tieB] = [tieTargets[0]!, tieTargets[1]!];
+    vote(roomA, tieA);
+    vote(roomB, tieB);
+    await waitWhile(() => ballotOf(A) !== tieA || ballotOf(B) !== tieB, 1500);
+    check('movement starts the countdown on a tied ballot', await startCountdown(),
+      `phase=${s().phase}`);
+    await idleFor(250);
+    check('a tied ready-ballot leaves the current map in place',
+      currentId() === tieStayId, `course=${currentId()}, tie on [${tieA}, ${tieB}]`);
+    check('the tie is consumed all the same',
+      ballotOf(A) === '' && ballotOf(B) === '',
+      `A=${ballotOf(A) || "''"} B=${ballotOf(B) || "''"}`);
+  } else {
+    skip('a tied ready-ballot leaves the current map in place', 'fewer than three maps in the catalog');
+    skip('the tie is consumed all the same', 'fewer than three maps in the catalog');
+  }
+
+  // --- 4. a skip majority cancels the running match -------------------------
+  // One vote out of two is a minority and changes nothing — withdrawable,
+  // because the payload is the intent rather than a flip. Both votes in
+  // lands in `ready` directly: never through `results`, never with a map
+  // swap (the ballots were consumed at the countdown; skipping ends the
+  // match, it does not pick the next map).
+  {
+    // The tie branch just started a countdown; a two-map catalog skips that
+    // branch entirely, so start one here instead.
+    if (s().phase === 'ready') await startCountdown();
+
+    // A non-boolean never reaches the flag.
+    skipVote(roomA, 'yes');
+    await idleFor(250);
+    check('a non-boolean skip payload is rejected',
+      me(A)!.votedToSkip === false && s().phase !== 'ready',
+      `phase=${s().phase} votedToSkip=${String(me(A)!.votedToSkip)}`);
+
+    // One of two is a minority: the match carries on.
+    skipVote(roomA, true);
+    await idleFor(300);
+    check('one skip vote out of two does not cancel the match',
+      me(A)!.votedToSkip === true && s().phase !== 'ready',
+      `phase=${s().phase}`);
+
+    // Withdrawable: `value: false` takes the flag back down.
+    skipVote(roomA, false);
+    await idleFor(250);
+    check('a skip vote can be withdrawn',
+      me(A)!.votedToSkip === false && s().phase !== 'ready',
+      `phase=${s().phase}`);
+
+    // Both in: straight back to the lobby.
+    skipVote(roomA, true);
+    skipVote(roomB, true);
+    let sawResults = s().phase === 'results';
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && s().phase !== 'ready') {
+      if (s().phase === 'results') sawResults = true;
+      idle();
+      await sleep(16);
+    }
+    check('two skip votes out of two cancel the match',
+      s().phase === 'ready', `phase=${s().phase}`);
+    check('the cancel goes straight to ready, never through results',
+      !sawResults, `sawResults=${sawResults} phase=${s().phase}`);
+    check('the cancel clears every skip flag',
+      me(A)!.votedToSkip === false && me(B)!.votedToSkip === false,
+      `A=${String(me(A)!.votedToSkip)} B=${String(me(B)!.votedToSkip)}`);
+    check('skipping ends the match, it does not pick the next map',
+      currentId() === tieStayId, `course=${currentId()}, stayed on ${tieStayId}`);
+  }
+
+  // --- 5. a solo vote beats an empty field ---------------------------------
+  // The skip cancel already put the lobby back; if it somehow did not, the
+  // running match would have to play out first.
+  await waitWhile(() => s().phase !== 'ready', 25_000);
+  check('the lobby comes back around for another ballot', s().phase === 'ready',
+    `phase=${s().phase}`);
+
+  const soloId = ids.find((id) => id !== currentId())!;
+  vote(roomA, soloId);
+  await waitWhile(() => ballotOf(A) !== soloId, 1500);
+  check('one vote against a silent field is still accepted',
+    ballotOf(A) === soloId && ballotOf(B) === '',
+    `A=${ballotOf(A) || "''"} B=${ballotOf(B) || "''"}`);
+
+  const beforeSolo = currentId();
+  check('movement starts the countdown for the solo ballot', await startCountdown(),
+    `phase=${s().phase}`);
+  await idleFor(250);
+  check('a solo vote wins the ballot (abstentions are not votes)',
+    currentId() === soloId && currentId() !== beforeSolo,
+    `course=${currentId()}, wanted ${soloId}`);
+  check('the winning solo vote is consumed',
+    ballotOf(A) === '' && ballotOf(B) === '',
+    `A=${ballotOf(A) || "''"} B=${ballotOf(B) || "''"}`);
+
+  await roomA.leave();
+  await roomB.leave();
+  await gameServer.gracefullyShutdown(false);
+}
+
 // ====================================================================== main
 
 function sleep(ms: number): Promise<void> {
@@ -1115,6 +1471,13 @@ async function main(): Promise<void> {
     await testWire(loadCourse(join(dirname(DEFAULT_COURSE_PATH), 'takk-arena.json')));
   } catch (err) {
     check('wire suite ran to completion', false, `crashed: ${String(err).slice(0, 160)}`);
+  }
+  try {
+    // Its own server, its own port: the ballot needs three full match cycles,
+    // so it must not share the wire suite's room.
+    await testMapVote();
+  } catch (err) {
+    check('map vote suite ran to completion', false, `crashed: ${String(err).slice(0, 160)}`);
   }
 
   // A skipped check is unverified, not passing. Say so in the tally rather than

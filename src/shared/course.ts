@@ -161,7 +161,7 @@ export interface Course {
   decor: CourseDecor[];
   /**
    * The course brings its own city, so the client hides the generic ground
-   * grid and far-field platforms (see core/stage.ts `useOwnCity`).
+   * grid and far-field platforms (see core/stage.ts `setOwnCity`).
    */
   ownCity?: boolean;
 }

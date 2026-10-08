@@ -30,6 +30,7 @@ import {
   applyInput,
   buildCourseColliders,
   createSimBody,
+  destroySimBody,
   type SimBody,
 } from '../shared/sim.ts';
 import { adoptTruth, readPose } from '../physics/player.ts';
@@ -50,10 +51,19 @@ export interface SessionOptions {
 
 export interface Session {
   readonly room: SessionRoom;
+  /**
+   * The running course. Live — a map swap replaces it, so anything holding
+   * it across frames must re-read it after `syncCourse()` returns true
+   * rather than caching it at boot.
+   */
   readonly course: Course;
   readonly predict: Predict<GameStateInstance>;
   readonly input: InputHandle<MoveInputData>;
-  /** Your predicted capsule. `body.translation()` is where you actually are. */
+  /**
+   * Your predicted capsule. Live, for the same reason as `course`: a map
+   * swap destroys and rebuilds the body, and holding the old one past that
+   * point is a use-after-free on the Rapier WASM heap.
+   */
   readonly sim: SimBody;
   readonly sessionId: string;
 
@@ -86,6 +96,32 @@ export interface Session {
   /** Interpolated render position for any racer, including your own. */
   positionOf(player: PlayerStateInstance): { x: number; y: number; z: number };
 
+  /**
+   * Detect a server-side map swap and rebuild the prediction world for it.
+   *
+   * Call once per frame, after `pump()`. Returns true when the course
+   * changed — the caller must then re-read `session.course` and
+   * `session.sim` and rebuild whatever held the old course (the course
+   * visuals, mostly). False is the common case and costs one string
+   * comparison.
+   */
+  syncCourse(): boolean;
+
+  /**
+   * Vote for the next map. The id must come from `state.catalog`; the server
+   * ignores anything else, and ignores votes outside the `ready`/`results`
+   * lobby windows.
+   */
+  sendVote(courseId: string): void;
+
+  /**
+   * Vote to abandon the running match — or withdraw the vote. The value is
+   * explicit rather than a flip, so a stale click cannot invert intent. The
+   * server only listens during `countdown`/`playing`; when a strict majority
+   * of the room wants out, the match cancels straight back to `ready`.
+   */
+  sendSkip(value: boolean): void;
+
   leave(): Promise<void>;
 }
 
@@ -110,16 +146,26 @@ export async function connectSession(
   // --- wait for the authoritative course ---------------------------------
   // The state arrives asynchronously after join, so the course is not available
   // on the line below. Polling the field is the honest option here; the wait is
-  // a single round trip and normally resolves immediately.
-  const course = await waitForCourse(room);
+  // a single round trip and normally resolves immediately. The raw JSON comes
+  // back alongside the parsed course so `syncCourse()` has the exact string
+  // this join saw — parsing it again later to compare would be wasteful.
+  const joined = await waitForCourse(room);
+  let course = joined.course;
+  let lastCourseJson = joined.json;
 
   // --- course colliders ---------------------------------------------------
   // Built from the shared builder so the client's collision geometry is the
-  // same function of the same data as the server's.
-  const courseBody: RigidBody = buildCourseColliders(world, course);
+  // same function of the same data as the server's. `let` because a map swap
+  // removes this body and builds the next course's.
+  let courseBody: RigidBody = buildCourseColliders(world, course);
 
   // --- your predicted body ------------------------------------------------
-  const sim = createSimBody(world, course, FIXED_TIMESTEP);
+  // Held inside a wrapper, not as a bare local: the reconciler stores this
+  // object once and passes it to every step/adopt/pose callback, so a map
+  // swap can replace `simWorld.sim` with a body built on the new course and
+  // each callback simply sees the new one. Caching `sim` anywhere outside
+  // this wrapper is how you end up holding a destroyed Rapier body.
+  const simWorld = { world, sim: createSimBody(world, course, FIXED_TIMESTEP) };
 
   const predict = Predict.get(room, { mode: 'lerp', delay: 100 });
 
@@ -143,7 +189,7 @@ export async function connectSession(
   // go through the same machinery via `predict.value` -- stayed smooth.
   const simReconciler = predict.sim({
     input,
-    world: { world, sim },
+    world: simWorld,
 
     // SHARED with the server, via src/shared/sim.ts. Same function, same dt,
     // same order. If this ever stops being literally the server's call, the
@@ -172,11 +218,18 @@ export async function connectSession(
 
   const session: Session = {
     room,
-    course,
     predict,
     input,
-    sim,
     sessionId: room.sessionId,
+
+    // Live views over the closure state. A map swap swaps both underneath —
+    // see the `syncCourse` contract in the interface.
+    get course() {
+      return course;
+    },
+    get sim() {
+      return simWorld.sim;
+    },
 
     pump(now: number) {
       // Reconciles against any new server truth, then reports how many fixed
@@ -203,6 +256,45 @@ export async function connectSession(
       };
     },
 
+    syncCourse() {
+      const json = room.state?.courseJson;
+      if (!json || json === lastCourseJson) return false;
+
+      let next: Course;
+      try {
+        next = parseCourse(JSON.parse(json), 'server');
+      } catch (err) {
+        // The server serializes a course it already validated, so a failure
+        // here is a bug rather than a network fault. Keep the current world —
+        // re-parsing every frame would only spam — and say so loudly.
+        console.error('TEKK: server sent an unparsable course; keeping the current one', err);
+        lastCourseJson = json;
+        return false;
+      }
+      lastCourseJson = json;
+
+      // Rebuild the world under the reconciler. It stores the wrapper once
+      // and keeps no snapshot ring, so swapping the colliders and the body
+      // between frames is safe: the next step/adopt/pose simply reads the
+      // new ones. The fresh body starts at the new map's spawn, which is
+      // where the server just teleported every racer, so truth and
+      // prediction meet there on the next acknowledgement.
+      world.removeRigidBody(courseBody);
+      courseBody = buildCourseColliders(world, next);
+      destroySimBody(world, simWorld.sim);
+      simWorld.sim = createSimBody(world, next, FIXED_TIMESTEP);
+      course = next;
+      return true;
+    },
+
+    sendVote(courseId: string) {
+      room.send('vote', { courseId });
+    },
+
+    sendSkip(value: boolean) {
+      room.send('skip', { value });
+    },
+
     async leave() {
       predict.dispose();
       world.removeRigidBody(courseBody);
@@ -214,16 +306,22 @@ export async function connectSession(
 }
 
 /**
- * Resolve once the room state carries a course.
+ * Resolve once the room state carries a course, with the raw JSON it came in.
+ *
+ * The raw string matters later: `syncCourse()` compares `state.courseJson`
+ * against exactly what was joined with, so a course that arrives by swap is
+ * noticed without re-parsing the old one to ask whether it changed.
  *
  * A rejected join would otherwise leave this hanging forever, so the disconnect
  * event breaks the wait and surfaces the real reason.
  */
-function waitForCourse(room: SessionRoom): Promise<Course> {
+function waitForCourse(room: SessionRoom): Promise<{ course: Course; json: string }> {
   const existing = room.state?.courseJson;
-  if (existing) return Promise.resolve(parseCourse(JSON.parse(existing), 'server'));
+  if (existing) {
+    return Promise.resolve({ course: parseCourse(JSON.parse(existing), 'server'), json: existing });
+  }
 
-  return new Promise<Course>((resolve, reject) => {
+  return new Promise<{ course: Course; json: string }>((resolve, reject) => {
     let settled = false;
 
     const finish = (fn: () => void) => {
@@ -241,7 +339,7 @@ function waitForCourse(room: SessionRoom): Promise<Course> {
       if (!json) return;
       finish(() => {
         try {
-          resolve(parseCourse(JSON.parse(json), 'server'));
+          resolve({ course: parseCourse(JSON.parse(json), 'server'), json });
         } catch (err) {
           reject(err instanceof Error ? err : new Error(String(err)));
         }

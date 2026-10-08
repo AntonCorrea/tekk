@@ -20,12 +20,15 @@ import type { SimBody } from '../shared/sim.ts';
 /** The slice of the predicted sim the HUD reads. */
 export type HudSim = Pick<SimBody, 'dashTicks' | 'dashCooldownTicks' | 'carrying'>;
 
+/** The slice of the course the HUD shows: the name, and the id cards mark as current. */
+export type HudCourse = { id: string; name: string };
+
 export interface Hud {
   /** Per-frame readout of replicated state. */
   update(
     state: GameStateInstance,
     selfId: string,
-    courseName: string,
+    course: HudCourse,
     connection: ConnectionStatus,
     sim: HudSim,
   ): void;
@@ -36,6 +39,22 @@ export interface Hud {
    */
   announce(text: string, tone: AnnounceTone): void;
   dispose(): void;
+}
+
+export interface HudOptions {
+  /**
+   * A map card was clicked. The id is taken from `state.catalog`, which the
+   * server shipped — the HUD only ever echoes back an id it was given, and
+   * the server re-checks it anyway.
+   */
+  onVote?(courseId: string): void;
+
+  /**
+   * Toggle your mid-match skip vote. Carries the explicit desired value
+   * rather than "flip it", so a stale click against a tally the server has
+   * already moved cannot invert what was meant.
+   */
+  onSkip?(value: boolean): void;
 }
 
 /** `gain` is good for you, `loss` is bad for you, `info` is someone else's moment. */
@@ -80,12 +99,40 @@ class Slot {
   }
 }
 
-export function createHud(container: HTMLElement): Hud {
-  const course = div('hud hud-course', container);
+export function createHud(container: HTMLElement, options: HudOptions = {}): Hud {
+  const courseLabel = div('hud hud-course', container);
   const timer = new Slot(div('hud hud-timer', container));
   const status = new Slot(div('hud hud-status', container));
   const hold = new Slot(div('hud hud-hold', container));
   const banner = new Slot(div('banner', container));
+  const lobby = new Slot(div('lobby', container));
+  lobby.el.hidden = true;
+  // Delegated on the container, not on the cards: the Slot rewrites the
+  // cards' innerHTML whenever the tally moves, and per-card listeners would
+  // die with each rewrite. Clicking a card in a locked-pointer game would
+  // otherwise also leave focus behind — blur so Space keeps meaning jump.
+  lobby.el.addEventListener('click', (event) => {
+    const target =
+      event.target instanceof Element ? event.target.closest<HTMLElement>('[data-course]') : null;
+    const courseId = target?.dataset['course'];
+    if (!courseId) return;
+    target.blur();
+    options.onVote?.(courseId);
+  });
+  const skip = new Slot(div('skip', container));
+  skip.el.hidden = true;
+  // Same delegation as the ballot above: the tally rewrites the pill's
+  // markup whenever any racer votes, and the listener lives on the wrapper.
+  // Blur for the same reason — mid-race, focus here would turn Space into a
+  // skip click instead of a jump.
+  skip.el.addEventListener('click', (event) => {
+    const target =
+      event.target instanceof Element ? event.target.closest<HTMLElement>('[data-skip]') : null;
+    const next = target?.dataset['skip'];
+    if (!target || next === undefined) return;
+    target.blur();
+    options.onSkip?.(next === '1');
+  });
   const connection = div('hud hud-connection', container);
   const board = new Slot(div('board', container));
   const readout = new Slot(div('hud hud-readout', container));
@@ -106,7 +153,7 @@ export function createHud(container: HTMLElement): Hud {
   let lastHoldSecond = -1;
 
   return {
-    update(state, selfId, courseName, linkStatus, sim) {
+    update(state, selfId, course, linkStatus, sim) {
       const phase = state.phase;
       const self = state.players.get(selfId);
 
@@ -115,9 +162,9 @@ export function createHud(container: HTMLElement): Hud {
       }
       lastPhase = phase;
 
-      if (courseName !== lastCourse) {
-        lastCourse = courseName;
-        course.textContent = courseName;
+      if (course.name !== lastCourse) {
+        lastCourse = course.name;
+        courseLabel.textContent = course.name;
       }
       if (linkStatus !== lastConnection) {
         lastConnection = linkStatus;
@@ -173,6 +220,21 @@ export function createHud(container: HTMLElement): Hud {
 
       renderBanner(banner, state, selfId, performance.now() < flashUntil);
 
+      // --- the map ballot ---------------------------------------------------
+      // Only in the two lobby windows, and only when the server shipped a
+      // catalog to pick from. Votes themselves are server state: this just
+      // draws who has voted for what.
+      const voting = (phase === 'ready' || phase === 'results') && state.catalog.length > 0;
+      lobby.hidden(!voting);
+      if (voting) lobby.html(lobbyMarkup(state, course, selfId));
+
+      // --- the skip vote ---------------------------------------------------
+      // Mid-match only — the pill is a control, not a readout, and in a
+      // lobby window the ballot below already carries the decision.
+      const skipping = phase === 'countdown' || phase === 'playing';
+      skip.hidden(!skipping);
+      if (skipping) skip.html(skipMarkup(state, selfId));
+
       board.hidden(!playing);
       if (playing) board.html(boardMarkup(state, selfId));
     },
@@ -192,11 +254,13 @@ export function createHud(container: HTMLElement): Hud {
       clearTimeout(announceTimer);
       announcer.remove();
       for (const el of [
-        course,
+        courseLabel,
         timer.el,
         status.el,
         hold.el,
         banner.el,
+        lobby.el,
+        skip.el,
         connection,
         board.el,
         readout.el,
@@ -311,6 +375,87 @@ function renderBanner(
     default:
       banner.hidden(true);
   }
+}
+
+/**
+ * The map ballot: one card per catalog entry, who has voted for what, and
+ * when the votes count.
+ *
+ * Everything on it is server state — the catalog decides which cards exist,
+ * `votedFor` decides whose names appear under them. The running map is
+ * marked rather than hidden, because staying put is a real outcome of a tie
+ * or an empty ballot, and a card that vanished the moment it won would read
+ * as a bug.
+ */
+function lobbyMarkup(
+  state: GameStateInstance,
+  course: HudCourse,
+  selfId: string,
+): string {
+  const settle =
+    state.phase === 'results'
+      ? 'votes settle when the lobby resets'
+      : 'votes settle when someone starts the countdown';
+
+  const cards = state.catalog
+    .map((info) => {
+      const voters: string[] = [];
+      state.players.forEach((player, id) => {
+        if (player.votedFor === info.id) voters.push(id === selfId ? 'you' : player.name);
+      });
+      const current = info.id === course.id;
+      const mine = state.players.get(selfId)?.votedFor === info.id;
+      const cls = `map-card${current ? ' is-current' : ''}${mine ? ' is-voted' : ''}`;
+      const votes =
+        voters.length > 0
+          ? `<span class="map-votes">${escapeHtml(voters.join(' · '))}</span>`
+          : '';
+      const now = current ? `<span class="map-now">now running</span>` : '';
+      return (
+        `<button type="button" class="${cls}" data-course="${escapeHtml(info.id)}">` +
+        `<span class="map-name">${escapeHtml(info.name)}</span>` +
+        `<span class="map-stats">${info.solids} solids · ${info.pads} pads</span>` +
+        votes +
+        now +
+        `</button>`
+      );
+    })
+    .join('');
+
+  return (
+    `<div class="lobby-head">vote the next map</div>` +
+    `<div class="lobby-cards">${cards}</div>` +
+    `<div class="lobby-hint">${settle}</div>`
+  );
+}
+
+/**
+ * The mid-match skip pill: your vote, and the tally the server weighs.
+ *
+ * `n/m` is skip votes over everyone connected — abstaining counts as a vote
+ * to play on, which is exactly what it means to the majority rule, so the
+ * pill shows the real threshold rather than a count of voters.
+ *
+ * The next value travels in `data-skip`: the wrapper rewrites this markup
+ * whenever any racer votes, and the click handler reads back what was shown
+ * instead of tracking state the tally has since moved past.
+ */
+function skipMarkup(state: GameStateInstance, selfId: string): string {
+  let votes = 0;
+  let mine = false;
+  state.players.forEach((player, id) => {
+    if (player.votedToSkip) votes += 1;
+    if (id === selfId) mine = player.votedToSkip;
+  });
+
+  const cls = mine ? 'skip-btn is-voted' : 'skip-btn';
+  const label = mine ? 'skip ✓' : 'skip match';
+  return (
+    `<button type="button" class="${cls}" data-skip="${mine ? '0' : '1'}">` +
+    `<span class="skip-label">${label}</span>` +
+    `<span class="skip-count">${votes}/${state.players.size}</span>` +
+    `</button>`
+  );
 }
 
 /** Live standings by hold time, with the carrier marked. */
