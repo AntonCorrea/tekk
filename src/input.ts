@@ -88,6 +88,16 @@ export function initInput(target: EventTarget = window, viewport?: HTMLElement):
   target.addEventListener('keydown', onKeyDown);
   target.addEventListener('keyup', onKeyUp);
 
+  // C flips the camera between AUTO (follow behind) and DRAG (pointer orbit).
+  // A separate listener rather than a key set in onKeyDown: it toggles state
+  // instead of feeding the movement axes, and leaks no repeat or modifier.
+  target.addEventListener('keydown', (event) => {
+    const e = event as KeyboardEvent;
+    if (e.code === 'KeyC' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      toggleCameraMode();
+    }
+  });
+
   // `mousemove` on the document, not the canvas: under pointer lock the cursor
   // stops producing element-targeted events the way it normally would, and
   // movement is reported against the locked element's document.
@@ -152,6 +162,29 @@ let yaw = 0;
 // literal type 0.5 and every reassignment fails.
 let pitch: number = CAMERA.pitch;
 let locked = false;
+
+// --- camera mode ----------------------------------------------------------
+// AUTO parks the camera behind the racer (the renderer swings it toward the
+// velocity heading every frame); DRAG hands the angle to the pointer via
+// `applyLookDelta`. The mode lives here rather than in the renderer because it
+// GATES look input: a drag that happens in AUTO must not accumulate a hidden
+// orbit to snap to on the next mode switch.
+export type CameraMode = 'follow' | 'drag';
+let cameraMode: CameraMode = 'follow';
+
+/** Current camera mode — the renderer reads this every frame. */
+export function getCameraMode(): CameraMode {
+  return cameraMode;
+}
+
+/** Flip follow <-> drag and report the new mode, for buttons and logs. */
+export function toggleCameraMode(): CameraMode {
+  cameraMode = cameraMode === 'follow' ? 'drag' : 'follow';
+  console.info(
+    `camera: ${cameraMode === 'follow' ? 'AUTO — follows the racer' : 'DRAG — pointer orbits'}`,
+  );
+  return cameraMode;
+}
 
 function onPointerMove(event: Event): void {
   const e = event as MouseEvent;
@@ -242,6 +275,10 @@ export function queueTouchJump(): void {
  * for every input.
  */
 export function applyLookDelta(dx: number, dy: number): void {
+  // AUTO mode owns its angle; a drag would only accumulate a hidden view to
+  // snap to on the next mode switch. The mouse's onPointerMove and the touch
+  // layer both land here, so the gate covers camera drags from every pointer.
+  if (cameraMode !== 'drag') return;
   yaw -= dx * CAMERA.yawSensitivity;
   pitch = clamp(
     pitch - dy * CAMERA.pitchSensitivity,

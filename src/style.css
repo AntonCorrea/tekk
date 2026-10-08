@@ -831,6 +831,27 @@ body {
   border-color: rgba(240, 134, 184, 0.5); /* --pink */
 }
 
+/* Camera AUTO/DRAG pill. Top-centre on purpose: the mute pill owns the
+   bottom-centre slot, and during a race neither thumb reaches the top of the
+   screen, so this stays a subtle one-tap toggle rather than a fat-finger
+   neighbour of the stick or the action buttons. */
+.touch-mode {
+  position: absolute;
+  top: max(12px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: rgba(44, 26, 87, 0.4);
+  color: var(--neon-cyan);
+  font-family: var(--condensed);
+  font-size: 12px;
+  letter-spacing: 0.24em;
+  text-indent: 0.24em;
+  text-transform: uppercase;
+}
+
 /* Live input readout for `?debug`: overrides the button typography the
    .touch root sets. */
 .touch-debug {

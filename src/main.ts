@@ -9,13 +9,14 @@
  * on the same frame, and rewound and replayed when the server disagrees. Other
  * racers are interpolated followers.
  *
- * Controls: WASD / arrows move, Space jump, Shift dash, mouse look.
+ * Controls: WASD / arrows move, Space jump, Shift dash, mouse look,
+ * C flips the camera between AUTO follow and DRAG.
  */
 
 import './style.css';
 
 import { createStage } from './core/stage.ts';
-import { startFrameLoop } from './core/loop.ts';
+import { startFrameLoop, type FrameInfo } from './core/loop.ts';
 import { fxAberration, fxBeat, reducedMotion } from './render/fx.ts';
 import { createTechno, type Intensity } from './audio/techno.ts';
 import { buildScene } from './render/scene.ts';
@@ -24,11 +25,11 @@ import { createPhysicsWorld, initPhysics } from './physics/world.ts';
 import { connectSession } from './net/session.ts';
 import { createRacerVisuals } from './net/remotes.ts';
 import { createHud, type ConnectionStatus } from './ui/hud.ts';
-import { clearInput, initInput, lookAngles, stageInput } from './input.ts';
+import { clearInput, initInput, lookAngles, stageInput, toggleCameraMode } from './input.ts';
 import { initTouchControls } from './touch.ts';
 import { createCoreVisual, type CoreVisualState } from './render/core.ts';
 import type { LocalPose } from './render/scene.ts';
-import { CORE, FIXED_TIMESTEP } from './constants.ts';
+import { CAMERA, CORE, FIXED_TIMESTEP } from './constants.ts';
 
 /**
  * Where the game server is.
@@ -77,7 +78,7 @@ async function boot(): Promise<void> {
 
   // Reused every frame: the loop below must not allocate.
   const localPose: LocalPose = {
-    x: 0, y: 0, z: 0, vx: 0, vz: 0, speed: 0, grounded: false, carrying: false, dashing: false,
+    x: 0, y: 0, z: 0, vx: 0, vz: 0, speed: 0, grounded: false, carrying: false, dashing: false, teleported: false,
   };
   const coreState: CoreVisualState = { x: 0, y: 0, z: 0, carried: false, immune: false };
 
@@ -94,6 +95,19 @@ async function boot(): Promise<void> {
   let wasDashing = false;
   let airTime = 0;
   let lastCount = 0;
+  // Set the first time a non-finite value is held back (see the frame body);
+  // one console warning is enough to name the source when it happens.
+  let warnedNonFinite = false;
+  // Last FINITE look angles: they feed orbit() and back the staging yaw below
+  // if the camera heading were ever non-finite, so a bad angle is dropped here
+  // rather than reach the rig or the sim — one NaN in the sim takes movement
+  // with it.
+  let lastYaw = 0;
+  let lastPitch: number = CAMERA.pitch;
+  // Frames the smoothed render pose has been more than 8 units from the raw
+  // body. A teleport glide closes within a few frames; persisting past 45
+  // (~0.75s) means the interpolator is stuck, not smoothing — draw the body.
+  let stalePoseFrames = 0;
 
   // --- sound ---------------------------------------------------------------
   // Browsers only allow audio after a gesture, so the first key or click
@@ -115,6 +129,7 @@ async function boot(): Promise<void> {
   // pointer-lock mouse above is the whole story and the overlay never mounts.
   initTouchControls(container, {
     onToggleMute: () => techno.toggleMute(),
+    onToggleCamera: () => toggleCameraMode(),
   });
 
   // --- connection status, for the HUD only -------------------------------
@@ -141,7 +156,7 @@ async function boot(): Promise<void> {
     },
   });
 
-  const loop = startFrameLoop(({ now, delta }) => {
+  const frame = ({ now, delta }: FrameInfo): void => {
     // --- input --------------------------------------------------------
     // One call drives reconciliation and reports how many fixed input steps
     // this frame owes. Each step gets its own staged input and its own send,
@@ -149,13 +164,31 @@ async function boot(): Promise<void> {
     // send would collapse several simulation steps into one.
     const steps = session.pump(now);
 
-    // Read the look angles once per frame, not once per step. Every step in this
-    // batch must use the same yaw: if the mouse moved mid-batch the steps would
-    // disagree, and the server would simulate a path the client never predicted.
-    const look = lookAngles();
+    // Read the look angles once per frame, not once per step: every step in
+    // this batch must agree on the angles, and the values are sanitised on the
+    // way in — they feed orbit()'s drag targets and back the staging yaw below,
+    // and one non-finite angle would poison the rig or the sim until reload.
+    // Hold the last finite angle instead.
+    const rawLook = lookAngles();
+    const look = {
+      yaw: Number.isFinite(rawLook.yaw) ? rawLook.yaw : lastYaw,
+      pitch: Number.isFinite(rawLook.pitch) ? rawLook.pitch : lastPitch,
+    };
+    lastYaw = look.yaw;
+    lastPitch = look.pitch;
+
+    // Stage against the camera's ACTUAL rendered heading, not the pointer's
+    // target: W is the way the screen is facing in both modes (A/D strafe
+    // across the screen, S backs toward the camera) — the third-person
+    // contract. The heading is read once per frame so every step in the batch
+    // agrees, exactly as the look angles above were. Yaw never leaves the
+    // client: the wire carries the rotated world vector, so the server and
+    // the determinism contract are untouched.
+    const camYaw = visuals.heading();
+    const stageYaw = Number.isFinite(camYaw) ? camYaw : look.yaw;
 
     for (let step = 0; step < steps; step++) {
-      stageInput(session.input.data, look.yaw);
+      stageInput(session.input.data, stageYaw);
       session.input.send();
     }
 
@@ -171,7 +204,7 @@ async function boot(): Promise<void> {
     // racer did not — remotes went through `predict.value`, this did not.
     //
     // Must be read after `pump()`, which is what advances the reconciler.
-    const pose = session.renderPose();
+    let pose = session.renderPose();
     // `delta` drives the camera's follow smoothing. It was previously computed
     // and discarded, which is what let the camera silently assume 60fps.
     visuals.orbit(look.yaw, look.pitch);
@@ -180,12 +213,71 @@ async function boot(): Promise<void> {
     const carrierId = state.carrierId;
     const selfCarries = carrierId === session.sessionId;
 
-    localPose.x = pose.x;
-    localPose.y = pose.y;
-    localPose.z = pose.z;
-    localPose.vx = sim.velocity.x;
-    localPose.vz = sim.velocity.z;
-    localPose.speed = sim.horizontalSpeed;
+    // Draw from the reconciler's smoothed pose while it is usable, and fall
+    // back to the raw body when it is not. Two failure modes must not kill
+    // movement: a non-finite pose (which would freeze the racer and camera
+    // while the HUD keeps ticking), and a pose that has stopped catching up —
+    // a teleport glide closes within a few frames, so a gap from the body
+    // persisting past 45 (~0.75s) means the interpolator is stuck, not
+    // smoothing. The raw body is advanced by pump() without that
+    // interpolation, so the camera's third-person follow and the racer keep
+    // moving either way. (8 units ≈ how far a dash travels in one clamped
+    // frame; anything smaller is ordinary smoothing.)
+    const truth = sim.body.translation();
+    const poseOk =
+      Number.isFinite(pose.x) && Number.isFinite(pose.y) && Number.isFinite(pose.z);
+    const bodyOk =
+      Number.isFinite(truth.x) && Number.isFinite(truth.y) && Number.isFinite(truth.z);
+    const velOk =
+      Number.isFinite(sim.velocity.x) &&
+      Number.isFinite(sim.velocity.z) &&
+      Number.isFinite(sim.horizontalSpeed);
+    const gap = poseOk
+      ? Math.abs(pose.x - truth.x) + Math.abs(pose.y - truth.y) + Math.abs(pose.z - truth.z)
+      : Infinity;
+    stalePoseFrames = gap > 8 ? stalePoseFrames + 1 : 0;
+    if (bodyOk && (!poseOk || stalePoseFrames > 45)) {
+      pose.x = truth.x;
+      pose.y = truth.y;
+      pose.z = truth.z;
+      if (!warnedNonFinite) {
+        warnedNonFinite = true;
+        console.warn('TEKK: render pose unusable, drawing the raw body instead', {
+          pose,
+          truth,
+          stalePoseFrames,
+          vx: sim.velocity.x,
+          vz: sim.velocity.z,
+          speed: sim.horizontalSpeed,
+        });
+      }
+    }
+    // Position: the (possibly repaired) pose — only ever finite values reach
+    // localPose, so the camera rig can never latch a NaN.
+    if (Number.isFinite(pose.x) && Number.isFinite(pose.y) && Number.isFinite(pose.z)) {
+      localPose.x = pose.x;
+      localPose.y = pose.y;
+      localPose.z = pose.z;
+    }
+    // Velocity only overwrites while finite: the follow heading, FOV and speed
+    // lines ease toward these, and NaN eases toward NaN until reload.
+    if (velOk) {
+      localPose.vx = sim.velocity.x;
+      localPose.vz = sim.velocity.z;
+      localPose.speed = sim.horizontalSpeed;
+    } else if (!warnedNonFinite) {
+      warnedNonFinite = true;
+      console.warn('TEKK: non-finite velocity held back', {
+        vx: sim.velocity.x,
+        vz: sim.velocity.z,
+        speed: sim.horizontalSpeed,
+      });
+    }
+    localPose.teleported =
+      Math.abs(localPose.x - truth.x) +
+        Math.abs(localPose.y - truth.y) +
+        Math.abs(localPose.z - truth.z) >
+      8;
     localPose.grounded = sim.grounded;
     // The server's word decides who carries; the predicted sim only drives the
     // dash cue, which is yours and needs zero latency.
@@ -203,9 +295,11 @@ async function boot(): Promise<void> {
     // authoritative coordinates.
     const carrier = carrierId === '' || selfCarries ? undefined : state.players.get(carrierId);
     if (selfCarries) {
-      coreState.x = pose.x;
-      coreState.y = pose.y + CORE.carryHeight;
-      coreState.z = pose.z;
+      // The sanitized localPose, not raw pose: a non-finite value here would
+      // put NaN into the Core's matrix for as long as the state lasts.
+      coreState.x = localPose.x;
+      coreState.y = localPose.y + CORE.carryHeight;
+      coreState.z = localPose.z;
     } else if (carrier) {
       const p = session.positionOf(carrier);
       coreState.x = p.x;
@@ -266,6 +360,29 @@ async function boot(): Promise<void> {
     hud.update(state, session.sessionId, course.name, connection, sim);
     // During hit-stop the canvas simply keeps its last frame.
     if (now >= hitStopUntil) stage.render();
+  };
+
+  // If the frame ever throws, requestAnimationFrame keeps firing (loop.ts
+  // re-arms first) while nothing renders — a frozen or black screen with no
+  // explanation and no console-scraping required from the tester. Catch it,
+  // log it, and put the stack on screen after a second consecutive failure.
+  let frameFailures = 0;
+  const loop = startFrameLoop((info) => {
+    try {
+      frame(info);
+      frameFailures = 0;
+    } catch (err) {
+      console.error('TEKK frame error:', err);
+      frameFailures++;
+      if (frameFailures >= 2 && !document.getElementById('tekk-frame-error')) {
+        const el = document.createElement('pre');
+        el.id = 'tekk-frame-error';
+        el.className = 'fatal';
+        el.textContent =
+          `TEKK frame error:\n${err instanceof Error ? err.stack ?? String(err) : String(err)}`;
+        document.body.appendChild(el);
+      }
+    }
   });
 
   /**
@@ -308,7 +425,7 @@ async function boot(): Promise<void> {
       `${session.room.state.players.size} racing · ` +
       `step ${(FIXED_TIMESTEP * 1000).toFixed(2)}ms · ` +
       `you are "${session.self()?.name ?? '—'}" · ` +
-      'WASD move · Space jump · Shift dash · mouse look · M mute',
+      'WASD move · Space jump · Shift dash · mouse look · C camera · M mute',
   );
 
   globalThis.addEventListener('beforeunload', () => {

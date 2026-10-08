@@ -3,7 +3,8 @@
  *
  * A two-thumb layout for touch-first devices. The left thumb drives a virtual
  * stick; the right thumb drags anywhere else on screen to steer the camera,
- * with JUMP and DASH buttons in the corner and a mute toggle bottom-centre.
+ * with JUMP and DASH buttons in the corner, a mute toggle bottom-centre and a
+ * camera AUTO/DRAG toggle top-centre (mirrors the desktop C key).
  *
  * Nothing here reasons about the simulation. The stick reports a continuous
  * -1..1 axis (setTouchAxis), which keys never can, so direction changes
@@ -47,6 +48,7 @@ import {
   setTouchAxis,
   setTouchDash,
   touchState,
+  type CameraMode,
 } from './input.ts';
 
 export interface TouchControlsOptions {
@@ -55,6 +57,11 @@ export interface TouchControlsOptions {
    * itself. Mobiles have no M key.
    */
   onToggleMute: () => boolean;
+  /**
+   * Flip the camera between AUTO (follow behind) and DRAG (pointer orbit) and
+   * report the new mode, so the button can label itself. Mobiles have no C key.
+   */
+  onToggleCamera: () => CameraMode;
 }
 
 // 1:1 with the mouse. Fingers cover a small screen quickly, so starting at
@@ -110,7 +117,7 @@ const axisValue = (offset: number): number => {
  * prints it up front (`v<REV>`), so a phone report can be checked against the
  * code it actually ran — HMR silently keeps running the previous closures.
  */
-const REV = 6;
+const REV = 7;
 
 export function initTouchControls(
   container: HTMLElement,
@@ -346,6 +353,21 @@ export function initTouchControls(
   // as on the buttons.
   root.addEventListener('contextmenu', (event) => event.preventDefault());
 
+  // --- camera mode ---------------------------------------------------------
+  // AUTO keeps the camera behind the racer; DRAG hands the view to the thumb's
+  // drag. Parked top-centre so it becomes a subtle pill while playing: neither
+  // thumb reaches it during a race, but it is always one tap away, mirroring
+  // the desktop C key.
+  const mode = document.createElement('button');
+  mode.type = 'button';
+  mode.className = 'touch-mode';
+  mode.textContent = 'AUTO';
+  mode.addEventListener('click', () => {
+    const m = options.onToggleCamera();
+    mode.textContent = m === 'follow' ? 'AUTO' : 'DRAG';
+  });
+  mode.addEventListener('contextmenu', (event) => event.preventDefault());
+
   // --- reset on focus loss -------------------------------------------------
   // A blur with the thumb still down (pocket, notification shade, tab switch)
   // must not leave the racer committed to a direction. Flushing the registry
@@ -409,6 +431,6 @@ export function initTouchControls(
     requestAnimationFrame(renderDebug);
   }
 
-  root.append(look, stick, buttons, mute);
+  root.append(look, stick, buttons, mute, mode);
   container.appendChild(root);
 }

@@ -13,6 +13,7 @@ import * as THREE from 'three/webgpu';
 
 import type { Stage } from '../core/stage.ts';
 import { CAMERA, MOVE } from '../constants.ts';
+import { getCameraMode } from '../input.ts';
 import { fxSpeed, reducedMotion } from './fx.ts';
 import { NEON, PALETTE, RACER_IDENTITY, RAMP } from './palette.ts';
 import { createCharacter } from './character.ts';
@@ -35,6 +36,14 @@ export interface LocalPose extends Pose {
   carrying: boolean;
   /** Predicted dash in progress (`sim.dashTicks > 0`). */
   dashing: boolean;
+  /**
+   * A position teleport is in flight: the sim body arrived at the new place
+   * (adoptTruth) but the reconciler's smoothed pose is still gliding toward
+   * it. The camera must snap its focus instead of flying the glide across the
+   * course, which would drag it through geometry. Computed by the caller
+   * (main.ts) as a large gap between render pose and sim body.
+   */
+  teleported: boolean;
 }
 
 export interface SceneVisuals {
@@ -57,6 +66,15 @@ export interface SceneVisuals {
   orbit(yaw: number, pitch: number): void;
 
   /**
+   * The yaw the view is actually rendered from this frame, in radians, with
+   * the same convention as `orbit()`.
+   *
+   * Movement is staged against this (main.ts), so a pushed direction is
+   * always screen-relative: W walks the way the camera looks in either mode.
+   */
+  heading(): number;
+
+  /**
    * Add screen-shake trauma, 0..1. Trauma decays on its own and shake grows
    * with its square, so small kicks stay subtle and big ones land hard.
    */
@@ -67,6 +85,13 @@ export interface SceneVisuals {
 
 const clampNumber = (value: number, lo: number, hi: number): number =>
   value < lo ? lo : value > hi ? hi : value;
+
+/**
+ * Shortest signed angle to (-PI, PI]. Yaw eases must never swing the long way
+ * around a reversal: atan2(sin, cos) normalises whatever came in, so a heading
+ * change through the seam comes out as the small turn it actually was.
+ */
+const wrapPi = (angle: number): number => Math.atan2(Math.sin(angle), Math.cos(angle));
 
 /**
  * Camera offset from the focus point for a given yaw and pitch.
@@ -162,6 +187,22 @@ export function buildScene(stage: Stage): SceneVisuals {
   let pitch: number = CAMERA.pitch;
   let snapping = true;
 
+  // --- camera mode state ---------------------------------------------------
+  // `yaw`/`pitch` above are the DRAG targets written by `orbit()` from the
+  // pointer. The angles actually rendered live in `displayYaw`/`displayPitch`
+  // so that switching modes or parking a drag glides from where the camera
+  // IS, never from where some input previously wanted it.
+  //
+  // AUTO mode parks on the racer's back (`followYaw`/`followPitch`): it eases
+  // toward the velocity heading every frame, rate-capped so the chase and the
+  // camera-relative input (main.ts) can never wind each other up — see the
+  // gate in `sync`. Both the follow heading and the drag blend are eased with
+  // per-frame rates (followK/dragK below).
+  let followYaw = 0;
+  let followPitch: number = CAMERA.pitch;
+  let displayYaw = 0;
+  let displayPitch: number = CAMERA.pitch;
+
   // --- feel ------------------------------------------------------------------
   // Field of view opens with speed and punches wide on a dash: the cheapest,
   // strongest "this is fast" cue there is. Shake is trauma-based -- kicks add
@@ -208,29 +249,108 @@ export function buildScene(stage: Stage): SceneVisuals {
       character.glow += (gainTarget - character.glow) * 0.3;
 
       // --- follow camera ---------------------------------------------------
-      // Position is offset from the racer by a fixed spherical rig (see
-      // `orbitOffset`), so it only ever has to chase the racer's motion.
+      // Position is offset from the racer by a spherical rig (see
+      // `orbitOffset`), so it only ever has to chase the racer's motion. What
+      // angle drives that rig depends on the mode (input.ts):
       //
-      // The smoothing factor is built from the REAL frame delta. The previous
+      //   AUTO — the camera parks on the racer's back, easing yaw/pitch toward
+      //          the velocity heading every frame (rate-capped), so the view
+      //          always shows what is in front of the racer; a stopped racer
+      //          holds the last angle.
+      //   DRAG — the pointer owns yaw/pitch (`orbit`); the camera eases toward
+      //          those angles per frame, so a mode switch or a freshly parked
+      //          drag glides instead of snapping the view across the course.
+      //
+      // The smoothing factors are built from the REAL frame delta. The previous
       // version passed FIXED_TIMESTEP here, which silently assumed 60fps: at
       // 144Hz it applied 2.5x the intended stiffness, pinning the camera to the
       // raw predicted pose and exposing every reconciliation rollback as a
       // visible twitch. The racer's predicted position is corrected ~20x/sec,
       // so an under-filtered camera reads as jitter rather than lag.
       const k = 1 - Math.exp(-CAMERA.smoothing * dt);
+      const followK = 1 - Math.exp(-CAMERA.followSmoothing * dt);
+      const dragK = 1 - Math.exp(-CAMERA.dragSmoothing * dt);
 
-      followTarget.set(pose.x, pose.y + CAMERA.lookAtHeight, pose.z);
-      // Snap on the first frame, otherwise the camera flies in from wherever
-      // core/stage.ts seeded it.
-      if (snapping) {
+      // Only overwrite followTarget with finite values: followPoint and the
+      // camera position are eased copies of it, so one non-finite pose would
+      // otherwise poison the rig until reload. The initial value is (0,0,0).
+      if (Number.isFinite(pose.x) && Number.isFinite(pose.y) && Number.isFinite(pose.z)) {
+        followTarget.set(pose.x, pose.y + CAMERA.lookAtHeight, pose.z);
+      }
+      // Snap on the first frame (the camera would otherwise fly in from
+      // wherever core/stage.ts seeded it) and when a teleport is in flight
+      // (the pose glides toward the spawn while the body is already there —
+      // lerping the focus across the glide would drag the camera through the
+      // course geometry). Both are the same act: obey the pose point-for-point.
+      if (snapping || pose.teleported) {
         followPoint.copy(followTarget);
         snapping = false;
       } else {
         followPoint.lerp(followTarget, k);
       }
 
-      orbitOffset(cameraOffset, yaw, pitch);
+      if (getCameraMode() === 'follow') {
+        // Heading that puts the camera behind the racer. Yaw 0 sits on +Z
+        // looking at -Z (the course start), so running forward is yaw 0 and
+        // the camera is already on the racer's back at standstill.
+        const heading = Math.atan2(-pose.vx, -pose.vz);
+        // ALWAYS swing behind — this is the third-person contract: the view
+        // rides the racer's back, so the frame is always filled with what is
+        // in front of it, and movement is staged against this very heading
+        // (main.ts), so the controls stay camera-relative as the camera turns.
+        //
+        // Two things keep that loop from winding up. The wish rotates WITH
+        // followYaw, so a stick offset from screen-forward feeds the chase its
+        // own angle: the steady orbit rate is k*a/(k+a) x the offset
+        // (a ~ MOVE.accel/runSpeed ~ 12/s), i.e. effectively k x the offset —
+        // at the old k=10 a near-straight 10° nudge whirled the camera at
+        // ~55°/s and a strafe at ~500°/s. `followSmoothing` is now modest
+        // (1.2: a full strafe arcs at ~100°/s, forward play stays essentially
+        // straight), and `followMaxRate` caps every frame's step so a big gap
+        // — a reversal, a wall-kick — still comes around briskly (~1.2s for
+        // 180°) without ever whipping. The finite checks and the speed gate
+        // stand: a poisoned velocity must hold the last angle rather than cast
+        // NaN into the render, and a stationary racer keeps its heading
+        // instead of hunting atan2's noise floor at rest.
+        if (
+          pose.speed > 0.5 &&
+          Number.isFinite(heading) &&
+          Number.isFinite(pose.speed)
+        ) {
+          const swing = wrapPi(heading - followYaw);
+          const maxStep = CAMERA.followMaxRate * dt;
+          followYaw += clampNumber(swing * followK, -maxStep, maxStep);
+          followPitch += (CAMERA.pitch - followPitch) * followK;
+        }
+        // Clamp against the same limits the drag path uses, so no input or
+        // easing excursion can ever point the lens into the floor or sky.
+        followPitch = clampNumber(followPitch, CAMERA.minPitch, CAMERA.maxPitch);
+        displayYaw = followYaw;
+        displayPitch = followPitch;
+      } else {
+        // Blend toward the pointer's targets so entry, exit and idle all
+        // glide. yaw is unwrapped (input.ts keeps it that way), so the diff
+        // needs wrapPi too — a camera crossing the seam mid-drag must turn the
+        // short way, not sweep the full circle.
+        displayYaw += wrapPi(yaw - displayYaw) * dragK;
+        displayPitch += (pitch - displayPitch) * dragK;
+        displayPitch = clampNumber(displayPitch, CAMERA.minPitch, CAMERA.maxPitch);
+      }
+
+      orbitOffset(cameraOffset, displayYaw, displayPitch);
       stage.camera.position.copy(followPoint).add(cameraOffset);
+      // Terminal guard: a non-finite camera position renders NaN to the whole
+      // frame — a black screen that never self-heals. If anything upstream
+      // ever poisons a value, park the camera behind the racer (yaw 0, the
+      // course-start view) instead of showing nothing; the course still
+      // renders, and the failure is visible as a wrong-but-live picture that
+      // the on-screen error overlay (main.ts) can then name.
+      const cam = stage.camera.position;
+      if (!Number.isFinite(cam.x) || !Number.isFinite(cam.y) || !Number.isFinite(cam.z)) {
+        followPoint.copy(followTarget);
+        orbitOffset(cameraOffset, 0, CAMERA.pitch);
+        stage.camera.position.copy(followTarget).add(cameraOffset);
+      }
       stage.camera.lookAt(followPoint);
 
       // --- feel: kicks from your own movement -------------------------------
@@ -251,6 +371,9 @@ export function buildScene(stage: Stage): SceneVisuals {
       // Opens fast, closes slower: the punch is the point, the recovery is not.
       const fovRate = fovTarget > fov ? 18 : 5;
       fov += (fovTarget - fov) * (1 - Math.exp(-fovRate * dt));
+      // NaN eases toward NaN: without this, one non-finite frame would freeze
+      // the FOV at NaN forever. Reset rather than publish a bad projection.
+      if (!Number.isFinite(fov)) fov = CAMERA.fov;
       if (Math.abs(stage.camera.fov - fov) > 0.01) {
         stage.camera.fov = fov;
         stage.camera.updateProjectionMatrix();
@@ -274,10 +397,18 @@ export function buildScene(stage: Stage): SceneVisuals {
       // Mostly a dash effect; flat-out running only hints at it.
       const speedTarget = reducedMotion ? 0 : pose.dashing ? 1 : Math.max(0, run - 0.85) * 0.8;
       speedFx += (speedTarget - speedFx) * (1 - Math.exp(-(speedTarget > speedFx ? 20 : 6) * dt));
-      fxSpeed.value = speedFx;
+      // fxSpeed is a post-chain uniform (post.ts multiplies it into the speed
+      // lines): publishing a non-finite value would black every frame, and the
+      // ease would keep it at NaN until reload. Drop to 0 instead.
+      if (Number.isFinite(speedFx)) fxSpeed.value = speedFx;
+      else speedFx = 0;
     },
 
     kick,
+
+    heading() {
+      return displayYaw;
+    },
 
     orbit(y, p) {
       yaw = y;

@@ -185,6 +185,38 @@ export const CAMERA = {
   smoothing: 9,
 
   /**
+   * How fast AUTO mode swings the camera yaw/pitch toward the racer's heading,
+   * per second. Same frame-delta rule as `smoothing`.
+   *
+   * Deliberately modest, because movement is staged against this heading
+   * (main.ts): the chase turns toward the velocity, and the wish turns with
+   * the camera, so the steady orbit rate from a stick offset is
+   * k*a/(k+a) x offset with a ~ MOVE.accel/runSpeed ~ 12/s — effectively k
+   * itself. The old 10 whirled even a near-straight nudge (~55°/s at 10°);
+   * at 1.2 a full strafe arcs at ~100°/s and forward play stays straight.
+   * Transients (reversals, wall-kicks) are capped by `followMaxRate`.
+   */
+  followSmoothing: 3,
+
+  /**
+   * Hard cap on AUTO's per-frame yaw step, radians per second.
+   *
+   * The ease above scales with the gap, so a big one — a reversal, or
+   * pushing directly away from the camera — would take seconds to come
+   * around at the low followSmoothing. The cap bounds every step: 180° in
+   * ~1.2s, and nothing can whip the view faster than this.
+   */
+  followMaxRate: 2.6,
+
+  /**
+   * How fast DRAG mode blends the camera toward the pointer's angle, per
+   * second. Below 1:1 on purpose: it keeps a mode switch or a freshly parked
+   * drag from snapping the view across the course, while staying responsive
+   * enough that a drag never feels laggy.
+   */
+  dragSmoothing: 20,
+
+  /**
    * Seed height for the pre-first-frame camera in core/stage.ts.
    *
    * Placeholder only. The camera rig overwrites the position on its first

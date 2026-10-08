@@ -39,7 +39,10 @@ export function startFrameLoop(update: FrameUpdate): LoopHandle {
     // A backgrounded tab or a long GC pause produces a huge delta. Clamping
     // keeps cosmetics from teleporting; the sim does not use this value, so
     // there is no catch-up spiral to guard against.
-    const delta = Math.min((now - last) / 1000, MAX_FRAME_DELTA);
+    const raw = (now - last) / 1000;
+    // Math.min passes NaN through, and every consumer eases with this value —
+    // a NaN delta would latch the camera and feel curves at NaN until reload.
+    const delta = Number.isFinite(raw) ? Math.min(raw, MAX_FRAME_DELTA) : 0;
     last = now;
 
     update({ now, delta });
