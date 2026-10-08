@@ -25,6 +25,7 @@ import { connectSession } from './net/session.ts';
 import { createRacerVisuals } from './net/remotes.ts';
 import { createHud, type ConnectionStatus } from './ui/hud.ts';
 import { clearInput, initInput, lookAngles, stageInput } from './input.ts';
+import { initTouchControls } from './touch.ts';
 import { createCoreVisual, type CoreVisualState } from './render/core.ts';
 import type { LocalPose } from './render/scene.ts';
 import { CORE, FIXED_TIMESTEP } from './constants.ts';
@@ -109,6 +110,12 @@ async function boot(): Promise<void> {
   // the mouse for camera control, Escape releases it.
   initInput(window, stage.renderer.domElement);
   globalThis.addEventListener('blur', clearInput);
+
+  // Thumb controls for touch-first devices. A no-op on desktop, where the
+  // pointer-lock mouse above is the whole story and the overlay never mounts.
+  initTouchControls(container, {
+    onToggleMute: () => techno.toggleMute(),
+  });
 
   // --- connection status, for the HUD only -------------------------------
   let connection: ConnectionStatus = 'connected';

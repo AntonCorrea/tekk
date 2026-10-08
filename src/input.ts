@@ -8,6 +8,13 @@
  * Controls: WASD / arrows move, Space jumps, Shift (either) dashes. There is
  * no sprint -- Shift belongs to the dash now.
  *
+ * Touch devices mount the same actions on a stick and two buttons (ui/touch.ts).
+ * The stick reports a continuous -1..1 axis (setTouchAxis) — keys only ever
+ * produce -1/0/1, and the keyboard intent is slewed a fraction per step so
+ * both sides stage floats and direction changes come out smooth. JUMP and
+ * DASH push the same queue/held state the keyboard pushes, so there is exactly
+ * one staging path and the wire format cannot diverge between inputs.
+ *
  * `jump` is level-triggered here and stays level-triggered on the wire. A
  * queued keypress consumed by one step would be lost every time rollback
  * replayed past it — see shared/input.ts.
@@ -28,8 +35,27 @@ const RIGHT_KEYS = new Set(['KeyD', 'ArrowRight']);
 const DASH_KEYS = new Set(['ShiftLeft', 'ShiftRight']);
 const JUMP_KEYS = new Set(['Space']);
 
+/**
+ * Per-fixed-step approach fraction for keyboard-axis direction changes.
+ * Digital keys can only mean -1/0/1, so a turn would snap between octants;
+ * slewing toward the target a fraction per step makes the staged axis a float
+ * and the rotation smooth (~6 steps / ~100ms to settle). Releasing snaps to 0
+ * so stopping stays crisp.
+ */
+const KEY_SLEW = 0.4;
+
 const held = new Set<string>();
 let jumpQueued = false;
+
+// Analog stick axes, written only by the touch layer (ui/touch.ts): continuous
+// -1..1 per axis, 0 when no thumb is engaged. Zero doubles as "no stick here",
+// which lets the keyboard's value through on that axis.
+let analogForward = 0;
+let analogStrafe = 0;
+// The slewed keyboard intent: what actually gets staged when no stick is
+// engaged on an axis. See KEY_SLEW.
+let smoothForward = 0;
+let smoothStrafe = 0;
 
 // Typed as Event so these can be registered on a generic EventTarget
 // without a cast at the call site.
@@ -93,6 +119,10 @@ function onViewportClick(event: Event): void {
   // Ignore the click that is itself unlocking, or capture would immediately
   // re-engage and the player could never let go.
   if (document.pointerLockElement) return;
+  // Touch devices have no mouse to capture; on iOS `requestPointerLock` does
+  // not exist and would throw. The touch layer (ui/touch.ts) mounts its own
+  // camera input instead.
+  if (isCoarsePointer()) return;
   (event.currentTarget as HTMLElement).requestPointerLock();
 }
 
@@ -131,12 +161,9 @@ function onPointerMove(event: Event): void {
   // coordinates and one stray move would fling the camera across the course.
   if (!locked) return;
 
-  yaw -= e.movementX * CAMERA.yawSensitivity;
-  pitch = clamp(
-    pitch - e.movementY * CAMERA.pitchSensitivity,
-    CAMERA.minPitch,
-    CAMERA.maxPitch,
-  );
+  // The touch layer calls the same function with its own pixel deltas, so
+  // both inputs are provably the same math.
+  applyLookDelta(e.movementX, e.movementY);
 }
 
 function onLockChange(): void {
@@ -145,6 +172,93 @@ function onLockChange(): void {
 
 const clamp = (value: number, lo: number, hi: number): number =>
   value < lo ? lo : value > hi ? hi : value;
+
+/**
+ * Touch control entry points — see ui/touch.ts.
+ *
+ * The stick is analog: it writes continuous -1..1 axes that `stageInput`
+ * prefers over the keyboard on a per-axis basis, so no key codes and no
+ * wire-schema change are involved. JUMP/DASH stay boolean like the keyboard's
+ * (one queued jump per press, dash held while a finger stays down). Look
+ * deltas share `applyLookDelta` with the mouse, which keeps the two camera
+ * inputs identical.
+ */
+const touchHeld = new Set<string>();
+
+/** Add or release one touch-owned key code, only when ownership changes. */
+function hold(code: string, want: boolean): void {
+  if (want) {
+    touchHeld.add(code);
+    held.add(code);
+  } else if (touchHeld.delete(code)) {
+    held.delete(code);
+  }
+}
+
+/**
+ * The virtual stick. `forward`/`strafe` are continuous -1..1, so sweeping the
+ * thumb between directions rotates the wish smoothly instead of snapping
+ * between octants. An inactive axis is exactly 0, which the staging reads as
+ * "no stick input" and lets the keyboard's own value through on that axis.
+ */
+export function setTouchAxis(forward: number, strafe: number): void {
+  analogForward = forward;
+  analogStrafe = strafe;
+}
+
+/** The DASH button. Held while the finger is down, like holding a Shift key. */
+export function setTouchDash(active: boolean): void {
+  hold('ShiftLeft', active);
+}
+
+/**
+ * What the touch layer currently believes it is sending, for the `?debug`
+ * readout (ui/touch.ts). `jump` is the momentary queue and is usually 0 —
+ * it is consumed by the very next `stageInput`.
+ */
+export function touchState(): {
+  forward: number;
+  strafe: number;
+  dash: boolean;
+  jump: boolean;
+} {
+  return {
+    forward: analogForward,
+    strafe: analogStrafe,
+    dash: touchHeld.has('ShiftLeft'),
+    jump: jumpQueued,
+  };
+}
+
+/** The JUMP button. One press queues one jump, exactly like a Space tap. */
+export function queueTouchJump(): void {
+  jumpQueued = true;
+}
+
+/**
+ * Look deltas in pixel scale. The mouse passes `movementX`/`movementY`
+ * straight through; the touch layer scales its drags by a touch factor first
+ * (LOOK_SCALE in ui/touch.ts). Living here means one yaw/pitch implementation
+ * for every input.
+ */
+export function applyLookDelta(dx: number, dy: number): void {
+  yaw -= dx * CAMERA.yawSensitivity;
+  pitch = clamp(
+    pitch - dy * CAMERA.pitchSensitivity,
+    CAMERA.minPitch,
+    CAMERA.maxPitch,
+  );
+}
+
+/**
+ * Is the user's primary pointer a finger or stylus? True on phones and
+ * touch-first tablets. `any-pointer` would also match a touchscreen laptop
+ * whose primary pointer is a mouse — where pointer lock works and thumb
+ * controls would be wrong — so coarse checks the *primary* pointer only.
+ */
+export function isCoarsePointer(): boolean {
+  return typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+}
 
 /** Current look angles, for the renderer. */
 export function lookAngles(): { yaw: number; pitch: number } {
@@ -168,9 +282,24 @@ export function stageInput(target: MoveInputData, yaw = 0): MoveInputData {
     return Math.max(-1, Math.min(1, value));
   };
 
+  // --- axis: continuous, from whichever input is live --------------------
+  // The touch stick supplies continuous -1..1 and wins while it is engaged on
+  // an axis; the keyboard is digital, so its intent is slewed toward the
+  // target a fraction per step. Either way `forward`/`strafe` are floats and
+  // the staged direction changes smoothly. Releasing a key snaps to 0 so
+  // stopping is crisp, while turning leans in over a few steps.
+  const keyForward = axis(FORWARD_KEYS, BACK_KEYS);
+  const keyStrafe = axis(RIGHT_KEYS, LEFT_KEYS);
+  if (analogForward !== 0) smoothForward = analogForward;
+  else if (keyForward === 0) smoothForward = 0;
+  else smoothForward += (keyForward - smoothForward) * KEY_SLEW;
+  if (analogStrafe !== 0) smoothStrafe = analogStrafe;
+  else if (keyStrafe === 0) smoothStrafe = 0;
+  else smoothStrafe += (keyStrafe - smoothStrafe) * KEY_SLEW;
+
   // Keyboard intent in camera space: +Z is "away from the camera", +X is right.
-  const forward = axis(FORWARD_KEYS, BACK_KEYS);
-  const strafe = axis(RIGHT_KEYS, LEFT_KEYS);
+  const forward = smoothForward;
+  const strafe = smoothStrafe;
 
   // Rotate into world space so W always means "the way I'm looking".
   //
@@ -220,6 +349,7 @@ export function stageInput(target: MoveInputData, yaw = 0): MoveInputData {
  * the race actually starts, from the inputs it receives.
  */
 export function hasMovementIntent(): boolean {
+  if (analogForward !== 0 || analogStrafe !== 0) return true;
   for (const code of FORWARD_KEYS) if (held.has(code)) return true;
   for (const code of BACK_KEYS) if (held.has(code)) return true;
   for (const code of LEFT_KEYS) if (held.has(code)) return true;
@@ -230,5 +360,10 @@ export function hasMovementIntent(): boolean {
 /** Drop all held keys — used when the window loses focus. */
 export function clearInput(): void {
   held.clear();
+  touchHeld.clear();
   jumpQueued = false;
+  analogForward = 0;
+  analogStrafe = 0;
+  smoothForward = 0;
+  smoothStrafe = 0;
 }

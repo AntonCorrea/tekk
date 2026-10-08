@@ -86,6 +86,8 @@ body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  /* Pull-to-refresh would reload the page mid-match on a phone. */
+  overscroll-behavior: none;
   /* Matches PALETTE.base. A mismatched letterbox shows as a bright seam the
      moment the canvas does not cover the viewport, e.g. during a rotate. */
   background: var(--black);
@@ -713,4 +715,136 @@ body {
   .hud-controls {
     display: none;
   }
+}
+
+/* --------------------------------------------------------------- touch */
+
+/* Thumb controls, mounted only when the primary pointer is coarse
+   (ui/touch.ts; isCoarsePointer in input.ts). Sits above the HUD's top
+   z-index (25) and below the fatal overlay (100). Textures stay translucent
+   so the course shows through every control. */
+
+.touch {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none; /* iOS long-press callout over the sky */
+  -webkit-tap-highlight-color: transparent;
+  font-family: var(--condensed);
+}
+
+.touch-look {
+  position: absolute;
+  inset: 0;
+}
+
+/* The base is the hit target; the knob (a child) is driven by JS. */
+.touch-stick {
+  position: absolute;
+  left: max(20px, env(safe-area-inset-left));
+  bottom: max(24px, env(safe-area-inset-bottom));
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  border: 1px solid var(--hairline);
+  background: rgba(44, 26, 87, 0.35); /* --deep-violet, translucent */
+  box-shadow: 0 0 24px rgba(0, 0, 0, 0.35);
+}
+
+.touch-knob {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: rgba(158, 199, 250, 0.7); /* --light-blue */
+  border: 1px solid var(--neon-cyan);
+  /* Snap-back after release: an anchored stick that teleports back reads as
+     "it grabbed itself back", a 90ms ease-out reads as release intent. */
+  transition: transform 90ms ease-out;
+  will-change: transform;
+}
+
+.touch-buttons {
+  position: absolute;
+  right: max(20px, env(safe-area-inset-right));
+  bottom: max(24px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+}
+
+.touch-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1.5px solid var(--neon-magenta);
+  background: rgba(44, 26, 87, 0.5);
+  color: var(--white);
+  font-family: var(--condensed);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.touch-btn--jump {
+  width: 84px;
+  height: 84px;
+  font-size: 20px;
+}
+
+.touch-btn--dash {
+  width: 68px;
+  height: 68px;
+  font-size: 16px;
+  border-color: var(--neon-cyan);
+}
+
+.touch-btn.is-pressed {
+  background: rgba(179, 91, 247, 0.5); /* --magenta-purple flash */
+  border-color: var(--white);
+}
+
+.touch-mute {
+  position: absolute;
+  left: 50%;
+  bottom: max(28px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: rgba(44, 26, 87, 0.4);
+  color: var(--ink-dim);
+  font-family: var(--condensed);
+  font-size: 12px;
+  letter-spacing: 0.24em;
+  text-indent: 0.24em;
+  text-transform: uppercase;
+}
+
+.touch-mute.is-muted {
+  color: var(--pink);
+  border-color: rgba(240, 134, 184, 0.5); /* --pink */
+}
+
+/* Live input readout for `?debug`: overrides the button typography the
+   .touch root sets. */
+.touch-debug {
+  position: absolute;
+  left: 8px;
+  bottom: 190px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--white);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-indent: 0;
+  text-transform: none;
+  white-space: pre;
 }
