@@ -204,9 +204,11 @@ than producing a collider in the wrong place.
 | `takk-arena.json` | 16 | Compact Core Rush ring, one screen wide. |
 | `tekk-01.json` | 8 | The original race course. Kept for reference; the room runs Core Rush. |
 
-A course sets `ownCity: true` to hide the client's generic ground grid and
-far-field skyline, because its own architecture supplies them. Only New York
-does; the other two keep the towers.
+A course may carry an `atmosphere` block — background colour, fog colour and
+fog density. Declaring one means the course owns its look, so the client
+drops its generic ground grid and far-field skyline; the course's own
+architecture supplies them instead. Only New York does; the other two keep
+the towers.
 
 The default is a single constant, `DEFAULT_COURSE_PATH` in `server/course.ts`.
 There is no CLI or environment switch for it.

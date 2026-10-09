@@ -12,7 +12,11 @@
   1.5,
   0
  ],
- "ownCity": true,
+ "atmosphere": {
+  "background": "#020202",
+  "fog": "#020202",
+  "fogDensity": 0.009
+ },
  "solids": [
   {
    "id": "avenue-0",

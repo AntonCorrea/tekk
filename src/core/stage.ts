@@ -10,23 +10,30 @@ import { CAMERA } from '../constants.ts';
 import { ATMOS, PALETTE, POST } from '../render/palette.ts';
 import { buildFarField, type FarField } from '../render/skyline.ts';
 import { createPostChain, type PostChain } from '../render/post.ts';
+import type { CourseAtmosphere } from '../shared/course.ts';
 
 export interface Stage {
   readonly renderer: THREE.WebGPURenderer;
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
   /**
-   * Strip or restore the generic set dressing, per whether the running course
-   * brings its own city. A course with `ownCity` drops the ground grid (which
-   * sits at y~0, right under every void, so a fall looked like dropping
-   * through a floor) and the far-field platforms (placed around the original
-   * lane, and liable to sit inside a bigger map); its own decor supplies the
-   * skyline instead.
+   * Apply the running course's atmosphere, or restore the default look.
    *
-   * A toggle, not a one-shot: a map swap can move either way — a city course
+   * `atmosphere` present means the course brings its own world, so the
+   * generic set dressing steps aside: the ground grid (which sits at y~0,
+   * right under every void, so a fall looked like dropping through a floor)
+   * and the far-field platforms (placed around the original lane, and
+   * liable to sit inside a bigger map); the course's own decor supplies the
+   * skyline instead. Absent restores grid, towers and default colours.
+   *
+   * Fields fall back individually: background → the palette base; fog →
+   * the course's background (a fog colour apart from the sky draws a
+   * horizon line); fog density → `ATMOS.fogDensity`.
+   *
+   * A swap, not a one-shot: a map swap can move either way — a city course
    * to an arena that wants its grid back, or the reverse.
    */
-  setOwnCity(active: boolean): void;
+  setAtmosphere(atmosphere?: CourseAtmosphere): void;
   render(): void;
   dispose(): void;
 }
@@ -57,7 +64,11 @@ export async function createStage(container: HTMLElement): Promise<Stage> {
   // aerial perspective, and without it everything sits at the same apparent
   // distance and the lane reads as a couple of boxes rather than as a
   // kilometre. Fog is what makes the architecture monumental.
-  scene.fog = new THREE.FogExp2(PALETTE.base, ATMOS.fogDensity);
+  //
+  // Held in a variable because `setAtmosphere` retunes it in place — a swap
+  // away from a colourful course must restore the default density and colour.
+  const fog = new THREE.FogExp2(PALETTE.base, ATMOS.fogDensity);
+  scene.fog = fog;
 
   const camera = new THREE.PerspectiveCamera(
     CAMERA.fov,
@@ -120,11 +131,20 @@ export async function createStage(container: HTMLElement): Promise<Stage> {
     renderer,
     scene,
     camera,
-    setOwnCity: (active: boolean) => {
-      grid.visible = !active;
+    setAtmosphere: (atmosphere) => {
+      // A course that declares its own atmosphere owns the whole look, so the
+      // generic set dressing steps aside (see the interface note above).
+      const owned = atmosphere !== undefined;
+      grid.visible = !owned;
       // The whole far field: its pastel horizon towers read as flat columns
       // next to a course's own lit skyline.
-      farField.group.visible = !active;
+      farField.group.visible = !owned;
+
+      // Each fallback is per-field, so a course that only sets a background
+      // still gets coherent fog — fog follows the sky unless written apart.
+      scene.background = new THREE.Color(atmosphere?.background ?? PALETTE.base);
+      fog.color.set(atmosphere?.fog ?? atmosphere?.background ?? PALETTE.base);
+      fog.density = atmosphere?.fogDensity ?? ATMOS.fogDensity;
     },
     render: () => post.pipeline.render(),
     dispose: () => {

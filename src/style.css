@@ -1077,3 +1077,230 @@ body {
   text-transform: none;
   white-space: pre;
 }
+
+/* ---------------------------------------------------------------- editor */
+/* The `?editor` course tool (src/editor/editor.ts). A tool, not the HUD, so
+   it is allowed panels — but it speaks the same language: hairline rules,
+   tracked micro-labels, tabular numerals, tokens borrowed from :root. */
+
+.ed-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 40; /* over the canvas; no game chrome runs alongside it */
+  width: 308px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 14px 28px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: rgba(16, 15, 19, 0.94);
+  border-right: 1px solid var(--hairline);
+  color: var(--ink);
+  font-family: var(--grotesk);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.ed-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.ed-title {
+  font-family: var(--condensed);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.ed-file {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.ed-counts {
+  color: var(--ink-faint);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.ed-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--ink-dim);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.ed-status {
+  padding: 6px 8px;
+  border-left: 2px solid var(--accent);
+  background: rgba(198, 157, 250, 0.08);
+  color: var(--ink);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.ed-status.is-err {
+  border-left-color: var(--pink);
+  background: rgba(240, 134, 184, 0.1);
+}
+
+.ed-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.ed-f {
+  display: block;
+}
+
+.ed-btn {
+  padding: 5px 9px;
+  border: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--grotesk);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.ed-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ed-btn.ed-mini {
+  padding: 3px 7px;
+  font-size: 8.5px;
+}
+
+.ed-in {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid var(--hairline);
+  background: var(--black);
+  color: var(--ink);
+  font-family: var(--grotesk);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ed-in:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Number triples share one row; colour pickers want to be a swatch. */
+.ed-f .ed-row .ed-in[type='number'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.ed-color {
+  flex: 1;
+  height: 26px;
+  padding: 1px;
+}
+
+.ed-open,
+.ed-kindsel {
+  width: auto;
+  flex: 1;
+  min-width: 92px;
+}
+
+.ed-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.ed-tab {
+  flex: 1;
+  text-align: center;
+}
+
+.ed-tab.is-on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ed-list {
+  list-style: none;
+  max-height: 200px;
+  overflow-y: auto;
+  border-top: 1px solid var(--hairline);
+}
+
+.ed-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 7px;
+  border-bottom: 1px solid var(--hairline);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.ed-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ed-item.is-sel {
+  background: rgba(198, 157, 250, 0.14);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.ed-item.is-empty {
+  color: var(--ink-faint);
+  font-style: italic;
+  cursor: default;
+}
+
+.ed-kind {
+  color: var(--ink-faint);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.ed-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hairline);
+}
+
+.ed-empty,
+.ed-note {
+  color: var(--ink-faint);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.ed-hint {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--hairline);
+  color: var(--ink-faint);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  line-height: 1.6;
+}

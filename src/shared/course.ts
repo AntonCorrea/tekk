@@ -137,6 +137,33 @@ export interface CourseGoal {
   size: Vec3;
 }
 
+/**
+ * The course's own look: sky, fog, and how thick the fog is.
+ *
+ * Present means the course owns its atmosphere, so the client drops its
+ * generic set dressing (ground grid and far-field skyline) — the role
+ * `ownCity: true` played before every course was expected to bring its own
+ * background, colour and fog. Absent means the client's defaults.
+ *
+ * Client-presentational only: nothing on the sim path reads it, on either
+ * side. The server parses it purely to reject a malformed file at boot.
+ */
+export interface CourseAtmosphere {
+  /** Sky colour, `#rrggbb`. Absent = the palette base (near-black). */
+  background?: string;
+  /**
+   * Fog colour, `#rrggbb`. Absent = the course's own background — a fog
+   * colour apart from the sky draws a horizon line, and the eye finds that
+   * line before anything else (see render/palette.ts).
+   */
+  fog?: string;
+  /**
+   * Exponential-squared fog density. Absent = `ATMOS.fogDensity`; zero turns
+   * fog off. The two failure directions are noted on `ATMOS.fogDensity`.
+   */
+  fogDensity?: number;
+}
+
 export interface Course {
   id: string;
   name: string;
@@ -160,10 +187,11 @@ export interface Course {
   /** Visual-only scenery. Empty when absent. */
   decor: CourseDecor[];
   /**
-   * The course brings its own city, so the client hides the generic ground
-   * grid and far-field platforms (see core/stage.ts `setOwnCity`).
+   * The course's own atmosphere. Declaring one also drops the client's
+   * generic ground grid and far-field platforms — the course's own decor
+   * supplies the skyline instead (see core/stage.ts `setAtmosphere`).
    */
-  ownCity?: boolean;
+  atmosphere?: CourseAtmosphere;
 }
 
 export interface Aabb {
@@ -359,8 +387,26 @@ export function parseCourse(raw: unknown, source: string): Course {
     decor,
   };
   // Assigned only when present so a race course round-trips without stray
-  // `undefined` keys.
-  if (root.ownCity === true) course.ownCity = true;
+  // `undefined` keys. Present-but-malformed still fails loudly: a half-written
+  // atmosphere must not silently become the generic look.
+  if (root.atmosphere !== undefined) {
+    const atmoRaw = asObject(root.atmosphere, source, 'atmosphere');
+    const atmosphere: CourseAtmosphere = {};
+    if (atmoRaw.background !== undefined) {
+      atmosphere.background = asHexColor(atmoRaw.background, source, 'atmosphere.background');
+    }
+    if (atmoRaw.fog !== undefined) {
+      atmosphere.fog = asHexColor(atmoRaw.fog, source, 'atmosphere.fog');
+    }
+    if (atmoRaw.fogDensity !== undefined) {
+      const density = asNumber(atmoRaw.fogDensity, source, 'atmosphere.fogDensity');
+      if (density < 0) {
+        fail(source, 'atmosphere.fogDensity', `must be zero or greater, got ${density}`);
+      }
+      atmosphere.fogDensity = density;
+    }
+    course.atmosphere = atmosphere;
+  }
   if (goal) course.goal = goal;
   if (coreSpawn) course.coreSpawn = coreSpawn;
   return course;

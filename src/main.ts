@@ -57,6 +57,16 @@ async function boot(): Promise<void> {
   const container = document.querySelector<HTMLDivElement>('#app');
   if (!container) throw new Error('#app container missing from index.html');
 
+  // The course editor takes the boot before any of it: no server, no physics,
+  // no HUD — it builds the stage, the course meshes and a frame loop itself.
+  // The import is dynamic so none of the editor (nor the inlined course files
+  // it opens) ships in the chunk a player who never asks for it downloads.
+  if (new URLSearchParams(globalThis.location.search).has('editor')) {
+    const { bootEditor } = await import('./editor/editor.ts');
+    await bootEditor(container);
+    return;
+  }
+
   await initPhysics();
 
   const stage = await createStage(container);
@@ -73,8 +83,9 @@ async function boot(): Promise<void> {
   let sim = session.sim;
 
   let courseHandle = buildCourse(stage.scene, course);
-  // A course with its own city drops the generic grid and far-field slabs.
-  stage.setOwnCity(course.ownCity === true);
+  // A course with its own atmosphere owns the look: colours applied, generic
+  // grid and far-field slabs dropped for its own decor.
+  stage.setAtmosphere(course.atmosphere);
   const visuals = buildScene(stage);
   const remotes = createRacerVisuals(stage.scene, session);
   const hud = createHud(container, {
@@ -191,7 +202,7 @@ async function boot(): Promise<void> {
       sim = session.sim;
       courseHandle.dispose();
       courseHandle = buildCourse(stage.scene, course);
-      stage.setOwnCity(course.ownCity === true);
+      stage.setAtmosphere(course.atmosphere);
       console.info(`TEKK — map swapped to "${course.id}" (${course.name})`);
     }
 
