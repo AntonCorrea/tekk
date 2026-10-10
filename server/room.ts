@@ -624,6 +624,17 @@ function publishBody(state: PlayerStateInstance, sim: SimBody): void {
   state.dashTicks = sim.dashTicks;
   state.dashCooldownTicks = sim.dashCooldownTicks;
   state.boostTicks = sim.boostTicks;
+  // The springboard bounce is LIVE (WALL.bounce), so its arming state must
+  // survive a rollback like the rest of the replicated sim state -- otherwise
+  // the first replayed step after a correction would differ from the server.
+  state.wallRunTicks = sim.wallTicks;
+  state.wallCooldownTicks = sim.wallCooldownTicks;
+  state.wallNX = sim.wallNX;
+  state.wallNY = sim.wallNY;
+  state.wallNZ = sim.wallNZ;
+  state.wallLocked = sim.wallLocked;
+  state.prevJump = sim.prevJump;
+  state.bounceArmed = sim.bounceArmed;
 }
 
 function clearScore(state: PlayerStateInstance): void {

@@ -13,10 +13,16 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { Server } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
+import { Encoder } from '@colyseus/schema';
 import { loadCourse, resolveCoursePath } from './course.ts';
 import { loadCatalog } from './catalog.ts';
 import { RaceRoom } from './room.ts';
 import { DEFAULT_TIMINGS, type MatchTimings } from './rules.ts';
+
+// Every PlayerState now carries the wall-run counters and normal. The default
+// 8KB encode buffer overflows on that state (it printed a warning in the
+// harness since the atmosphere work); 32KB clears it with room to spare.
+Encoder.BUFFER_SIZE = 32 * 1024;
 
 export interface GameServerOptions {
   /**

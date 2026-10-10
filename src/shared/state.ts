@@ -48,6 +48,39 @@ export const PlayerState = schema(
      */
     boostTicks: t.number().default(0),
 
+    /** Fixed ticks of wall clip remaining; > 0 means clipped to a wall. */
+    wallRunTicks: t.number().default(0),
+    /** Fixed ticks until a new wall attach may start after a detach. */
+    wallCooldownTicks: t.number().default(0),
+    /**
+     * The clipped wall's unit outward normal (world); zeros when not clipped.
+     *
+     * Synced even though it is derivable, because the first replayed step
+     * after a rollback would otherwise read the controller's STALE sweep --
+     * the same trap sync restores velocity and the dash counters against.
+     */
+    wallNX: t.number().default(0),
+    wallNY: t.number().default(0),
+    wallNZ: t.number().default(0),
+    /**
+     * Wall lock: once a clip ends it cannot restart until the racer touches
+     * the ground. Synced so a rollback replays the same gating.
+     */
+    wallLocked: t.boolean().default(false),
+    /**
+     * The previous step's raw `jump` input. Lets the step tell a FRESH press
+     * edge from the level-triggered held state (see `MoveInput`), which is
+     * what arms the springboard bounce. Synced because a rollback replays the
+     * same gate.
+     */
+    prevJump: t.boolean().default(false),
+    /**
+     * The springboard bounce is armed by a jump pressed while ALREADY airborne
+     * and consumed when it fires (or when the racer lands). Synced so a
+     * rollback replays the same armed-or-not decision.
+     */
+    bounceArmed: t.boolean().default(false),
+
     /** Total time this racer has held the Core this match, in ms. The score. */
     holdMs: t.number().default(0),
     /**

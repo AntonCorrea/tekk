@@ -211,7 +211,10 @@ architecture supplies them instead. Only New York does; the other two keep
 the towers.
 
 The default is a single constant, `DEFAULT_COURSE_PATH` in `server/course.ts`.
-There is no CLI or environment switch for it.
+A `COURSE` environment variable boots a different map without touching code
+(`COURSE=takk-arena`, or a path to any course JSON), and the lobby vote swaps
+the map between matches. Both are server-side choices only: the value is read
+once at boot and never offered to clients, so the invariant below still holds.
 
 The server ships the course to clients as raw JSON in room state. That is not
 a convenience — if clients picked their own course, every player would be

@@ -23,8 +23,8 @@ import type {
   Collider,
   KinematicCharacterController,
 } from '@dimforge/rapier3d-compat';
-import { ColliderDesc, Cuboid, RigidBodyDesc } from '@dimforge/rapier3d-compat';
-import { BOOST, CORE, DASH, GRAVITY, JUMP_PAD, MOVE, PHYSICS, PLAYER, WORLD } from '../constants.ts';
+import { ColliderDesc, Cuboid, Ray, RigidBodyDesc } from '@dimforge/rapier3d-compat';
+import { BOOST, CORE, DASH, GRAVITY, JUMP_PAD, MOVE, PHYSICS, PLAYER, WALL, WORLD } from '../constants.ts';
 import type { Course, PadKind, Vec3 } from './course.ts';
 import type { MoveInputData } from './input.ts';
 
@@ -78,6 +78,8 @@ export interface SimBody {
   readonly body: RigidBody;
   readonly collider: Collider;
   readonly controller: KinematicCharacterController;
+  /** The world this body lives in; used by the wall probe (castRayAndGetNormal). */
+  readonly world: World;
   readonly velocity: Vec3Obj;
   /** True when the controller found ground under the capsule this step. */
   grounded: boolean;
@@ -120,6 +122,57 @@ export interface SimBody {
    * and restored like the dash counters.
    */
   boostTicks: number;
+  /**
+   * Fixed ticks of wall clip remaining; greater than zero means clipped to a
+   * wall face this step.
+   *
+   * Integer ticks, synced and restored like the dash counters: a rollback must
+   * know a clip is running, and the budget is the whole point of a clip, not a
+   * side effect.
+   */
+  wallTicks: number;
+  /**
+   * Fixed ticks until a new wall attach may start after a detach. Restored on
+   * rollback for the same reason as the other counters: it decides whether the
+   * very next step may attach.
+   */
+  wallCooldownTicks: number;
+  /**
+   * The wall face this body is clipped to: its unit outward normal, world
+   * space. All-zero when not clipped.
+   *
+   * Refreshed from the controller's sweep every clipped step, and restored
+   * from sync on rollback, because the first replayed step would otherwise
+   * read the STALE sweep from the mispredicted position -- exactly the bug
+   * `teleportBody`'s comment warns about for the collider itself.
+   */
+  wallNX: number;
+  wallNY: number;
+  wallNZ: number;
+  /**
+   * Wall lock: once a clip ends -- by budget, wall-jump, peel, dash, or a lost
+   * face -- the racer cannot attach to ANY wall again until it touches the
+   * ground. Touching ground clears it; every `endWall` re-arms it.
+   *
+   * Without this, a racer holding a face could chain clips forever (cooldown
+   * only delays the next grab) and climb/hover indefinitely. Synced and
+   * restored like the other counters: a rollback must replay the same gate.
+   */
+  wallLocked: boolean;
+  /**
+   * The previous step's raw `jump` input, latched at the end of every step.
+   * The only way the step can tell a fresh press EDGE from the level-triggered
+   * held state (`MoveInput.jump` is level-triggered -- see shared/input.ts),
+   * which is what arms the springboard bounce. Synced and restored like the
+   * other wall state: a rollback must replay the same gate.
+   */
+  prevJump: boolean;
+  /**
+   * The springboard bounce is armed by a jump pressed while ALREADY airborne
+   * (`input.jump && !prevJump && !grounded`) and consumed when it fires or the
+   * racer lands. Synced and restored for the same reason as `prevJump`.
+   */
+  bounceArmed: boolean;
   /** The course's pads, pre-resolved to world AABBs once at creation. */
   readonly pads: readonly SimPad[];
 }
@@ -189,6 +242,7 @@ export function createSimBody(world: World, course: Course, stepSeconds: number)
     body,
     collider,
     controller,
+    world,
     velocity: { x: 0, y: 0, z: 0 },
     grounded: false,
     horizontalSpeed: 0,
@@ -200,6 +254,14 @@ export function createSimBody(world: World, course: Course, stepSeconds: number)
     carrying: false,
     dashedThisStep: false,
     boostTicks: 0,
+    wallTicks: 0,
+    wallCooldownTicks: 0,
+    wallNX: 0,
+    wallNY: 0,
+    wallNZ: 0,
+    wallLocked: false,
+    prevJump: false,
+    bounceArmed: false,
     pads: course.pads.map((pad) => ({
       kind: pad.kind,
       min: {
@@ -245,8 +307,9 @@ export function destroySimBody(world: World, sim: SimBody): void {
  * Doing it in the shared step means both sides teleport on the same tick, from
  * the same state, and the respawn is part of the predicted timeline.
  *
- * Movement is world-axis aligned (forward = -Z). Camera-relative movement needs
- * camera yaw and stays deferred until the camera can actually orbit.
+ * Movement is judged in world vectors: the client rotates the camera-relative
+ * wish by the camera's yaw before it reaches this function (main.ts stages it),
+ * so the shared step only ever sees world axes and the server needs no camera.
  *
  * This does NOT advance the world. The caller does that.
  */
@@ -284,6 +347,122 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
     wishZ /= wishLength;
   }
 
+  // --- wall state -------------------------------------------------------
+  // A wall face is found with a SHORT PROBE (see findWall) rather than the
+  // controller's sweep: a clipped body rides a face without penetrating it, so
+  // the sweep stops reporting the contact a step after every attach. Handled
+  // before the dash so a dash can always cancel a clip (dash wins) and a clip
+  // never starts mid-dash.
+  //
+  // Touching the ground is the ONLY way to reset the wall lock: once a clip
+  // ends, it cannot be restarted mid-air, so holding a face cannot be chained
+  // into an infinite climb/hover. Every `endWall` re-arms it; landing clears
+  // it for the next jump -- and, at the same moment, drops any armed bounce.
+  if (sim.grounded) {
+    sim.wallLocked = false;
+    sim.bounceArmed = false;
+  }
+  // Arm the springboard: a jump pressed while ALREADY airborne. The ground
+  // jump's own press happens grounded, so holding Space from the floor into a
+  // face NEVER arms it -- the player must press jump again in the air.
+  const jumpPressed = input.jump && !sim.prevJump;
+  if (jumpPressed && !sim.grounded) sim.bounceArmed = true;
+
+  let clipped = false;
+  // The CLIP feature (`WALL.enabled`) is gated here: when asleep the refresh
+  // never runs and the attach gate never fires, so `clipped` stays false and
+  // every downstream wall branch (dash-cancel, wall-jump, wallSteer, budget)
+  // is inert -- walls are plain solid obstacles.
+  if (WALL.enabled && sim.wallTicks > 0) {
+    // Refresh the face (or drop it) by probing along the stored normal.
+    const hit = findWall(sim, -sim.wallNX, -sim.wallNY, -sim.wallNZ);
+    if (hit) {
+      sim.wallNX = hit.nx;
+      sim.wallNY = hit.ny;
+      sim.wallNZ = hit.nz;
+      clipped = true;
+    } else {
+      // The face is gone (climbed past its top, or around a corner). Drop
+      // with NO cooldown -- the wall lock still blocks a mid-air re-grab,
+      // so a racer that overshoots a face cannot catch it again in the air.
+      endWall(sim, false);
+    }
+  } else if (
+    WALL.enabled &&
+    !sim.wallLocked &&
+    sim.wallCooldownTicks === 0 &&
+    !sim.grounded &&
+    sim.dashTicks === 0 &&
+    Math.hypot(sim.velocity.x, sim.velocity.z) >= WALL.minSpeedToAttach
+  ) {
+    // Attach: probe ahead along the horizontal heading and grab the face.
+    const hs = Math.hypot(sim.velocity.x, sim.velocity.z);
+    const hit = findWall(sim, sim.velocity.x / hs, 0, sim.velocity.z / hs);
+    if (hit) {
+      // Must be moving INTO the wall: velocity against its outward normal.
+      const vn = sim.velocity.x * hit.nx + sim.velocity.y * hit.ny + sim.velocity.z * hit.nz;
+      if (vn < 0) {
+        sim.wallNX = hit.nx;
+        sim.wallNY = hit.ny;
+        sim.wallNZ = hit.nz;
+        sim.wallTicks = WALL.budgetTicks;
+        clipped = true;
+        // Snap the body onto the face (capsule surface touching it), then kill
+        // the into-wall velocity so the first clipped step slides along the
+        // face instead of pushing through it all step.
+        teleportBody(sim, { x: hit.px, y: hit.py, z: hit.pz });
+        sim.velocity.x -= vn * hit.nx;
+        sim.velocity.y -= vn * hit.ny;
+        sim.velocity.z -= vn * hit.nz;
+      }
+    }
+  } else if (
+    // Springboard bounce: reachable exactly while the clip feature is asleep
+    // (the attach branch above owns these same gates when it is awake).
+    // Armed ONLY by a jump pressed mid-air (see above) -- holding the ground
+    // jump into a face, or plain contact, does nothing.
+    WALL.bounce &&
+    sim.bounceArmed &&
+    !sim.wallLocked &&
+    sim.wallCooldownTicks === 0 &&
+    !sim.grounded &&
+    sim.dashTicks === 0 &&
+    Math.hypot(sim.velocity.x, sim.velocity.z) >= WALL.minSpeedToAttach
+  ) {
+    // Probe ahead along the heading; on contact, kick the racer off the face
+    // with the wall-jump vector WITHOUT entering a clip. Consumes the arm and
+    // re-arms the wall lock -- like every wall exit, touching the ground is
+    // the only reset: one bounce per airtime, no hover-bouncing a single face.
+    //
+    // The ANGLE knob is geometric: the cast originates at the body centre,
+    // which can never get closer to a face than its radius, so a heading at
+    // `bounceMinAngleDeg` off the surface registers only if the reach is
+    // `radius / sin(angle)` -- anything shallower can never touch the face
+    // deep enough to be caught, steeper approaches grab from further out.
+    const minAngleDeg = Math.min(90, Math.max(5, WALL.bounceMinAngleDeg));
+    const reach = (PLAYER.radius + 0.01) / Math.sin((minAngleDeg * Math.PI) / 180);
+    const hs = Math.hypot(sim.velocity.x, sim.velocity.z);
+    const hit = findWall(sim, sim.velocity.x / hs, 0, sim.velocity.z / hs, reach);
+    if (hit) {
+      // Must be moving INTO the wall: velocity against its outward normal.
+      const vn = sim.velocity.x * hit.nx + sim.velocity.y * hit.ny + sim.velocity.z * hit.nz;
+      if (vn < 0) {
+        // The kick follows the held input: pressing INTO the wall keeps the
+        // racer going forward into it (a vertical pop against the face);
+        // pressing AWAY kicks off the face. Hands off the stick fall back to
+        // the face's outward normal -- the plain bounce off the wall. Height
+        // is the same either way; only the horizontal direction changes.
+        const outX = hasWish ? wishX : hit.nx;
+        const outZ = hasWish ? wishZ : hit.nz;
+        sim.velocity.x = outX * WALL.jumpOut;
+        sim.velocity.y = hit.ny * WALL.jumpOut + WALL.jumpUp;
+        sim.velocity.z = outZ * WALL.jumpOut;
+        sim.bounceArmed = false;
+        sim.wallLocked = true;
+      }
+    }
+  }
+
   // --- dash --------------------------------------------------------------
   // While dashing, horizontal velocity is left exactly as the dash set it:
   // steering, accel and friction are all skipped, so the dash flies straight.
@@ -291,25 +470,43 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
   const dashing = sim.dashTicks > 0 || tryStartDash(sim, input, wishX, wishZ, hasWish);
   sim.dashedThisStep = dashing;
 
-  if (!dashing) {
-    // A boost raises the top speed for a moment, and while it lasts letting
-    // go of the stick coasts instead of braking: a boost pad should carry you
-    // even if you are not touching anything.
-    const boosted = sim.boostTicks > 0;
-    const topSpeed = boosted ? BOOST.speed : MOVE.runSpeed;
-    const targetSpeed = sim.carrying ? topSpeed * CORE.carrierSpeedFactor : topSpeed;
-    const control = sim.grounded ? 1 : MOVE.airControl;
-    const accel = MOVE.accel * control;
-    const decel = MOVE.friction * (sim.grounded ? 1 : MOVE.airControl);
+  if (dashing && clipped) {
+    endWall(sim, true);
+    clipped = false;
+  }
 
-    if (hasWish) {
-      velocity.x = approach(velocity.x, wishX * targetSpeed, accel * dt);
-      velocity.z = approach(velocity.z, wishZ * targetSpeed, accel * dt);
-    } else if (boosted) {
-      // Coast: keep the boost's velocity.
+  // Peel: holding hard away from the wall ends the clip before steering.
+  if (clipped && hasWish) {
+    const into = wishX * sim.wallNX + wishZ * sim.wallNZ;
+    if (into >= WALL.peelThreshold) {
+      endWall(sim, true);
+      clipped = false;
+    }
+  }
+
+  if (!dashing) {
+    if (clipped) {
+      wallSteer(sim, wishX, wishZ, hasWish, dt);
     } else {
-      velocity.x = approach(velocity.x, 0, decel * dt);
-      velocity.z = approach(velocity.z, 0, decel * dt);
+      // A boost raises the top speed for a moment, and while it lasts letting
+      // go of the stick coasts instead of braking: a boost pad should carry you
+      // even if you are not touching anything.
+      const boosted = sim.boostTicks > 0;
+      const topSpeed = boosted ? BOOST.speed : MOVE.runSpeed;
+      const targetSpeed = sim.carrying ? topSpeed * CORE.carrierSpeedFactor : topSpeed;
+      const control = sim.grounded ? 1 : MOVE.airControl;
+      const accel = MOVE.accel * control;
+      const decel = MOVE.friction * (sim.grounded ? 1 : MOVE.airControl);
+
+      if (hasWish) {
+        velocity.x = approach(velocity.x, wishX * targetSpeed, accel * dt);
+        velocity.z = approach(velocity.z, wishZ * targetSpeed, accel * dt);
+      } else if (boosted) {
+        // Coast: keep the boost's velocity.
+      } else {
+        velocity.x = approach(velocity.x, 0, decel * dt);
+        velocity.z = approach(velocity.z, 0, decel * dt);
+      }
     }
   }
 
@@ -320,12 +517,27 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
   // out to make you jump, and would need its own rule for what "grounded"
   // means mid-air. Leaving Y alone keeps the dash a purely horizontal burst
   // with one rule: the horizontal velocity is frozen, nothing else changes.
-  if (input.jump && sim.grounded) {
+  //
+  // A clip changes the same rule its own way: while on a wall, jump is the
+  // wall-jump (kick off the face), and gravity is replaced by the wall's slide
+  // or climb -- the wall holds the racer instead.
+  if (clipped && input.jump) {
+    // Level-triggered like every jump: holding jump into a wall kicks off the
+    // instant the clip lands; tap jump into a wall to attach and run it. The
+    // cooldown stops same-face jump-spam from becoming a cheap climb.
+    sim.velocity.x = sim.wallNX * WALL.jumpOut;
+    sim.velocity.y = sim.wallNY * WALL.jumpOut + WALL.jumpUp;
+    sim.velocity.z = sim.wallNZ * WALL.jumpOut;
+    endWall(sim, true);
+    clipped = false;
+  } else if (input.jump && sim.grounded) {
     velocity.y = MOVE.jumpSpeed;
     sim.grounded = false;
   }
 
-  velocity.y += GRAVITY.y * dt;
+  if (!clipped) {
+    velocity.y += GRAVITY.y * dt;
+  }
 
   // --- resolve against the world ----------------------------------------
   const current = sim.body.translation();
@@ -342,8 +554,10 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
   sim.grounded = sim.controller.computedGrounded();
 
   // Landing cancels downward velocity; otherwise gravity accumulates and the
-  // capsule sticks to the floor with a force it can never escape.
-  if (sim.grounded && velocity.y < 0) {
+  // capsule sticks to the floor with a force it can never escape. A clipped
+  // racer is not "landing" -- the controller can report ground when the face
+  // meets the floor, and zeroing a climb or a wall-slide there would yank it.
+  if (sim.grounded && velocity.y < 0 && !clipped) {
     velocity.y = 0;
   }
 
@@ -367,6 +581,23 @@ export function applyInput(sim: SimBody, input: MoveInputData, dt: number): void
     sim.dashCooldownTicks -= 1;
   }
   if (sim.boostTicks > 0) sim.boostTicks -= 1;
+
+  // --- wall bookkeeping ---------------------------------------------------
+  // The budget counts clipping STEPS: attach sets `budgetTicks`, every clipped
+  // step decrements at the end, and the step that reaches 0 costs the
+  // cooldown. Deliberate exits (wall-jump, peel, dash, budget out) all pay it,
+  // so a corner cannot be hover-climbed forever; a LOST face stays free of the
+  // cooldown but -- like every exit -- re-arms the wall lock, so nothing
+  // re-attaches until the racer lands.
+  if (clipped) {
+    sim.wallTicks -= 1;
+    if (sim.wallTicks === 0) endWall(sim, true);
+  } else if (sim.wallCooldownTicks > 0) {
+    sim.wallCooldownTicks -= 1;
+  }
+
+  // Latch the raw jump input for the NEXT step's edge detection.
+  sim.prevJump = input.jump;
 }
 
 /**
@@ -407,6 +638,146 @@ function tryStartDash(
   return true;
 }
 
+// ------------------------------------------------------------------ walls
+
+/** A wall face the controller's last sweep touched, as unit outward normal. */
+/**
+ * A wall face this body is against (or within a hair of): its unit outward
+ * normal in world space, plus where the capsule centre must sit to ride it.
+ */
+interface WallContact {
+  nx: number;
+  ny: number;
+  nz: number;
+  /** Pin target: body-centre position with the capsule surface on the face. */
+  px: number;
+  py: number;
+  pz: number;
+}
+
+/**
+ * Probe for the wall face ahead of the body, or null.
+ *
+ * The body never penetrates a face while clipped -- the into-wall velocity is
+ * removed every step -- so the controller's sweep goes quiet a step after
+ * every attach: it only reports contacts for actual penetration, and a body
+ * riding a face barely touches it. A SHORT SOLID RAY is the honest check: the
+ * same course-only filter as the sweep, deterministic by construction (both
+ * sides query the same static geometry and get the same answer, exactly like
+ * `grounded`), and it doubles as a forgiving grab for the attach.
+ *
+ * `dirX/Y/Z` is the probe direction: the horizontal heading for an attach,
+ * the stored back-normal for a clipped refresh. `reach` overrides the cast
+ * length -- the bounce extends it to `radius / sin(angle)` so its minimum
+ * approach angle is encoded geometrically (see the bounce branch); the
+ * attach/refresh use the default `WALL.probeDist`.
+ */
+function findWall(
+  sim: SimBody,
+  dirX: number,
+  dirY: number,
+  dirZ: number,
+  reach: number = WALL.probeDist,
+): WallContact | null {
+  const len = Math.hypot(dirX, dirY, dirZ);
+  if (len < 1e-4) return null;
+
+  const t = sim.body.translation();
+  const dx = dirX / len;
+  const dy = dirY / len;
+  const dz = dirZ / len;
+  const hit = sim.world.castRayAndGetNormal(
+    new Ray({ x: t.x, y: t.y, z: t.z }, { x: dx, y: dy, z: dz }),
+    reach,
+    true,
+    undefined,
+    RACER_GROUPS,
+  );
+  if (!hit) return null;
+
+  const n = hit.normal;
+  // A wall is vertical: the floor, a slope, or a ceiling is not. (A ceiling is
+  // also physically unreachable while riding a face -- the face plane itself
+  // stands between the capsule and any wall-top above it -- but a low lip you
+  // clip past must not read as a wall either.)
+  if (Math.abs(n.y) > WALL.maxWallSlope) return null;
+  const nlen = Math.hypot(n.x, n.y, n.z);
+  if (nlen < 1e-4) return null;
+  const nx = n.x / nlen;
+  const ny = n.y / nlen;
+  const nz = n.z / nlen;
+
+  // Pin the capsule surface to the face: the hit point (on the face plane)
+  // pushed out along the normal by the capsule radius.
+  return {
+    nx,
+    ny,
+    nz,
+    px: t.x + dx * hit.timeOfImpact + nx * PLAYER.radius,
+    py: t.y + dy * hit.timeOfImpact + ny * PLAYER.radius,
+    pz: t.z + dz * hit.timeOfImpact + nz * PLAYER.radius,
+  };
+}
+
+/**
+ * Steering while clipped to a wall: run along the face, climb it, or slide it.
+ *
+ * The wish is projected onto the wall plane for the horizontal run; holding
+ * the stick TOWARD the wall (wish dot normal <= -threshold) instead runs the
+ * racer UP the face, still steerable along it (diagonal face-runs). Either
+ * way the into-wall velocity is removed every step, so the body rides the
+ * plane the controller resolves instead of pushing through it.
+ *
+ * Speeds carry the carrier factor, so holding the Core clips at 0.9x.
+ */
+function wallSteer(sim: SimBody, wishX: number, wishZ: number, hasWish: boolean, dt: number): void {
+  const { velocity } = sim;
+  const f = sim.carrying ? CORE.carrierSpeedFactor : 1;
+  const run = WALL.runSpeed * f;
+  const climb = WALL.climbSpeed * f;
+  const into = hasWish ? wishX * sim.wallNX + wishZ * sim.wallNZ : 0;
+
+  if (into <= -WALL.climbThreshold) {
+    velocity.y = approach(velocity.y, climb, WALL.climbAccel * dt);
+  } else {
+    velocity.y = approach(velocity.y, -WALL.slideSpeed, WALL.slideAccel * dt);
+  }
+
+  if (hasWish) {
+    const alongX = wishX - sim.wallNX * into;
+    const alongZ = wishZ - sim.wallNZ * into;
+    const along = Math.hypot(alongX, alongZ);
+    if (along > 1e-4) {
+      velocity.x = approach(velocity.x, (alongX / along) * run, MOVE.accel * dt);
+      velocity.z = approach(velocity.z, (alongZ / along) * run, MOVE.accel * dt);
+    }
+  } else {
+    velocity.x = approach(velocity.x, 0, MOVE.friction * 0.5 * dt);
+    velocity.z = approach(velocity.z, 0, MOVE.friction * 0.5 * dt);
+  }
+
+  const vn = velocity.x * sim.wallNX + velocity.y * sim.wallNY + velocity.z * sim.wallNZ;
+  velocity.x -= vn * sim.wallNX;
+  velocity.y -= vn * sim.wallNY;
+  velocity.z -= vn * sim.wallNZ;
+}
+
+/**
+ * End a wall clip. `cooldown: true` for every exit that could be abused as a
+ * free reset (wall-jump, peel, dash, budget out); false for a lost face.
+ *
+ * Every exit re-arms the wall lock: the racer cannot attach to any wall again
+ * until it touches the ground (see `wallLocked` in the step).
+ */
+function endWall(sim: SimBody, cooldown: boolean): void {
+  sim.wallTicks = 0;
+  sim.wallNX = 0;
+  sim.wallNY = 0;
+  sim.wallNZ = 0;
+  if (cooldown) sim.wallCooldownTicks = WALL.cooldownTicks;
+  sim.wallLocked = true;
+}
+
 /**
  * Teleport to an arbitrary feet position, zero all velocity and clear any dash.
  *
@@ -419,6 +790,12 @@ export function moveSimBody(sim: SimBody, feetX: number, feetY: number, feetZ: n
   sim.dashTicks = 0;
   sim.dashCooldownTicks = 0;
   sim.boostTicks = 0;
+  sim.wallTicks = 0;
+  sim.wallCooldownTicks = 0;
+  sim.wallNX = 0;
+  sim.wallNY = 0;
+  sim.wallNZ = 0;
+  sim.wallLocked = false;
   sim.velocity.x = 0;
   sim.velocity.y = 0;
   sim.velocity.z = 0;

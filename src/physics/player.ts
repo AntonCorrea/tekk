@@ -46,6 +46,20 @@ export function adoptTruth(sim: SimBody, truth: PlayerStateInstance, carrying: b
   sim.dashCooldownTicks = truth.dashCooldownTicks;
   sim.boostTicks = truth.boostTicks;
 
+  // The wall counters and the face normal, for the same reason: a rollback
+  // into the middle of a clip must re-enter the clip (and its budget) against
+  // the same face, or the first replayed step reads the stale sweep.
+  sim.wallTicks = truth.wallRunTicks;
+  sim.wallCooldownTicks = truth.wallCooldownTicks;
+  sim.wallNX = truth.wallNX;
+  sim.wallNY = truth.wallNY;
+  sim.wallNZ = truth.wallNZ;
+  sim.wallLocked = truth.wallLocked;
+  // The springboard's arming state is step state like the counters above: a
+  // rollback into an armed (or mid-bounce) window must replay the same gate.
+  sim.prevJump = truth.prevJump;
+  sim.bounceArmed = truth.bounceArmed;
+
   // Not a PlayerState field -- the server keeps one `carrierId` on GameState --
   // so the caller resolves it and passes it in. Replay then runs the carrier's
   // slower speed and dash lock from the ack forward, the same as the server.

@@ -15,9 +15,11 @@
  * DASH push the same queue/held state the keyboard pushes, so there is exactly
  * one staging path and the wire format cannot diverge between inputs.
  *
- * `jump` is level-triggered here and stays level-triggered on the wire. A
- * queued keypress consumed by one step would be lost every time rollback
- * replayed past it — see shared/input.ts.
+ * `jump` is level-triggered here and stays level-triggered on the wire: the
+ * keyboard sends its HELD state, so a held Space re-jumps deterministically
+ * after any rollback rewind and can kick off a wall the instant a clip
+ * attaches — see shared/input.ts. The touch Jump button is a momentary tap:
+ * it queues one step, so it is one jump per press.
  *
  * `dash` is plain held state, not even queued like jump: holding Shift dashes
  * again the moment the cooldown allows, and the cooldown (simulated, so both
@@ -373,7 +375,12 @@ export function stageInput(target: MoveInputData, yaw = 0): MoveInputData {
   target.moveZ = moveZ;
 
   target.dash = [...DASH_KEYS].some((code) => held.has(code));
-  target.jump = jumpQueued;
+  // Level-triggered, like `dash` and like the sim's contract (shared/input.ts):
+  // the keyboard sends its held state, so holding Space into a wall kicks off
+  // the instant the clip attaches (sim.ts: `clipped && input.jump`), and a
+  // held Space re-jumps the moment the racer lands. The touch button still
+  // supplies the momentary queue below, so a tap stays a single jump.
+  target.jump = jumpQueued || [...JUMP_KEYS].some((code) => held.has(code));
 
   jumpQueued = false;
   return target;

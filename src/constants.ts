@@ -129,6 +129,99 @@ export const PHYSICS = {
   minSlopeSlide: Math.PI / 8,
 } as const;
 
+/**
+ * Wall-run and wall-jump.
+ *
+ * One state with two verbs and a springboard out. A racer who carries speed
+ * into a wall while airborne clips to the face: steer ALONG it (horizontal
+ * wall-run), hold TOWARD it to run up it (vertical climb), jump to kick off
+ * (wall-jump). The wall is a tool, not a road -- the budget caps every clip,
+ * so the value is in chaining: run, climb, wall-jump, next wall.
+ *
+ * All tick counts are fixed integers, like DASH: rollback restores them
+ * exactly, where accumulated float seconds would drift.
+ */
+export const WALL = {
+  /**
+   * Master switch for the full wall-run/wall-jump CLIP feature. FALSE = the
+   * clip feature is SLEEPING: no attach, no riding the face, no budget, no
+   * lock -- walls are plain solid obstacles again. Every constant and test
+   * stays intact for the next revision; flip to true to wake it.
+   */
+  enabled: false,
+  /**
+   * Springboard bounce, independent of `enabled`: while the clip feature is
+   * asleep, PRESS jump a fresh time while ALREADY airborne and inbound to a
+   * wall face and the racer kicks with the wall-jump vector (UP + the held
+   * direction). The horizontal kick follows the STICK: pressing INTO the wall
+   * pops you forward into it; pressing AWAY (or holding nothing) bounces you
+   * off it -- same height either way, only the direction changes. Holding the
+   * launch jump from the ground into a face does nothing -- the bounce needs
+   * its own mid-air press. No ride, no climb: one kick per press, and the wall
+   * lock means one bounce per airtime -- touching the ground is the only reset.
+   */
+  bounce: true,
+  /**
+   * Minimum approach angle, degrees from the wall's SURFACE, at which the
+   * springboard bounce is available: 90 = straight into the face, 30 = hitting
+   * it at a 30-degree skim. A shallower approach skates past (no bounce). The
+   * bounce probe's reach is derived from this (radius / sin(angle)): a
+   * straight-in grab stays short, a shallow angle needs to reach further out
+   * to register, so tune down for a forgiving skim-bounce. Range 5..90.
+   */
+  bounceMinAngleDeg: 30,
+  /**
+   * Minimum horizontal speed, units/s, to attach. Below run speed (13) on
+   * purpose: a plain fast hop into a wall is enough; a walk is not.
+   */
+  minSpeedToAttach: 8,
+  /** Max `|normal.y|` of a surface that counts as a wall. Vertical face = 0. */
+  maxWallSlope: 0.25,
+  /**
+   * How far the attach/refresh probe casts, units. The capsule rides a face at
+   * exactly one radius (0.4) out, so 0.55 is the face plus a hair of slack:
+   * long enough to grab a racer a step short of touching, short enough that a
+   * wall you aimed at the next step over never magnet-attracts from the air.
+   */
+  probeDist: 0.55,
+  /** While clipped and steering along the face, the top speed (run is 13). */
+  runSpeed: 13,//15,
+  /** While clipped and holding toward the wall, the climb speed. */
+  climbSpeed: 10,
+  /** How fast the climb ramps in, units/s^2. */
+  climbAccel: 80,
+  /** The gentle slide down the face while running along it, units/s. */
+  slideSpeed: 1.5,
+  /** How fast the wall's slide-down ramps in, units/s^2. */
+  slideAccel: 20,
+  /** Total ticks a clip lasts. 30 at 60Hz is 0.5s: ~7.5 units of run or ~4.5 of climb. */
+  budgetTicks: 30,
+  /**
+   * Ticks after a detach before a new attach may start. 12 at 60Hz is 0.2s:
+   * long enough to stop same-face jump-spam (holding jump would otherwise
+   * re-clip the wall it just left), short enough that a cross-alley chain --
+   * always > 0.2s of airtime -- is untouched.
+   */
+  cooldownTicks: 12,
+  /**
+   * Hold the stick this far TOWARD the wall (wish . normal <= -this) and the
+   * run becomes a climb.
+   */
+  climbThreshold: 0.5,
+  /**
+   * Hold the stick this far AWAY from the wall (wish . normal >= +this) and
+   * the racer peels off the face.
+   */
+  peelThreshold: 0.4,
+  /**
+   * Wall-jump kick when jumping while clipped: `jumpOut` along the wall's
+   * outward normal, `jumpUp` straight up. Together about one jump's apex
+   * worth of height plus a clean push clear of the face.
+   */
+  jumpOut: 19,
+  jumpUp: 19,
+} as const;
+
 // ---------------------------------------------------------------- goal
 
 export const GOAL = {

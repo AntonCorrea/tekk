@@ -33,12 +33,13 @@ import {
   createSimBody,
   moveSimBody,
   respawnFeet,
+  teleportBody,
   type SimBody,
 } from '../src/shared/sim.ts';
 import { MoveInput } from '../src/shared/input.ts';
 import type { MoveInputData } from '../src/shared/input.ts';
 import { PlayerState } from '../src/shared/state.ts';
-import { BOOST, CORE, DASH, FIXED_TIMESTEP, MATCH, MOVE, PLAYER } from '../src/constants.ts';
+import { BOOST, CORE, DASH, FIXED_TIMESTEP, GRAVITY, MATCH, MOVE, PLAYER, WALL } from '../src/constants.ts';
 import {
   advancePhase,
   chooseStealer,
@@ -146,6 +147,14 @@ const snap = (sim: SimBody) => {
     dashTicks: sim.dashTicks,
     dashCooldownTicks: sim.dashCooldownTicks,
     boostTicks: sim.boostTicks,
+    wallTicks: sim.wallTicks,
+    wallCooldownTicks: sim.wallCooldownTicks,
+    wallNX: sim.wallNX,
+    wallNY: sim.wallNY,
+    wallNZ: sim.wallNZ,
+    wallLocked: sim.wallLocked,
+    prevJump: sim.prevJump,
+    bounceArmed: sim.bounceArmed,
   };
 };
 type Snap = ReturnType<typeof snap>;
@@ -156,7 +165,12 @@ function identical(a: Snap, b: Snap): boolean {
     a.vx === b.vx && a.vy === b.vy && a.vz === b.vz &&
     a.grounded === b.grounded && a.speed === b.speed &&
     a.dashTicks === b.dashTicks && a.dashCooldownTicks === b.dashCooldownTicks &&
-    a.boostTicks === b.boostTicks
+    a.boostTicks === b.boostTicks &&
+    a.wallTicks === b.wallTicks && a.wallCooldownTicks === b.wallCooldownTicks &&
+    a.wallNX === b.wallNX && a.wallNY === b.wallNY && a.wallNZ === b.wallNZ &&
+    a.wallLocked === b.wallLocked &&
+    a.prevJump === b.prevJump &&
+    a.bounceArmed === b.bounceArmed
   );
 }
 
@@ -391,6 +405,14 @@ function truthOf(s: Snap) {
   truth.dashTicks = s.dashTicks;
   truth.dashCooldownTicks = s.dashCooldownTicks;
   truth.boostTicks = s.boostTicks;
+  truth.wallRunTicks = s.wallTicks;
+  truth.wallCooldownTicks = s.wallCooldownTicks;
+  truth.wallNX = s.wallNX;
+  truth.wallNY = s.wallNY;
+  truth.wallNZ = s.wallNZ;
+  truth.wallLocked = s.wallLocked;
+  truth.prevJump = s.prevJump;
+  truth.bounceArmed = s.bounceArmed;
   return truth;
 }
 
@@ -1448,6 +1470,678 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// ================================================================= W: walls
+
+/**
+ * A purpose-built course for the wall verbs, so the tests assert geometry that
+ * cannot silently stop existing when the production map changes.
+ *
+ * The floor is a 40x40 slab. Wall A runs along X at z = -6: its face on the
+ * racer's side sits at z = -5.75 and its outward normal is +Z. Wall B (opt-in,
+ * for the chain test) mirrors it at z = +6 with outward normal -Z, leaving an
+ * ~11.5-unit alley. A capsule centre rides a face at the face z minus its
+ * radius (PLAYER.radius).
+ */
+function wallCourse(withSecondWall = false): Course {
+  const solids: Course['solids'] = [
+    { id: 'floor', kind: 'box', position: [0, -0.5, 0], size: [40, 1, 40] },
+    { id: 'wall-a', kind: 'box', position: [0, 5, -6], size: [24, 10, 0.5] },
+  ];
+  if (withSecondWall) {
+    solids.push({ id: 'wall-b', kind: 'box', position: [0, 5, 6], size: [24, 10, 0.5] });
+  }
+  return {
+    id: 'harness-walls',
+    name: 'Harness Walls',
+    spawn: [0, 1, -1],
+    killY: -10,
+    solids,
+    pads: [],
+    decor: [],
+  };
+}
+
+/**
+ * One full clip against wall A: run up (t < 16), jump once and fly into the
+ * face (attach lands ~t 25), then climb the budget's first third by holding
+ * INTO the wall (moveZ = -1), then run ALONG the face (moveX = -1) until the
+ * budget runs out, fall back to the floor and idle.
+ *
+ * Drives the section's determinism, budget, climb and mid-clip rollback checks.
+ */
+function wallScriptAt(step: number): MoveInputData {
+  if (step < 16) return input(0, -1, false, false);
+  if (step < 32) return input(0, -1, false, step === 16);
+  if (step < 52) return input(-1, 0, false, false); // along the wall -> run
+  return input(0, 0, false, false);
+}
+
+/** Same approach, but steer along the face for the whole clip (no climb). */
+function wallHoriScriptAt(step: number): MoveInputData {
+  if (step < 16) return input(0, -1, false, false);
+  if (step < 32) return input(0, -1, false, step === 16);
+  if (step < 52) return input(-1, 0, false, false);
+  return input(0, 0, false, false);
+}
+
+/** Same approach, then jump while clipped to wall-jump off the face. */
+function wallJumpScriptAt(step: number): MoveInputData {
+  if (step < 16) return input(0, -1, false, false);
+  if (step < 29) return input(0, -1, false, step === 16);
+  if (step < 30) return input(0, -1, false, true); // jump while clipped -> wall-jump
+  return input(0, 0, false, false);
+}
+
+/** Same approach, then hold AWAY from the face (+Z) to peel off. */
+function wallPeelScriptAt(step: number): MoveInputData {
+  if (step < 16) return input(0, -1, false, false);
+  if (step < 28) return input(0, -1, false, step === 16);
+  return input(0, 1, false, false);
+}
+
+/** Clip wall A, wall-jump across the alley, hop into wall B and climb it. */
+function wallChainScriptAt(step: number): MoveInputData {
+  if (step < 16) return input(0, -1, false, false); // run up to wall-a
+  if (step < 29) return input(0, -1, false, step === 16);
+  if (step < 30) return input(0, -1, false, true); // wall-jump off wall-a
+  if (step < 64) return input(0, 1, false, false); // fly +Z across the alley
+  if (step < 74) return input(0, 1, false, step === 65); // land, then hop into wall-b
+  return input(0, 1, false, false); // climb the far face
+}
+
+/**
+ * Approach the wall high up (the harness spawns the body at feet y=8.5, a few
+ * units off the face), climb its last stretch diagonally, and -- once clear of
+ * the top -- peel AWAY so the respawned racer lands past the face instead of
+ * chaining back onto it. Drives the W8 top-out checks.
+ */
+function wallClimbScriptAt(step: number): MoveInputData {
+  if (step < 28) return input(-0.5, -1, false, false); // approach + diagonal climb up the top
+  return input(0, 1, false, false); // peel away over the ridge
+}
+
+/**
+ * The wall-lock scenario: jump into wall A and hold INTO it for the whole
+ * budget (a climb), then keep pressing toward the face all the way back to the
+ * floor -- the lock must hold against what would otherwise be an infinite
+ * mid-air re-grab (cooldown spent, fast, inside probe range) -- and once
+ * grounded, re-jump straight back up the same face to prove the ground reset.
+ *
+ * Timing (trace): attach ~t25, budget out at t54 (firstFree), lands ~t104,
+ * re-jumps at t110, re-attaches ~t112. Drives the W9 checks.
+ */
+function wallRestartScriptAt(step: number): MoveInputData {
+  if (step < 16) return input(0, -1, false, false); // roll up to wall-a
+  if (step < 110) return input(0, -1, false, step === 16); // climb, fall locked, land
+  return input(0, -1, false, step === 110); // ground reset the lock -> climb again
+}
+
+async function testWalls(): Promise<void> {
+  console.log('\n=== W. wall-run, climb and wall-jump (fixture) ===');
+
+  const course = wallCourse();
+  const FACE_Z = -5.75 + PLAYER.radius; // where a capsule centre rides the face
+  const apex = MOVE.jumpSpeed ** 2 / (2 * -GRAVITY.y);
+
+  // --- W1: one combined clip, two worlds, fresh replay --------------------
+  {
+    const STEPS = 130;
+    const a = makeWorld(course);
+    const b = makeWorld(course);
+    let firstDivergence = -1;
+    for (let step = 0; step < STEPS; step++) {
+      const cmd = wallScriptAt(step);
+      for (const side of [a, b]) {
+        applyInput(side.sim, cmd, FIXED_TIMESTEP);
+        side.world.step();
+      }
+      if (firstDivergence === -1 && !identical(snap(a.sim), snap(b.sim))) firstDivergence = step;
+    }
+    check(
+      'a wall clip runs bit-for-bit across two worlds',
+      firstDivergence === -1,
+      firstDivergence === -1 ? '130 steps identical' : `diverged at step ${firstDivergence}`,
+    );
+
+    const log = record(course, STEPS, wallScriptAt);
+    check('a fresh world replays the wall run exactly', identical(snap(a.sim), log[STEPS - 1]!));
+
+    const maxWall = Math.max(...log.map((s) => s.wallTicks));
+    const attachStarts = log
+      .map((s, i) => (s.wallTicks > 0 && (i === 0 || log[i - 1]!.wallTicks === 0) ? i : -1))
+      .filter((i) => i >= 0);
+    const clipSteps = log.filter((s) => s.wallTicks > 0).length;
+    // The first step AFTER the clip: once the budget is spent the very step
+    // that reaches 0 publishes wallTicks=0 (and the cooldown), so `> 0` counts
+    // budget-1 steps and the clip itself spans attach .. attach+budget-1.
+    const firstFree = log.findIndex((s, i) => s.wallTicks === 0 && i > 0 && log[i - 1]!.wallTicks > 0);
+    check(
+      'the racer really clipped to the wall, once, for the whole budget',
+      maxWall === WALL.budgetTicks - 1 &&
+        attachStarts.length === 1 &&
+        firstFree === attachStarts[0]! + WALL.budgetTicks - 1 &&
+        clipSteps === WALL.budgetTicks - 1,
+      `${attachStarts.length} attach at step ${attachStarts[0]}, ${clipSteps} published-clipped ` +
+        `steps (budget ${WALL.budgetTicks}, peak published ${maxWall}), first free ${firstFree}`,
+    );
+
+    const clipped = log.filter((s) => s.wallTicks > 0);
+    const peakY = Math.max(...clipped.map((s) => s.y));
+    const peakVy = Math.max(...clipped.map((s) => s.vy));
+    check(
+      'climb raises the racer well above a single jump',
+      peakY > apex + 1.2,
+      `peak clipped y=${peakY.toFixed(2)} (a jump apexes at ${apex.toFixed(2)})`,
+    );
+    check(
+      'the climb reaches the climb speed while it lasts',
+      peakVy >= WALL.climbSpeed - 0.5,
+      `peak vy=${peakVy.toFixed(2)} (climb ${WALL.climbSpeed})`,
+    );
+    check(
+      'the face holds the racer for the whole run',
+      clipped.every((s) => Math.abs(s.z - FACE_Z) < 0.3),
+      `z band ${Math.min(...clipped.map((s) => s.z)).toFixed(2)}..` +
+        `${Math.max(...clipped.map((s) => s.z)).toFixed(2)} around face ${FACE_Z.toFixed(2)}`,
+    );
+    const minX = Math.min(...clipped.map((s) => s.x));
+    check('the second phase travels along the face', minX < -2, `min x=${minX.toFixed(2)}`);
+
+    // Budget exhaustion is a deliberate exit: the first step WITHOUT a clip
+    // after the clip publishes the cooldown.
+    check(
+      'the expired budget starts the re-attach cooldown and arms the wall lock',
+      firstFree > 0 &&
+        log[firstFree]!.wallCooldownTicks === WALL.cooldownTicks &&
+        log[firstFree]!.wallLocked,
+      `first free step ${firstFree}, cooldown ${firstFree >= 0 ? log[firstFree]!.wallCooldownTicks : 'n/a'}, ` +
+        `lock ${firstFree >= 0 ? log[firstFree]!.wallLocked : 'n/a'}`,
+    );
+    check(
+      'after the clip the racer lands back on the floor',
+      log[log.length - 1]!.grounded && log[log.length - 1]!.wallTicks === 0,
+      `final grounded=${log[log.length - 1]!.grounded}`,
+    );
+  }
+
+  // --- W2: wall-run speed and the carrier discount --------------------------
+  {
+    const log = record(course, 130, wallHoriScriptAt);
+    const flat = log.filter((s) => s.wallTicks > 0).slice(6); // skip the ramp-in
+    const peak = Math.max(...flat.map((s) => s.speed));
+    check(
+      'wall-run along the face reaches the configured WALL.runSpeed',
+      Math.abs(peak - WALL.runSpeed) < 0.05,
+      `peak clipped speed=${peak.toFixed(3)} (run ${MOVE.runSpeed}, wall ${WALL.runSpeed})` +
+        (WALL.runSpeed > MOVE.runSpeed
+          ? ''
+          : ' -- wall speed is no faster than run speed (tuning choice, not a bug)'),
+    );
+
+    const carried = record(course, 130, wallHoriScriptAt, true);
+    const cFlat = carried.filter((s) => s.wallTicks > 0).slice(6);
+    const cPeak = Math.max(...cFlat.map((s) => s.speed));
+    check(
+      'a carrier clips too, at the carried wall speed',
+      Math.abs(cPeak - WALL.runSpeed * CORE.carrierSpeedFactor) < 0.05 && cPeak < WALL.runSpeed,
+      `peak ${cPeak.toFixed(3)} (wall ${WALL.runSpeed} x ${CORE.carrierSpeedFactor} ` +
+        `= ${(WALL.runSpeed * CORE.carrierSpeedFactor).toFixed(2)})`,
+    );
+  }
+
+  // --- W3: wall-jump ---------------------------------------------------------
+  {
+    const log = record(course, 60, wallJumpScriptAt);
+    const drop = log.findIndex((s, i) => s.wallTicks === 0 && i > 0 && log[i - 1]!.wallTicks > 0);
+    const s = log[drop]!;
+    check(
+      'a jump while clipped kicks off the face (wall-jump)',
+      s.vz > WALL.jumpOut - 1 && s.vy > WALL.jumpUp - 1.5,
+      `step ${drop}: v=(${s.vx.toFixed(2)}, ${s.vy.toFixed(2)}, ${s.vz.toFixed(2)}) ` +
+        `(out ${WALL.jumpOut}, up ${WALL.jumpUp})`,
+    );
+    check(
+      'the wall-jump is a deliberate exit, charged the cooldown and the wall lock',
+      s.wallCooldownTicks === WALL.cooldownTicks - 1 && s.wallLocked,
+      `cooldown ${s.wallCooldownTicks}, lock ${s.wallLocked}`,
+    );
+  }
+
+  // --- W4: peel --------------------------------------------------------------
+  {
+    const log = record(course, 60, wallPeelScriptAt);
+    const drop = log.findIndex((s, i) => s.wallTicks === 0 && i > 0 && log[i - 1]!.wallTicks > 0);
+    check(
+      'holding away from the face peels the racer off, charged the cooldown and the wall lock',
+      drop > 0 &&
+        log[drop]!.wallCooldownTicks === WALL.cooldownTicks - 1 &&
+        log[drop]!.wallLocked,
+      `peeled at step ${drop}, cooldown ${drop >= 0 ? log[drop]!.wallCooldownTicks : 'n/a'}, ` +
+        `lock ${drop >= 0 ? log[drop]!.wallLocked : 'n/a'}`,
+    );
+  }
+
+  // --- W5: entry gates --------------------------------------------------------
+  {
+    // Grounded racer runs into the wall base: touches the face, never clips.
+    const grounded = record(course, 90, () => input(0, -1, false, false));
+    const maxWall = Math.max(...grounded.map((s) => s.wallTicks));
+    const touched = Math.min(...grounded.map((s) => s.z));
+    check(
+      'a grounded run into the wall base never clips',
+      maxWall === 0 && touched < FACE_Z + 0.1,
+      `max wallTicks=${maxWall}, closest z=${touched.toFixed(2)} (face ${FACE_Z.toFixed(2)})`,
+    );
+
+    // Pinned to the face at zero horizontal speed: the capsule rides the wall
+    // in full contact and slides straight down it, but with no speed the
+    // attach gate never even probes, so it can never clip.
+    const pinned = makeWorld(course);
+    moveSimBody(pinned.sim, 0, 2.5, FACE_Z);
+    const pinnedLog: Snap[] = [];
+    for (let t = 0; t < 30; t++) {
+      applyInput(pinned.sim, input(0, 0, false, false), FIXED_TIMESTEP);
+      pinned.world.step();
+      pinnedLog.push(snap(pinned.sim));
+    }
+    check(
+      'an airborne racer pinned to the face at zero speed never clips',
+      Math.max(...pinnedLog.map((s) => s.wallTicks)) === 0 &&
+        pinnedLog.some((s) => !s.grounded && s.z < FACE_Z + 0.05),
+      `max wallTicks=${Math.max(...pinnedLog.map((s) => s.wallTicks))}, ` +
+        `airborne at face=${pinnedLog.some((s) => !s.grounded && s.z < FACE_Z + 0.05)}`,
+    );
+
+    // Dash straight into the face: the clip is gated off for every dash step,
+    // then (dash over, still airborne and fast) the attach lands post-dash.
+    const dash = makeWorld(course);
+    moveSimBody(dash.sim, 0, 0.05, -1);
+    const dashLog: Snap[] = [];
+    for (let t = 0; t < 30; t++) {
+      applyInput(dash.sim, input(0, -1, t >= 1 && t < 1 + DASH.durationTicks, t === 10), FIXED_TIMESTEP);
+      dash.world.step();
+      dashLog.push(snap(dash.sim));
+    }
+    const lastDash = dashLog.map((s, i) => (s.dashTicks > 0 ? i : -1)).filter((i) => i >= 0).pop() ?? -1;
+    const attachAfter = dashLog.findIndex((s, i) => i > lastDash && s.wallTicks > 0);
+    check(
+      'a mid-dash wall never clips; the clip starts only after the dash',
+      dashLog.some((s) => s.dashTicks > 0) &&
+        dashLog.every((s) => s.dashTicks === 0 || s.wallTicks === 0) &&
+        attachAfter > lastDash,
+      `last dash step ${lastDash}, first clip ${attachAfter}`,
+    );
+  }
+
+  // --- W6: a wall-to-wall chain ----------------------------------------------
+  {
+    const chain = wallCourse(true);
+    const log = record(chain, 200, wallChainScriptAt);
+    const attachStarts = log
+      .map((s, i) => (s.wallTicks > 0 && (i === 0 || log[i - 1]!.wallTicks === 0) ? i : -1))
+      .filter((i) => i >= 0);
+    check(
+      'a wall-jump across the alley re-attaches the far wall (chain)',
+      attachStarts.length >= 2,
+      `${attachStarts.length} attaches at steps ${attachStarts.join(', ')}`,
+    );
+
+    const a = makeWorld(chain);
+    const b = makeWorld(chain);
+    let div = -1;
+    for (let t = 0; t < 200; t++) {
+      const cmd = wallChainScriptAt(t);
+      for (const side of [a, b]) {
+        applyInput(side.sim, cmd, FIXED_TIMESTEP);
+        side.world.step();
+      }
+      if (div === -1 && !identical(snap(a.sim), snap(b.sim))) div = t;
+    }
+    check(
+      'the wall-to-wall chain runs bit-for-bit across two worlds',
+      div === -1,
+      div === -1 ? '200 steps identical' : `diverged at step ${div}`,
+    );
+  }
+
+  // --- W7: mid-clip rollback --------------------------------------------------
+  // The strongest guarantee the mechanic asks for: a client that mispredicts
+  // the approach (it never jumps, so it is grounded at the wall base when the
+  // correction lands) must adopt truth mid-climb and replay the remaining clip
+  // exactly onto the server.
+  {
+    const STEPS = 130;
+    const history = record(course, STEPS, wallScriptAt);
+    const attachAt = history.findIndex((s) => s.wallTicks > 0);
+    const ACK = attachAt + 8;
+    const HORIZON = 25;
+
+    const wallRollback = (
+      ack: number,
+      horizon: number,
+      clientScript: (s: number) => MoveInputData,
+      forgetWall = false,
+    ) => {
+      const client = makeWorld(course);
+      for (let s = 0; s <= ack; s++) {
+        applyInput(client.sim, clientScript(s), FIXED_TIMESTEP);
+        client.world.step();
+      }
+      const stale = { wall: client.sim.wallTicks, cd: client.sim.wallCooldownTicks };
+      adoptTruth(client.sim, truthOf(history[ack]!), false);
+      if (forgetWall) {
+        client.sim.wallTicks = stale.wall;
+        client.sim.wallCooldownTicks = stale.cd;
+      }
+      for (let s = ack + 1; s <= ack + horizon; s++) {
+        applyInput(client.sim, wallScriptAt(s), FIXED_TIMESTEP);
+        client.world.step();
+      }
+      return { client: snap(client.sim), server: history[ack + horizon]! };
+    };
+
+    const noJump = (s: number) => ({ ...wallScriptAt(s), jump: false });
+    check(
+      'the rollback point really is mid-clip',
+      ACK > attachAt && history[ACK]!.wallTicks > 0 && history[ACK + HORIZON]!.wallTicks === 0,
+      `attach at ${attachAt}, truth wallTicks=${history[ACK]!.wallTicks}, ` +
+        `after replay ${history[ACK + HORIZON]!.wallTicks}`,
+    );
+    {
+      const r = wallRollback(ACK, HORIZON, noJump);
+      check(
+        'mid-clip rollback from a mispredicted client lands on the server',
+        identical(r.client, r.server),
+        `step ${ACK + HORIZON}: y=${r.client.y.toFixed(4)} vs ${r.server.y.toFixed(4)}, ` +
+          `wallTicks ${r.client.wallTicks} vs ${r.server.wallTicks}`,
+      );
+    }
+    {
+      // Negative control: position and velocity adopted, the clip counters and
+      // normal not. The replayed racer has no clip to re-enter and slides down
+      // the face while the server keeps climbing, so it lands elsewhere.
+      const r = wallRollback(ACK, HORIZON, noJump, true);
+      check(
+        'without the clip counters the same replay lands elsewhere (negative control)',
+        r.client.y !== r.server.y || r.client.z !== r.server.z,
+        `y=${r.client.y.toFixed(4)} z=${r.client.z.toFixed(4)} vs server ` +
+          `y=${r.server.y.toFixed(4)} z=${r.server.z.toFixed(4)}`,
+      );
+    }
+  }
+
+  // --- W8: climbing off the top -----------------------------------------------
+  // Press a climb past the wall's top edge (y=10) and the probe loses the face:
+  // the clip drops with NO cooldown (a lost face is free), and the racer is
+  // high enough to peel over the ridge and land clear of the wall.
+  {
+    const w = makeWorld(course);
+    moveSimBody(w.sim, 0, 8.5, -4.2); // start high, a couple of units off the face
+    const peaks: Snap[] = [];
+    for (let t = 0; t < 140; t++) {
+      applyInput(w.sim, wallClimbScriptAt(t), FIXED_TIMESTEP);
+      w.world.step();
+      peaks.push(snap(w.sim));
+    }
+    const peakY = Math.max(...peaks.map((s) => s.y));
+    const drop = peaks.findIndex((s, i) => s.wallTicks === 0 && i > 0 && peaks[i - 1]!.wallTicks > 0);
+    const attachStarts = peaks
+      .map((s, i) => (s.wallTicks > 0 && (i === 0 || peaks[i - 1]!.wallTicks === 0) ? i : -1))
+      .filter((i) => i >= 0);
+    check(
+      'a sustained climb presses the racer over the top of the wall',
+      peakY > 9.5,
+      `peak y=${peakY.toFixed(2)} (wall top at 10)`,
+    );
+    check(
+      'the clip ends by losing the face at the top: no cooldown, high up, one clip',
+      drop > 0 &&
+        peaks[drop]!.wallCooldownTicks === 0 &&
+        peaks[drop - 1]!.y > 9 &&
+        attachStarts.length === 1,
+      `drop at step ${drop} (last clipped y=${drop > 0 ? peaks[drop - 1]!.y.toFixed(2) : 'n/a'}), ` +
+        `cooldown ${drop >= 0 ? peaks[drop]!.wallCooldownTicks : 'n/a'}, ` +
+        `${attachStarts.length} attach(es) at ${attachStarts.join(', ')}`,
+    );
+    check(
+      'after peeling over the top the racer lands clear and grounded',
+      peaks[peaks.length - 1]!.grounded &&
+        Math.abs(peaks[peaks.length - 1]!.z - FACE_Z) > 1,
+      `final z=${peaks[peaks.length - 1]!.z.toFixed(2)} (face ${FACE_Z.toFixed(2)}), ` +
+        `grounded=${peaks[peaks.length - 1]!.grounded}`,
+    );
+  }
+
+  // --- W9: a clip cannot restart mid-air; only touching ground resets it -----
+  // The racer burns a full budget climbing wall A, then keeps pressing INTO
+  // the dead face on the way down -- cooldown spent, fast, inside probe range,
+  // exactly the situation that used to chain clips into an infinite hover.
+  // The WALL LOCK must hold all the way to the floor, and a fresh jump after
+  // landing must be able to start the clip again.
+  {
+    const STEPS = 140;
+    const log = record(course, STEPS, wallRestartScriptAt);
+    const firstFree = log.findIndex((s, i) => s.wallTicks === 0 && i > 0 && log[i - 1]!.wallTicks > 0);
+    const attachStarts = log
+      .map((s, i) => (s.wallTicks > 0 && (i === 0 || log[i - 1]!.wallTicks === 0) ? i : -1))
+      .filter((i) => i >= 0);
+    const landed = log.findIndex((s, i) => i > firstFree && s.grounded);
+    // A step where, without the lock, the attach gate would have fired:
+    // airborne, cooldown spent, fast enough, inside probe range, pressing
+    // into the face -- but wallLocked held it at zero.
+    const wouldAttach = log.some(
+      (s, i) =>
+        i > firstFree &&
+        i < (attachStarts[1] ?? STEPS) &&
+        s.wallTicks === 0 &&
+        s.wallLocked &&
+        s.wallCooldownTicks === 0 &&
+        Math.hypot(s.vx, s.vz) >= WALL.minSpeedToAttach &&
+        s.z < FACE_Z + WALL.probeDist,
+    );
+    check(
+      'the budget exit arms the wall lock and holds against a mid-air re-grab',
+      firstFree > 0 && log[firstFree]!.wallLocked && wouldAttach,
+      `exit at step ${firstFree} (lock ${firstFree >= 0 ? log[firstFree]!.wallLocked : 'n/a'}), ` +
+        `would-be re-grab window=${wouldAttach}`,
+    );
+    check(
+      'exactly one clip ends the fall: no restart until the racer touches ground',
+      attachStarts.length === 2 &&
+        attachStarts[0]! < firstFree &&
+        attachStarts[1]! > landed &&
+        landed > firstFree &&
+        log[attachStarts[1]!]!.wallLocked === false,
+      `${attachStarts.length} attaches at steps ${attachStarts.join(', ')}, ` +
+        `first free ${firstFree}, landed ${landed}`,
+    );
+    check(
+      'a fresh jump after landing restarts the clip (ground touched)',
+      attachStarts[1]! > landed && log[attachStarts[1]!]!.wallTicks > 0,
+      `second clip starts at step ${attachStarts[1]} (lands at ${landed})`,
+    );
+  }
+}
+
+/**
+ * Springboard scripts against wall A.
+ *
+ * `armScript` roll-ups, ground-jumps once, then -- while ALREADY airborne and
+ * closing on the face -- TAPS jump again: that fresh mid-air press arms the
+ * bounce (~t24), which fires on contact (~t25). After landing it repeats the
+ * same rhythm for a second bounce post-ground-reset (~t108).
+ *
+ * `holdScript` NEVER releases jump after the ground press, so it drives the
+ * negative control: holding the launch jump into the face must not bounce.
+ */
+/**
+ * The springboard bounce (WALL.bounce): a jump pressed while ALREADY airborne
+ * and inbound to a wall face kicks the racer with the wall-jump vector -- UP
+ * plus the HELD direction (into the wall = pop against it, away = launch off
+ * it; no stick = the face's outward normal). It NEVER enters a clip, and --
+ * like every wall exit -- restarts only after touching the ground. Holding
+ * the ground jump into the face does nothing.
+ */
+function wallBounceIntoScriptAt(step: number): MoveInputData {
+  if (step < 16) return input(0, -1, false, false); // roll up
+  if (step < 17) return input(0, -1, false, true); // ground jump (single press)
+  if (step < 24) return input(0, -1, false, false); // release; glide in
+  if (step < 25) return input(0, -1, false, true); // TAP mid-air -> arm the bounce
+  if (step < 105) return input(0, -1, false, false); // bounce ~24, land, rest
+  if (step < 106) return input(0, -1, false, true); // ground jump #2
+  if (step < 108) return input(0, -1, false, false); // release
+  if (step < 109) return input(0, -1, false, true); // TAP mid-air -> arm again
+  return input(0, -1, false, false); // bounce #2, land, done
+}
+
+/**
+ * Same approach and mid-air tap, but the tap lands while pulling AWAY from
+ * the wall: the kick must mirror into the OFF direction instead of INTO it --
+ * same height, one kick, then the racer flies off the face and away.
+ */
+function wallBounceAwayScriptAt(step: number): MoveInputData {
+  if (step < 16) return input(0, -1, false, false); // roll up
+  if (step < 17) return input(0, -1, false, true); // ground jump (single press)
+  if (step < 24) return input(0, -1, false, false); // release; glide in
+  if (step < 25) return input(0, 1, false, true); // TAP mid-air while holding AWAY -> arm + kick off the face
+  return input(0, 1, false, false); // keep holding away: fly off the face and land
+}
+
+function wallBounceHoldScriptAt(step: number): MoveInputData {
+  if (step < 16) return input(0, -1, false, false); // roll up
+  return input(0, -1, false, true); // ground jump at 16, HOLD forever -- never an airborne edge
+}
+async function testBounce(): Promise<void> {
+  console.log('\n=== X. wall bounce (jump pressed mid-air; clip feature asleep) ===');
+  if (!WALL.bounce || WALL.enabled) {
+    skip('bounce', WALL.enabled ? 'superseded by the full clip feature' : 'WALL.bounce=false');
+    return;
+  }
+
+  const course = wallCourse();
+  const FACE_Z = -5.75 + PLAYER.radius;
+  const STEPS = 150;
+
+  // Negative control: jump from the ground and HOLD Space into the face. The
+  // launch press happened grounded, so it must never arm the bounce -- no
+  // contact bounce, no clip, no turnaround.
+  const hold = record(course, STEPS, wallBounceHoldScriptAt);
+  const holdBounces = hold.filter((s) => s.wallLocked).length;
+  const holdMaxWall = Math.max(...hold.map((s) => s.wallTicks));
+  check(
+    'holding the ground jump into the face never bounces (and never clips)',
+    holdBounces === 0 && holdMaxWall === 0,
+    `bounces=${holdBounces}, max wallTicks=${holdMaxWall}`,
+  );
+
+  // Jump-triggered: a SECOND press, made mid-air, arms the bounce; it fires on
+  // contact, then again after the ground reset. wallTicks never leaves 0.
+  // Holding INTO the wall at the bounce pops the racer against the face --
+  // same height, but the kick goes into the wall, so the capsule rides the
+  // face up instead of flying away, and must never push through the plane.
+  const log = record(course, STEPS, wallBounceIntoScriptAt);
+  const maxWall = Math.max(...log.map((s) => s.wallTicks));
+  const bounces = log
+    .map((s, i) => (s.wallLocked && (i === 0 || !log[i - 1]!.wallLocked) ? i : -1))
+    .filter((i) => i >= 0);
+  const kick = bounces.length > 0 ? log[bounces[0]!]! : null;
+  // The kick dominates the held-inward air control on the bounce step (vel =
+  // jumpOut into the wall, jumpUp up, before one step of gravity/steer
+  // bleeds it), and the racer then gains height against the face.
+  const after = bounces.length > 0 ? log.slice(bounces[0]!, bounces[0]! + 12) : [];
+  const peakY = after.length > 0 ? Math.max(...after.map((s) => s.y)) : 0;
+  const minZ = after.length > 0 ? Math.min(...after.map((s) => s.z)) : FACE_Z;
+  check(
+    'holding INTO the wall at the bounce pops against the face, never clipping through',
+    kick !== null &&
+      maxWall === 0 &&
+      kick.vz <= -WALL.jumpOut * 0.75 &&
+      kick.vy >= WALL.jumpUp * 0.75 &&
+      peakY > kick.y + 0.4 &&
+      minZ >= FACE_Z - 0.1,
+    kick === null
+      ? 'no bounce'
+      : `kick at step ${bounces[0]!}: v=(${kick.vx.toFixed(2)}, ${kick.vy.toFixed(2)}, ` +
+          `${kick.vz.toFixed(2)}), z=${kick.z.toFixed(2)} (face ${FACE_Z.toFixed(2)}), ` +
+          `peak y=${peakY.toFixed(2)}, min z=${minZ.toFixed(2)}, max wallTicks=${maxWall}`,
+  );
+
+  // Direction flip: the SAME mid-air press, but with the stick pulled AWAY
+  // from the wall, must launch the racer OFF the face -- the kick mirrors.
+  // Same height; only the horizontal direction changed.
+  const awayLog = record(course, STEPS, wallBounceAwayScriptAt);
+  const awayBounces = awayLog
+    .map((s, i) => (s.wallLocked && (i === 0 || !awayLog[i - 1]!.wallLocked) ? i : -1))
+    .filter((i) => i >= 0);
+  const awayKick = awayBounces.length > 0 ? awayLog[awayBounces[0]!]! : null;
+  const awayAfter = awayBounces.length > 0 ? awayLog.slice(awayBounces[0]!, awayBounces[0]! + 12) : [];
+  const awayPeakZ = awayAfter.length > 0 ? Math.max(...awayAfter.map((s) => s.z)) : 0;
+  const awayPeakY = awayAfter.length > 0 ? Math.max(...awayAfter.map((s) => s.y)) : 0;
+  check(
+    'holding AWAY from the wall at the bounce launches off the face (same height)',
+    awayKick !== null &&
+      awayBounces.length === 1 &&
+      awayKick.vz >= WALL.jumpOut * 0.75 &&
+      awayKick.vy >= WALL.jumpUp * 0.75 &&
+      awayPeakZ > awayKick.z + 0.25 &&
+      awayPeakY > awayKick.y + 0.4,
+    awayKick === null
+      ? 'no bounce'
+      : `kick at step ${awayBounces[0]!}: v=(${awayKick.vx.toFixed(2)}, ${awayKick.vy.toFixed(2)}, ` +
+          `${awayKick.vz.toFixed(2)}), z=${awayKick.z.toFixed(2)} (face ${FACE_Z.toFixed(2)}), ` +
+          `peak z=${awayPeakZ.toFixed(2)} y=${awayPeakY.toFixed(2)}`,
+  );
+
+  const landed = bounces.length > 0 ? log.findIndex((s, i) => i > bounces[0]! && s.grounded) : -1;
+  check(
+    'one bounce per airtime: the lock holds until the racer lands, then resets',
+    bounces.length === 2 &&
+      landed > bounces[0]! &&
+      bounces[1]! > landed &&
+      log.every((s) => s.wallTicks === 0),
+    `${bounces.length} bounce(s) at ${bounces.join(', ')}, landed step ${landed}`,
+  );
+
+  // ANGLE knob (`WALL.bounceMinAngleDeg`): an armed approach steeper than the
+  // gate fires the bounce; a shallower skim skates straight past it -- no
+  // bounce, no clip -- even though the extended probe reaches the face for
+  // both. Both runs start mid-air just off the face, moving along -X and into
+  // -Z at the given angle, and tap jump on the first step to arm.
+  {
+    const minDeg = Math.min(90, Math.max(5, WALL.bounceMinAngleDeg));
+    const reach = (PLAYER.radius + 0.01) / Math.sin((minDeg * Math.PI) / 180);
+    const steepDeg = Math.min(85, minDeg + 15);
+    const shallowDeg = Math.max(5, minDeg - 20);
+    const off = Math.max(PLAYER.radius + 0.02, reach * Math.sin((steepDeg * Math.PI) / 180) * 0.85);
+    const runAtAngle = (deg: number): Snap[] => {
+      const w = makeWorld(course);
+      const s = w.sim;
+      const rad = (deg * Math.PI) / 180;
+      const mx = -Math.cos(rad); // along the face (-X)
+      const mz = -Math.sin(rad); // into the face (-Z)
+      teleportBody(s, { x: 6, y: 3, z: FACE_Z + off });
+      s.velocity.x = mx * 13;
+      s.velocity.y = 0;
+      s.velocity.z = mz * 13;
+      const log: Snap[] = [];
+      for (let i = 0; i < 6; i++) {
+        applyInput(s, input(mx, mz, false, i === 0), FIXED_TIMESTEP); // fresh mid-air press arms
+        w.world.step();
+        log.push(snap(s));
+      }
+      return log;
+    };
+    const bounced = (log: Snap[]) => log.some((s) => s.wallLocked);
+    const steepLog = runAtAngle(steepDeg);
+    const shallowLog = runAtAngle(shallowDeg);
+    check(
+      `the bounce gate: >= ${steepDeg}° into the face bounces, a ${shallowDeg}° skim sails past`,
+      bounced(steepLog) && !bounced(shallowLog),
+      `steep ${steepDeg}° bounced=${bounced(steepLog)}, shallow ${shallowDeg}° bounced=${bounced(shallowLog)}`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   await initPhysics();
   // The production map, for the pads and the wire suite.
@@ -1463,6 +2157,9 @@ async function main(): Promise<void> {
   await testDeterminism(lane);
   await testRollback(lane);
   testPads(course);
+  if (WALL.enabled) testWalls();
+  else skip('walls', 'wall-run is sleeping (WALL.enabled=false); the W section is dormant');
+  await testBounce();
   // Guarded so a crash in the wire suite still prints the tally for A and B,
   // which do not depend on the server room at all.
   testRules(course);
