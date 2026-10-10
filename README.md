@@ -32,7 +32,7 @@ the server did. That only holds if both sides simulate identically, which is a
 strong claim. So it is tested:
 
 ```
-npm run harness     # 82 checks
+npm run harness     # 134 checks
 ```
 
 Three tiers, in increasing order of what they prove:
@@ -47,9 +47,14 @@ Three tiers, in increasing order of what they prove:
    phases, Core pickup and steal, results, reset.
 
 Alongside those, the pure rules in `server/rules.ts` (pickup, steal, ranking,
-clock) and the boost and jump pads are tested directly. The pad suite includes
-a negative control — a case built to fail if its own assertion ever goes
-toothless.
+clock), the boost and jump pads, and the lobby map vote are tested directly.
+The springboard bounce has its own suite: the kick fires into the wall when the
+stick pushes in and off it when pulled away, the approach-angle gate turns
+shallow skims aside, and a held ground jump never bounces — a negative control,
+like the pad suite's.
+
+One check is skipped while the wall-clip feature sleeps (`WALL.enabled =
+false`), so a green run reports 133 passed / 1 skipped.
 
 All three tiers run against real Rapier WASM, not mocks.
 
@@ -96,6 +101,7 @@ run `npx vite --host` (npm does not pass `--host` through) and open
 |---|---|
 | Move | `WASD` / arrows |
 | Jump | `Space` |
+| Bounce | `Space` again **in mid-air** against a wall — the kick follows `WASD`: push in to pop against the wall, pull away to launch off it. |
 | Dash | `Shift` — 32 u/s for 0.15 s, 0.8 s cooldown. The only way to steal. |
 | Look | Mouse (click to capture, `Esc` to release) |
 | Mute | `M` |
@@ -126,6 +132,10 @@ speed toggle, so `Shift` belongs to the dash.
 - **Pads** — a boost pad only pushes you if you are already heading its way,
   then holds 26 u/s for 0.6 s. A jump pad launches at 17 u/s, well above a
   normal jump.
+- **Wall bounce** — press Jump again while already airborne into a wall and the
+  racer kicks off it, about a jump's height. The horizontal kick follows the
+  stick: hold toward the wall to pop forward against it, away to launch clear.
+  One bounce per airtime — touching the ground resets it.
 
 ---
 
@@ -134,7 +144,7 @@ speed toggle, so `Shift` belongs to the dash.
 ```bash
 npm run typecheck    # tsc --noEmit
 npm run smoke        # 15 checks — routing, CORS, protocol
-npm run harness      # 82 checks — determinism, rollback, rules, full match
+npm run harness      # 134 checks — determinism, rollback, rules, pads, bounce, wire, map vote
 ```
 
 **Run the harness more than once.** An earlier version gave its end-to-end
@@ -227,7 +237,7 @@ raiding a different world while sharing a clock, which is not a match.
 ```
 src/
   shared/     the determinism contract — runs on BOTH sides
-    sim.ts      physics step, dash, pads, fall detection, respawn
+    sim.ts      physics step, dash, pads, wall bounce, fall detection, respawn
     state.ts    Colyseus schema definitions
     course.ts   course parsing and validation
     input.ts    the input struct both sides step with
