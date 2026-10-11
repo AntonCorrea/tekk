@@ -1375,12 +1375,17 @@ async function testMapVote(): Promise<void> {
       Math.abs(s().coreZ - swapped1.coreSpawn![2]) < 1e-6,
     `core (${s().coreX}, ${s().coreY}, ${s().coreZ}) vs (${swapped1.coreSpawn!.join(', ')})`);
 
-  // Outside a lobby window the vote is ignored outright.
+  // A pick while a match runs — and the countdown counts, the ballot for the
+  // incoming map already settled at the countdown entry — is a change-map
+  // vote: it fills the mid-match ballot and raises the skip flag, so the
+  // majority that ends the run is the same majority that picks the next map.
+  // One racer's pick alone is no majority, so the countdown still runs out.
   const duringCountdown = others[1] ?? target1;
   vote(roomA, duringCountdown);
   await idleFor(250);
-  check('votes are ignored outside the lobby windows (countdown)',
-    ballotOf(A) === '', `votedFor=${ballotOf(A) || "''"}`);
+  check('a countdown pick is a mid-match change-map vote',
+    ballotOf(A) === duringCountdown && me(A)!.votedToSkip === true,
+    `votedFor=${ballotOf(A) || "''"} votedToSkip=${String(me(A)!.votedToSkip)}`);
 
   // --- 2. unanimous results-ballot swaps when the lobby resets -------------
   await waitWhile(() => s().phase !== 'results', 20_000);

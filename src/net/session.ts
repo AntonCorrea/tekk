@@ -24,6 +24,7 @@ import { Predict } from '@colyseus/sdk/predict';
 import { FIXED_TIMESTEP } from '../constants.ts';
 import { parseCourse } from '../shared/course.ts';
 import type { Course } from '../shared/course.ts';
+import type { CosmeticIdentity } from '../shared/cosmetics.ts';
 import { MoveInput, randomRacerName } from '../shared/input.ts';
 import type { MoveInputData } from '../shared/input.ts';
 import {
@@ -47,6 +48,12 @@ export interface SessionOptions {
   endpoint: string;
   /** Display name. A racer is anonymous but not nameless. */
   name?: string;
+  /**
+   * The off-chain account (see net/account.ts). Its wardrobe travels at join
+   * so the server can seed `equippedTrailId`/`equippedBodyColorId` and answer
+   * later `equip` sends against something it actually stored.
+   */
+  account?: CosmeticIdentity;
 }
 
 export interface Session {
@@ -122,6 +129,34 @@ export interface Session {
    */
   sendSkip(value: boolean): void;
 
+  /**
+   * Equip a trail cosmetic. The id must name a real catalog entry and be one
+   * the account owns — the server validates both and silently ignores anything
+   * else. Acceptable in any phase: a trail is presentational.
+   */
+  sendEquip(trailId: string): void;
+
+  /**
+   * Equip a body colour, same contract as `sendEquip`. Both sends ride the
+   * same `equip` message with whichever field names the cosmetic, so the
+   * server validates one slot and the other stays untouched.
+   */
+  sendEquipColor(colorId: string): void;
+
+  /**
+   * Equip a hat, same contract as `sendEquip` — a third field on the same
+   * `equip` message, validated against the owned set server-side.
+   */
+  sendEquipHat(hatId: string): void;
+
+  /**
+   * Rename yourself. Display-only, like `equip`: the server sanitises the name
+   * the same way it sanitised the join and echoes the result to the room, so
+   * anything the input field holds is safe to send — junk falls back to
+   * `'racer'` server-side. Acceptable in any phase.
+   */
+  sendRename(name: string): void;
+
   leave(): Promise<void>;
 }
 
@@ -141,6 +176,13 @@ export async function connectSession(
 
   const room = await client.joinOrCreate<GameStateInstance>('race', {
     name: options.name ?? randomRacerName(),
+    accountId: options.account?.id,
+    trails: options.account?.ownedTrails,
+    trail: options.account?.equippedTrail,
+    colors: options.account?.ownedBodyColors,
+    color: options.account?.equippedBodyColor,
+    hats: options.account?.ownedHats,
+    hat: options.account?.equippedHat,
   });
 
   // --- wait for the authoritative course ---------------------------------
@@ -293,6 +335,22 @@ export async function connectSession(
 
     sendSkip(value: boolean) {
       room.send('skip', { value });
+    },
+
+    sendEquip(trailId: string) {
+      room.send('equip', { trailId });
+    },
+
+    sendEquipColor(colorId: string) {
+      room.send('equip', { colorId });
+    },
+
+    sendEquipHat(hatId: string) {
+      room.send('equip', { hatId });
+    },
+
+    sendRename(name: string) {
+      room.send('rename', { name });
     },
 
     async leave() {

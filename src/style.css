@@ -573,31 +573,79 @@ body {
 /* ---------------------------------------------------------------- lobby */
 
 /*
- * The map ballot: the two lobby windows only (ready, results). Bottom-centre,
- * clear of the dash meter's slot and — on phones — of the stick, the action
- * buttons and the mute pill. Above the touch layer (30) so a thumb reaches the
- * cards, and bounded to a row so a press outside it still lands on the camera.
- * Interactive, so unlike the HUD it does take pointer events.
+ * The lobby: two separate panels, each with a top-right button to reach it.
+ * The button pair hangs below the connection pill (top 22px) so the corner
+ * stays legible; the panels live bottom-centre, clear of the dash meter's
+ * slot and — on phones — of the stick, the action buttons and the mute pill.
+ * Both are above the touch layer (30) so a thumb reaches the controls, and
+ * bounded to a row so a press outside them still lands on the camera. A
+ * faint scrim keeps each panel grouped without hiding the orbiting map.
+ * Interactive, so unlike the HUD they do take pointer events.
  */
 .lobby {
+  position: fixed;
+  top: 46px;
+  right: 24px;
+  z-index: 36;
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.lobby[hidden],
+.lobby-panel[hidden] {
+  display: none;
+}
+
+.lobby-toggle {
+  padding: 8px 14px;
+  border: 1px solid var(--hairline);
+  background: rgba(2, 2, 2, 0.55);
+  color: var(--ink-dim);
+  font-family: var(--grotesk);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.lobby-toggle:hover {
+  border-color: var(--lavender);
+  color: var(--ink);
+}
+
+/* The open panel's button echoes it: accent border and tint, like the card
+   that is current on the ballot. */
+.lobby-toggle.is-on {
+  border-color: var(--accent);
+  background: rgba(198, 157, 250, 0.12);
+  color: var(--accent);
+}
+
+.lobby-panel {
   position: fixed;
   bottom: 96px;
   left: 50%;
   z-index: 35;
   transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
   width: min(680px, calc(100vw - 48px));
+  max-height: calc(100vh - 208px);
+  overflow-y: auto;
+  padding: 14px 16px 12px;
+  border: 1px solid var(--hairline);
+  background: rgba(8, 8, 10, 0.5);
   text-align: center;
   color: var(--ink);
   font-family: var(--grotesk);
   pointer-events: auto;
 }
 
-.lobby[hidden] {
-  display: none;
-}
-
 .lobby-head {
-  margin-bottom: 10px;
   font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.24em;
@@ -611,6 +659,63 @@ body {
   flex-wrap: wrap;
   justify-content: center;
   gap: 10px;
+}
+
+/* The name field: a tracked label over a hairline underline, no box — the
+   input earns its border only when it is the thing being typed into. */
+.name-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.field-label {
+  flex: none;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-indent: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.name-row input {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 5px 4px 3px;
+  border: none;
+  border-bottom: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--grotesk);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  caret-color: var(--accent);
+}
+
+.name-row input::placeholder {
+  color: var(--ink-faint);
+  font-weight: 500;
+}
+
+.name-row input:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
+/* Trail swatches are denser than map cards: the same hairline language at a
+   smaller footprint, so the customize panel stays a compact row. */
+.lobby-panel.is-customize .map-card {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 7px 12px 9px;
+}
+
+.lobby-panel.is-customize .map-name {
+  font-size: 14px;
 }
 
 /* A hairline and a slight scrim rather than a panel: the scene stays visible
@@ -689,12 +794,19 @@ body {
   color: var(--ink-faint);
 }
 
-/* Phones: lift the ballot over the 132px stick (bottom 24) and the mute pill,
-   and let cards go two-up so a third map wraps instead of shrinking. */
+/* Phones: lift the panel over the 132px stick (bottom 24) and the mute pill,
+   and let map cards go two-up so a third map wraps instead of shrinking.
+   The top-right toggles tuck closer to the corner, under the connection pill. */
 @media (max-width: 560px) {
   .lobby {
+    top: 44px;
+    right: 16px;
+  }
+
+  .lobby-panel {
     bottom: 172px;
     width: calc(100vw - 32px);
+    max-height: calc(100vh - 240px);
   }
 
   .map-card {
@@ -705,76 +817,6 @@ body {
 
   .map-name {
     font-size: 15px;
-  }
-}
-
-/* ----------------------------------------------------------- skip vote */
-
-/* Mid-match cancel: a pill stacked above the dash meter. Bottom centre is
-   free in both skip windows because the ballot owns the very bottom only in
-   lobby windows, and the two are never on screen together. Above the touch
-   overlay so a thumb can reach it, and clear of the stick, the action
-   buttons, the standings and the banner countdown on every layout. */
-.skip {
-  position: fixed;
-  bottom: 112px;
-  left: 50%;
-  z-index: 35;
-  transform: translateX(-50%);
-  pointer-events: auto;
-  font-family: var(--grotesk);
-}
-
-.skip[hidden] {
-  display: none;
-}
-
-.skip-btn {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 5px 14px;
-  border: 1px solid var(--hairline);
-  border-radius: 999px;
-  background: rgba(2, 2, 2, 0.55);
-  color: var(--ink-dim);
-  font-family: var(--condensed);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.skip-btn:hover {
-  border-color: var(--lavender);
-}
-
-/* Voted: the same cyan as a chosen map card — your ballot is in. */
-.skip-btn.is-voted {
-  border-color: var(--neon-cyan);
-  color: var(--neon-cyan);
-  box-shadow: 0 0 16px rgba(78, 171, 232, 0.35);
-}
-
-.skip-count {
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-faint);
-}
-
-.skip-btn.is-voted .skip-count {
-  color: var(--neon-cyan);
-}
-
-/* Narrow windows and portrait phones: bottom-right rather than
-   bottom-centre, so the pill clears the stick on the left and the mute
-   pill in the middle. */
-@media (max-width: 560px) {
-  .skip {
-    right: 16px;
-    left: auto;
-    bottom: 104px;
-    transform: none;
   }
 }
 
@@ -1303,4 +1345,128 @@ body {
   font-size: 9px;
   letter-spacing: 0.05em;
   line-height: 1.6;
+}
+
+/* ---------------------------------------------------------------- login */
+/* The login placeholder (src/ui/login.ts). A card over the stage in the
+   game's own language, shaped like the Privy modal it will be swapped for:
+   centred, one row per method, a quiet footnote. */
+
+.login {
+  position: fixed;
+  inset: 0;
+  z-index: 60; /* the card above HUD chrome and the map picker */
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(2, 2, 2, 0.72);
+  backdrop-filter: blur(6px);
+  font-family: var(--grotesk);
+  color: var(--ink);
+}
+
+.login-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(360px, 100%);
+  box-sizing: border-box;
+  padding: 26px 24px 20px;
+  border: 1px solid var(--hairline);
+  background: rgba(16, 15, 19, 0.94);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  animation: login-in 0.28s ease-out;
+}
+
+@keyframes login-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.login-brand {
+  font-family: var(--condensed);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.login-title {
+  margin-bottom: 4px;
+  color: var(--ink-faint);
+  font-family: var(--condensed);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.login-methods {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 13px;
+  border: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--grotesk);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+
+.login-row:hover {
+  border-color: var(--accent);
+  background: rgba(198, 157, 250, 0.08);
+  color: var(--accent);
+}
+
+.login-dot {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: 0 0 10px currentColor;
+}
+
+.login-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.login-guest {
+  margin-top: 4px;
+  border-style: dashed;
+  color: var(--ink-dim);
+  font-weight: 500;
+}
+
+.login-note {
+  margin-top: 4px;
+  color: var(--ink-faint);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  line-height: 1.6;
+  text-transform: uppercase;
+  text-align: center;
 }

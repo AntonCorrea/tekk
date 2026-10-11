@@ -37,6 +37,14 @@ import {
 } from '../src/shared/sim.ts';
 import { GameState, MapInfo, PlayerState } from '../src/shared/state.ts';
 import type { GameStateInstance, MatchPhase, PlayerStateInstance } from '../src/shared/state.ts';
+import {
+  STARTER_TRAILS,
+  isTrail,
+  STARTER_BODY_COLORS,
+  isBodyColor,
+  STARTER_HATS,
+  isHat,
+} from '../src/shared/cosmetics.ts';
 import { createPhysicsWorld, initPhysics } from '../src/physics/world.ts';
 import { DEFAULT_COURSE_PATH, loadCourse } from './course.ts';
 import { catalogEntry, loadCatalog, type CatalogEntry } from './catalog.ts';
@@ -57,6 +65,43 @@ import {
 /** Join options a client may send. */
 export interface RaceJoinOptions {
   name?: string;
+  /**
+   * Off-chain prototype identity. In the real build this is the verified Privy
+   * account id; here it is the local account's handle, and it is only ever
+   * used as a label — nothing security-bearing keys off it yet.
+   */
+  accountId?: string;
+  /**
+   * Trail ids the client claims to own, and the one it wants to wear.
+   *
+   * There is no database in the prototype, so ownership arrives with the join
+   * and is held in memory per session. That is what makes the flow runnable;
+   * it is NOT a trust model. In the real build ownership is read from the
+   * account's server-side record (DB or chain) and these fields are ignored —
+   * see `server/room.ts` on the `equip` handler for where that swap lands.
+   */
+  trails?: string[];
+  trail?: string;
+  /**
+   * Body-colour ids the client claims to own, and the one it wants to wear.
+   *
+   * Exactly the same trust model as `trails`/`trail`: the claim is normalised
+   * against the catalog on arrival and held per session; a stale or malicious
+   * join option degrades to Stock rather than to a colour the racer does not
+   * own.
+   */
+  colors?: string[];
+  color?: string;
+  /**
+   * Hat ids the client claims to own, and the one it wants to wear.
+   *
+   * Same trust model as `trails`/`colors`: the claim is normalised against
+   * the catalog on arrival and held per session; a stale or malicious join
+   * option degrades to Stock (no hat) rather than to a hat the racer does not
+   * own.
+   */
+  hats?: string[];
+  hat?: string;
 }
 
 /**
@@ -118,6 +163,19 @@ export class RaceRoom extends Room<RaceRoomOptions> {
   private catalog: CatalogEntry[] = [];
 
   /**
+   * Per-session cosmetic ownership.
+   *
+   * Presentational only, but still owned by the server: an `equip` is checked
+   * against the set stored here rather than against whatever the wire claims,
+   * so the validation site is in the right place for the DB/chain lookup the
+   * real build will put behind it. Keyed by session id and dropped on leave.
+   */
+  private readonly cosmetics = new Map<
+    string,
+    { accountId: string; ownedTrails: Set<string>; ownedColors: Set<string>; ownedHats: Set<string> }
+  >();
+
+  /**
    * The match clock, in fixed ticks. See `PhaseClock` in rules.ts for why it
    * is not wall-clock time.
    */
@@ -167,13 +225,12 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     }
 
     // --- map votes ---------------------------------------------------------
-    // Accepted only in the two lobby windows, and only for ids the catalog
-    // ships. Both checks live here: the wire message is a bare course id, so
-    // a client can never vote for a file, for a phase it is not in, or for a
-    // map this room never offered.
+    // Accepted in the two lobby windows as the ballot — and while a match
+    // runs as the change-map vote, because the panel that draws this ballot
+    // is the same panel the player picks from mid-match. Either way only ids
+    // the catalog ships: the wire message is a bare course id, so a client
+    // can never vote for a file or for a map this room never offered.
     this.onMessage('vote', (client, message: unknown) => {
-      if (this.state.phase !== 'ready' && this.state.phase !== 'results') return;
-
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
 
@@ -181,8 +238,28 @@ export class RaceRoom extends Room<RaceRoomOptions> {
       if (typeof courseId !== 'string') return;
       if (!this.catalog.some((entry) => entry.id === courseId)) return;
 
-      player.votedFor = courseId;
-      log(`${player.name} voted for "${courseId}"`);
+      const midMatch = this.state.phase === 'countdown' || this.state.phase === 'playing';
+      if (!midMatch && this.state.phase !== 'ready' && this.state.phase !== 'results') return;
+
+      if (midMatch) {
+        // A pick mid-match is both a map wish and a vote to end the run: when
+        // a strict majority picks (see the tick below), the match cancels back
+        // to `ready` and these very votes settle the next map. Re-picking the
+        // card already voted for withdraws the whole thing, so one card can
+        // never quietly accumulate two votes from the same racer.
+        if (player.votedFor === courseId) {
+          player.votedFor = '';
+          player.votedToSkip = false;
+          log(`${player.name} withdrew the change-map vote`);
+        } else {
+          player.votedFor = courseId;
+          player.votedToSkip = true;
+          log(`${player.name} voted to change map to "${courseId}"`);
+        }
+      } else {
+        player.votedFor = courseId;
+        log(`${player.name} voted for "${courseId}"`);
+      }
     });
 
     // --- mid-match skip -----------------------------------------------------
@@ -201,6 +278,56 @@ export class RaceRoom extends Room<RaceRoomOptions> {
 
       player.votedToSkip = value;
       log(`${player.name} ${value ? 'voted to skip the match' : 'withdrew the skip'}`);
+    });
+
+    // --- equip a cosmetic ----------------------------------------------------
+    // Presentational: what a racer wears feeds nothing into the sim, so this
+    // message exists in every phase, including the lobby. The server still
+    // validates both ways — the id must name a real trail, body colour or hat,
+    // and the racer must own it — so a client can never self-declare a look it
+    // did not acquire. Ownership is the claim carried at join for now (no DB);
+    // the real build swaps the owned sets for a lookup against the account's
+    // record, and this handler does not change one line.
+    this.onMessage('equip', (client, message: unknown) => {
+      const player = this.state.players.get(client.sessionId);
+      const wardrobe = this.cosmetics.get(client.sessionId);
+      if (!player || !wardrobe) return;
+
+      const body = (message ?? null) as { trailId?: unknown; colorId?: unknown; hatId?: unknown } | null;
+      const trailId = body?.trailId;
+      if (isTrail(trailId) && wardrobe.ownedTrails.has(trailId)) {
+        player.equippedTrailId = trailId;
+        log(`${player.name} equipped trail "${trailId}"`);
+        return;
+      }
+      const colorId = body?.colorId;
+      if (isBodyColor(colorId) && wardrobe.ownedColors.has(colorId)) {
+        player.equippedBodyColorId = colorId;
+        log(`${player.name} equipped body colour "${colorId}"`);
+        return;
+      }
+      const hatId = body?.hatId;
+      if (isHat(hatId) && wardrobe.ownedHats.has(hatId)) {
+        player.equippedHatId = hatId;
+        log(`${player.name} equipped hat "${hatId}"`);
+      }
+    });
+
+    // --- rename yourself ----------------------------------------------------
+    // Display-only, like `equip`: nothing on the sim path reads the name, so
+    // this is legal in every phase. The server keeps owning the value — a
+    // rename passes through the same `sanitiseName` that sanitised the join —
+    // so a racer can pick a name it likes, but never one that breaks the
+    // standings board's rendering.
+    this.onMessage('rename', (client, message: unknown) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+
+      const name = (message as { name?: unknown } | null)?.name;
+      const next = sanitiseName(name);
+      if (next === player.name) return;
+      player.name = next;
+      log(`${player.name} renamed themselves`);
     });
 
     this.freeCore();
@@ -223,8 +350,43 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     const sim = createSimBody(this.world, this.course, FIXED_TIMESTEP);
     this.racers.set(client.sessionId, sim);
 
+    // The claimed wardrobe is normalised against the catalog and the worn ids
+    // are re-validated against it, so a stale or malicious join option
+    // degrades to stock rather than to a trail or colour the racer does not
+    // own.
+    const ownedTrails = normaliseOwnedTrails(options?.trails);
+    const requestedTrail = options?.trail;
+    const equippedTrail =
+      isTrail(requestedTrail) && ownedTrails.includes(requestedTrail)
+        ? requestedTrail
+        : ownedTrails[0]!;
+
+    const ownedColors = normaliseOwnedColors(options?.colors);
+    const requestedColor = options?.color;
+    const equippedColor =
+      isBodyColor(requestedColor) && ownedColors.includes(requestedColor)
+        ? requestedColor
+        : ownedColors[0]!;
+
+    const ownedHats = normaliseOwnedHats(options?.hats);
+    const requestedHat = options?.hat;
+    const equippedHat =
+      isHat(requestedHat) && ownedHats.includes(requestedHat)
+        ? requestedHat
+        : ownedHats[0]!;
+
+    this.cosmetics.set(client.sessionId, {
+      accountId: typeof options?.accountId === 'string' ? options.accountId : '',
+      ownedTrails: new Set(ownedTrails),
+      ownedColors: new Set(ownedColors),
+      ownedHats: new Set(ownedHats),
+    });
+
     const state = new PlayerState();
     state.name = sanitiseName(options?.name);
+    state.equippedTrailId = equippedTrail;
+    state.equippedBodyColorId = equippedColor;
+    state.equippedHatId = equippedHat;
     publishBody(state, sim);
 
     this.state.players.set(client.sessionId, state);
@@ -243,6 +405,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
       this.racers.delete(client.sessionId);
     }
     this.state.players.delete(client.sessionId);
+    this.cosmetics.delete(client.sessionId);
 
     // The last racer out resets the match. Nobody is left to finish it, and the
     // next joiner should not land in the middle of somebody else's clock.
@@ -253,6 +416,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
 
   override onDispose(): void {
     this.racers.clear();
+    this.cosmetics.clear();
   }
 
   // ------------------------------------------------------------ simulation
@@ -326,13 +490,15 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     }
     this.state.phaseRemainingMs = advance.remainingMs;
 
-    // --- the mid-match skip -------------------------------------------------
+    // --- the mid-match change-map vote -------------------------------------
     // After the clock, so a countdown that just ran out or a match that just
     // reached results has already moved on: this only ever cuts a match that
     // is still running. It lands in `enterReady`, which rewinds the clock
-    // itself, clears the scores, and settles a ballot that cannot exist here
-    // (the vote handler only runs in lobby windows) — skipping ends the
-    // match, it never picks the next map.
+    // itself, clears the scores, and settles the votes — and those can exist
+    // here, because a pick mid-match counts as a change-map vote (see the
+    // `vote` handler), so the majority that ends the run is also the pick
+    // that chooses what comes next. The `skip` message drives the same flag
+    // for clients that only want out without a map in mind.
     if (this.state.phase === 'countdown' || this.state.phase === 'playing') {
       let skips = 0;
       for (const player of this.state.players.values()) {
@@ -524,8 +690,9 @@ export class RaceRoom extends Room<RaceRoomOptions> {
    */
   private enterReady(): void {
     this.clockState = { phase: 'ready', ticks: 0 };
-    // The results-window's votes settle here, before the reset: on a swap
-    // that means the respawn below already uses the new map's spawn.
+    // The ballot settles here, before the reset: the results-window's votes
+    // in the normal loop, and a mid-match change-map majority on a cancel.
+    // On a swap the respawn below already uses the new map's spawn.
     this.settleVotes();
     this.respawnAll();
     // Scores and skip flags both die with the lobby reset: the flags are how
@@ -554,9 +721,10 @@ export class RaceRoom extends Room<RaceRoomOptions> {
   /**
    * Settle the pending map vote and clear it, whichever way it goes.
    *
-   * Called at exactly the two points a lobby window closes — ready →
-   * countdown and results → ready — so a vote is consumed by one transition
-   * and can never linger into a window where it would mean something else.
+   * Called wherever a window closes: ready → countdown and results → ready
+   * in the normal loop, and the mid-match change-map majority's landing in
+   * `enterReady` — so a vote is consumed by one transition and can never
+   * linger into a window where it would mean something else.
    * A tie, an empty ballot, or votes for a map that went missing all keep
    * the current course; that is `chooseMapVote`'s call, not this one's.
    *
@@ -679,6 +847,37 @@ function sanitiseName(raw: unknown): string {
   // the standings board, then clamp the length.
   const clean = raw.replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 20);
   return clean.length > 0 ? clean : 'racer';
+}
+
+/**
+ * Keep only ids the current catalog still ships, falling back to the starter
+ * set when the claim is empty — a fresh account and a malicious client both
+ * end up with exactly what they may have.
+ */
+function normaliseOwnedTrails(raw: unknown): string[] {
+  const owned = Array.isArray(raw) ? raw.filter(isTrail) : [];
+  if (owned.length === 0) owned.push(...STARTER_TRAILS);
+  return [...new Set(owned)];
+}
+
+/**
+ * Keep only ids the current catalog still ships, falling back to the starter
+ * set when the claim is empty — same rule as the trails above.
+ */
+function normaliseOwnedColors(raw: unknown): string[] {
+  const owned = Array.isArray(raw) ? raw.filter(isBodyColor) : [];
+  if (owned.length === 0) owned.push(...STARTER_BODY_COLORS);
+  return [...new Set(owned)];
+}
+
+/**
+ * Keep only ids the current catalog still ships, falling back to the starter
+ * set when the claim is empty — same rule as the trails and colours above.
+ */
+function normaliseOwnedHats(raw: unknown): string[] {
+  const owned = Array.isArray(raw) ? raw.filter(isHat) : [];
+  if (owned.length === 0) owned.push(...STARTER_HATS);
+  return [...new Set(owned)];
 }
 
 /** Room logging. Colyseus rooms have no logger of their own in 0.18. */

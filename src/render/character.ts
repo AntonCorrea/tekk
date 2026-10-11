@@ -43,6 +43,7 @@ import {
 import { MOVE, PLAYER } from '../constants.ts';
 import { NEON, PALETTE, POST } from './palette.ts';
 import { fxBeat } from './fx.ts';
+import { DEFAULT_TRAIL, getTrail, getHat, type TrailDef } from '../shared/cosmetics.ts';
 
 /** See net/remotes.ts for why these node types are spelled out. */
 type Vec3Uniform = THREE.UniformNode<'vec3', THREE.Vector3>;
@@ -74,6 +75,18 @@ export interface Character {
   /** Pose and animate. `delta` is the real frame delta in seconds. */
   update(state: CharacterState, delta: number): void;
   setVisible(visible: boolean): void;
+  /**
+   * Swap the trail cosmetic to the catalog entry named by `id`. Presentational
+   * only — nothing in the sim ever reads it. Ids the catalog does not know
+   * fall back to the stock trail.
+   */
+  setTrail(trailId: string): void;
+  /**
+   * Swap the hat cosmetic to the catalog entry named by `id`. Presentational
+   * only — nothing in the sim ever reads it. Ids the catalog does not know
+   * fall back to the stock (empty) hat.
+   */
+  setHat(hatId: string): void;
   dispose(): void;
 }
 
@@ -107,13 +120,43 @@ const GHOST_INTERVAL = 0.035;
 /** Below this horizontal speed the racer keeps its last facing. */
 const FACING_MIN_SPEED = 0.6;
 
-export function createCharacter(scene: THREE.Scene, identity: THREE.ColorRepresentation): Character {
+export function createCharacter(
+  scene: THREE.Scene,
+  identity: THREE.ColorRepresentation,
+  trailId: string = DEFAULT_TRAIL,
+): Character {
   // The tint lives in a THREE.Color callers can lerp, mirrored into a vec3
   // uniform each frame. A colour-typed uniform would be simpler, but the TSL
   // typings refuse to multiply one by a float node; a vec3 has no such problem.
   const tintColor = new THREE.Color(identity);
   const tint = uniform(new THREE.Vector3(tintColor.r, tintColor.g, tintColor.b)) as unknown as Vec3Uniform;
   const glow = uniform(1) as unknown as FloatUniform;
+
+  // --- the trail's own look ----------------------------------------------
+  // The ribbons draw in a trail-only tint so a cosmetic can own its colour.
+  // The stock trail mirrors the racer's living tint (identity, and the
+  // carrier-white cue when carrying); a coloured trail sets its own and holds
+  // it, so equipping a cosmetic is visible from across the arena.
+  const trailTint = uniform(new THREE.Vector3(tintColor.r, tintColor.g, tintColor.b)) as unknown as Vec3Uniform;
+  const trailGain = uniform(1) as unknown as FloatUniform;
+  let trailWidth = 1;
+  let trailMirrorsTint = true;
+  const trailScratch = new THREE.Color();
+
+  /** Point the ribbon look at a catalog entry. See `Character.setTrail`. */
+  const applyTrail = (def: TrailDef): void => {
+    trailWidth = def.width;
+    trailGain.value = def.gain;
+    if (def.color === null) {
+      // Stock: keep riding the racer's living tint (carrier white included).
+      trailMirrorsTint = true;
+    } else {
+      trailMirrorsTint = false;
+      trailScratch.setHex(def.color);
+      trailTint.value.set(trailScratch.r, trailScratch.g, trailScratch.b);
+    }
+  };
+  applyTrail(getTrail(trailId));
 
   // --- materials ------------------------------------------------------------
   // The body glows in the racer's colour with a brighter fresnel rim, so the
@@ -190,6 +233,117 @@ export function createCharacter(scene: THREE.Scene, identity: THREE.ColorReprese
   // Visor slit on the front face, slightly proud of it so it never z-fights.
   box(0.22, 0.05, 0.02, visorMat, head, 0.01, HEAD * 0.58, HEAD / 2 + 0.006);
 
+  // --- hats ------------------------------------------------------------------
+  // Voxel headgear: a small stack of blocks off the head. Hats are their own
+  // objects, not body parts — every colour is fixed by the catalog and none of
+  // it follows the racer's tint, so a hat keeps its look while the body dims
+  // to carrier white or flares through a dash. The same three-material node
+  // graph renders every hat, driven by uniforms, so a swap never recompiles.
+  const hatGroup = new THREE.Group();
+  head.add(hatGroup);
+  let hatMeshes: THREE.Mesh[] = [];
+  const hatScratch = new THREE.Color();
+  const hatWhite = new THREE.Color(0xffffff);
+  // Main fill: a gentler static cousin of the body material — the same fresnel
+  // rim, but shaded in the hat's own colour at a fraction of the glow.
+  const hatColor = uniform(new THREE.Vector3(1, 1, 1)) as unknown as Vec3Uniform;
+  const hatMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.4, metalness: 0.15 });
+  hatMat.colorNode = mul(hatColor, 0.75);
+  hatMat.emissiveNode = mul(hatColor, mul(add(0.08, mul(fresnel, 0.5)), mul(glow, POST.emissiveGain)));
+  // Neon outline in a brightened copy of the main colour, like the body edges.
+  const hatEdge = uniform(new THREE.Vector3(1, 1, 1)) as unknown as Vec3Uniform;
+  const hatEdgeMat = new THREE.LineBasicNodeMaterial({ toneMapped: false });
+  hatEdgeMat.colorNode = mul(hatEdge, mul(glow, POST.emissiveGain * 1.25));
+  // Accent trim: a bright flat colour, like the visor.
+  const hatAccent = uniform(new THREE.Vector3(1, 1, 1)) as unknown as Vec3Uniform;
+  const hatAccentMat = new THREE.MeshBasicNodeMaterial({ toneMapped: false });
+  hatAccentMat.colorNode = hatAccent;
+
+  /** Point one of the hat colour uniforms at a catalog hex. */
+  const paintHat = (target: Vec3Uniform, hex: number): void => {
+    hatScratch.setHex(hex);
+    target.value.set(hatScratch.r, hatScratch.g, hatScratch.b);
+  };
+
+  /** Build one box into the hat, like `box()` but tracked for swap disposal. */
+  const hatBox = (
+    w: number, h: number, d: number,
+    material: THREE.Material,
+    x: number, y: number, z: number,
+  ): THREE.Mesh => {
+    const geometry = new THREE.BoxGeometry(w, h, d);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(x, y, z);
+    hatGroup.add(mesh);
+    if (material === hatMat) {
+      const edges = new THREE.EdgesGeometry(geometry);
+      mesh.add(new THREE.LineSegments(edges, hatEdgeMat));
+    }
+    hatMeshes.push(mesh);
+    return mesh;
+  };
+
+  /** Drop the current hat and release its geometry. */
+  const clearHat = (): void => {
+    for (const mesh of hatMeshes) {
+      hatGroup.remove(mesh);
+      mesh.geometry.dispose();
+      for (const child of mesh.children) {
+        if (child instanceof THREE.LineSegments) child.geometry.dispose();
+      }
+    }
+    hatMeshes = [];
+  };
+
+  /** Rebuild the headgear from a catalog id. See `Character.setHat`. */
+  const applyHat = (hatId: string): void => {
+    clearHat();
+    const def = getHat(hatId);
+    paintHat(hatColor, def.color ?? 0x888888);
+    paintHat(hatEdge, hatScratch.setHex(def.color ?? 0x888888).lerp(hatWhite, 0.45).getHex());
+    paintHat(hatAccent, def.accent ?? 0x888888);
+    const M = hatMat;
+    const A = hatAccentMat;
+    switch (hatId) {
+      case 'hat-cap':
+        hatBox(0.40, 0.08, 0.40, M, 0, 0.31, 0);
+        hatBox(0.32, 0.08, 0.32, M, 0, 0.39, 0);
+        hatBox(0.20, 0.03, 0.16, A, 0, 0.335, 0.19);
+        break;
+      case 'hat-beanie':
+        hatBox(0.44, 0.07, 0.44, A, 0, 0.30, 0);
+        hatBox(0.36, 0.10, 0.36, M, 0, 0.37, 0);
+        hatBox(0.09, 0.09, 0.09, A, 0, 0.47, 0);
+        break;
+      case 'hat-top':
+        hatBox(0.62, 0.03, 0.62, M, 0, 0.32, 0);
+        hatBox(0.28, 0.24, 0.28, M, 0, 0.44, 0);
+        hatBox(0.29, 0.04, 0.29, A, 0, 0.335, 0);
+        break;
+      case 'hat-cone':
+        hatBox(0.36, 0.08, 0.36, M, 0, 0.35, 0);
+        hatBox(0.27, 0.08, 0.27, M, 0, 0.43, 0);
+        hatBox(0.18, 0.08, 0.18, M, 0, 0.51, 0);
+        hatBox(0.09, 0.08, 0.09, M, 0, 0.59, 0);
+        hatBox(0.10, 0.10, 0.10, A, 0, 0.67, 0);
+        break;
+      case 'hat-crown':
+        hatBox(0.46, 0.08, 0.46, A, 0, 0.31, 0);
+        hatBox(0.06, 0.12, 0.06, M, 0, 0.41, 0);
+        hatBox(0.06, 0.12, 0.06, M, 0.16, 0.41, 0);
+        hatBox(0.06, 0.12, 0.06, M, -0.16, 0.41, 0);
+        hatBox(0.06, 0.12, 0.06, M, 0, 0.41, 0.16);
+        hatBox(0.06, 0.12, 0.06, M, 0, 0.41, -0.16);
+        break;
+      // 'hat-stock' and anything the catalog does not know: no headgear.
+      default:
+        break;
+    }
+    // Ghosts are frozen clones of the WHOLE body, taken when the pool was
+    // built; a hat changes the silhouette, so re-clone the pool to include it.
+    rebuildGhosts();
+  };
+
   interface Limb { upper: THREE.Group; lower: THREE.Group; end: THREE.Object3D }
 
   const arm = (side: 1 | -1): Limb => {
@@ -233,7 +387,7 @@ export function createCharacter(scene: THREE.Scene, identity: THREE.ColorReprese
     side: THREE.DoubleSide,
     blending: THREE.AdditiveBlending,
   });
-  trailMat.colorNode = mul(tint, mul(attribute('aFade', 'float'), mul(glow, POST.emissiveGain)));
+  trailMat.colorNode = mul(trailTint, mul(attribute('aFade', 'float'), mul(glow, mul(trailGain, POST.emissiveGain))));
 
   interface Trail {
     source: THREE.Object3D;
@@ -314,7 +468,7 @@ export function createCharacter(scene: THREE.Scene, identity: THREE.ColorReprese
     const fade = trail.fade.array as Float32Array;
     for (let i = 0; i < TRAIL_SAMPLES; i++) {
       const life = 1 - i / (TRAIL_SAMPLES - 1);
-      const half = trail.width * (0.25 + 0.75 * life);
+      const half = trail.width * trailWidth * (0.25 + 0.75 * life);
       const o = i * 6;
       pos[o] = h[i * 3]!;
       pos[o + 1] = h[i * 3 + 1]! + half;
@@ -340,32 +494,47 @@ export function createCharacter(scene: THREE.Scene, identity: THREE.ColorReprese
   // graph is identical, so they share one compiled shader.
   interface Ghost { root: THREE.Object3D; nodes: THREE.Object3D[]; fade: FloatUniform; age: number }
   const sourceNodes: THREE.Object3D[] = [];
-  root.traverse((node) => sourceNodes.push(node));
   const ghostMats: THREE.Material[] = [];
   const ghosts: Ghost[] = [];
-  for (let i = 0; i < GHOSTS; i++) {
-    const fade = uniform(0) as unknown as FloatUniform;
-    const material = new THREE.MeshBasicNodeMaterial({
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    material.colorNode = mul(tint, mul(fade, POST.emissiveGain * 0.9));
-    ghostMats.push(material);
 
-    const copy = root.clone(true);
-    const nodes: THREE.Object3D[] = [];
-    copy.traverse((node) => {
-      nodes.push(node);
-      if (node instanceof THREE.Mesh) node.material = material;
-      // Afterimages are soft silhouettes; full-brightness outlines would
-      // make every ghost as loud as the racer itself.
-      if (node instanceof THREE.LineSegments) node.visible = false;
-    });
-    copy.visible = false;
-    scene.add(copy);
-    ghosts.push({ root: copy, nodes, fade, age: GHOST_LIFE });
-  }
+  /**
+   * (Re)build the afterimage pool from the body as it is NOW. Called once at
+   * creation and again whenever the silhouette changes — a hat swap — so a
+   * dash never throws an outdated clone.
+   */
+  const rebuildGhosts = (): void => {
+    for (const ghost of ghosts) scene.remove(ghost.root);
+    for (const material of ghostMats) material.dispose();
+    ghostMats.length = 0;
+    ghosts.length = 0;
+
+    sourceNodes.length = 0;
+    root.traverse((node) => sourceNodes.push(node));
+    for (let i = 0; i < GHOSTS; i++) {
+      const fade = uniform(0) as unknown as FloatUniform;
+      const material = new THREE.MeshBasicNodeMaterial({
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      material.colorNode = mul(tint, mul(fade, POST.emissiveGain * 0.9));
+      ghostMats.push(material);
+
+      const copy = root.clone(true);
+      const nodes: THREE.Object3D[] = [];
+      copy.traverse((node) => {
+        nodes.push(node);
+        if (node instanceof THREE.Mesh) node.material = material;
+        // Afterimages are soft silhouettes; full-brightness outlines would
+        // make every ghost as loud as the racer itself.
+        if (node instanceof THREE.LineSegments) node.visible = false;
+      });
+      copy.visible = false;
+      scene.add(copy);
+      ghosts.push({ root: copy, nodes, fade, age: GHOST_LIFE });
+    }
+  };
+  rebuildGhosts();
   let nextGhost = 0;
   let ghostClock = 0;
 
@@ -418,6 +587,8 @@ export function createCharacter(scene: THREE.Scene, identity: THREE.ColorReprese
       const dt = Math.max(0, delta);
       clock += dt;
       tint.value.set(tintColor.r, tintColor.g, tintColor.b);
+      // The stock trail rides the living tint, so it follows the carrier cue.
+      if (trailMirrorsTint) trailTint.value.copy(tint.value);
 
       // --- facing ----------------------------------------------------------
       // From velocity, not from input: remotes have no input, and velocity is
@@ -600,10 +771,27 @@ export function createCharacter(scene: THREE.Scene, identity: THREE.ColorReprese
       }
     },
 
+    setTrail(nextTrailId) {
+      applyTrail(getTrail(nextTrailId));
+    },
+
+    setHat(nextHatId) {
+      applyHat(nextHatId);
+    },
+
     dispose() {
       scene.remove(root);
       for (const trail of [...footTrails, ...handTrails]) scene.remove(trail.mesh);
       for (const geometry of geometries) geometry.dispose();
+      for (const mesh of hatMeshes) {
+        mesh.geometry.dispose();
+        for (const child of mesh.children) {
+          if (child instanceof THREE.LineSegments) child.geometry.dispose();
+        }
+      }
+      hatMat.dispose();
+      hatEdgeMat.dispose();
+      hatAccentMat.dispose();
       bodyMat.dispose();
       jointMat.dispose();
       visorMat.dispose();

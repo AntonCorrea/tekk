@@ -24,7 +24,9 @@ import { buildCourse } from './course/build.ts';
 import { createPhysicsWorld, initPhysics } from './physics/world.ts';
 import { connectSession } from './net/session.ts';
 import { createRacerVisuals } from './net/remotes.ts';
+import { loadAccount, saveAccount } from './net/account.ts';
 import { createHud, type ConnectionStatus } from './ui/hud.ts';
+import { promptLogin } from './ui/login.ts';
 import {
   clearInput,
   getCameraMode,
@@ -121,7 +123,35 @@ async function boot(): Promise<void> {
   // and nothing else. `connectSession` builds both from the course the server
   // sends, using the same shared builder the server used.
   const world = createPhysicsWorld();
-  const session = await connectSession(world, { endpoint: resolveEndpoint() });
+  // The off-chain account: your local identity and the trails it owns. Its
+  // name is yours, its wardrobe seeds the server's answer to later `equip`s,
+  // and saving it after an equip is how the choice survives a reload.
+  const account = loadAccount();
+
+  // The login placeholder. Off-chain there is nothing to verify, so the card
+  // is a door in the flow rather than a credential check: pick a method (or
+  // continue as {name}) and the boot proceeds. The real build blocks here
+  // until a Privy session is authenticated and hands back a verified user
+  // object instead of a method string.
+  const loginMethod = await promptLogin(container, account.name);
+  if (loginMethod !== account.loginMethod) {
+    account.loginMethod = loginMethod;
+    saveAccount(account);
+  }
+
+  const session = await connectSession(world, {
+    endpoint: resolveEndpoint(),
+    name: account.name,
+    account: {
+      id: account.id,
+      ownedTrails: account.ownedTrails,
+      equippedTrail: account.equippedTrail,
+      ownedBodyColors: account.ownedBodyColors,
+      equippedBodyColor: account.equippedBodyColor,
+      ownedHats: account.ownedHats,
+      equippedHat: account.equippedHat,
+    },
+  });
   // `let`, not destructured once: a map swap replaces both of these, and the
   // frame below re-reads them whenever `session.syncCourse()` fires. Holding
   // the boot-time `sim` past a swap is a use-after-free on the Rapier heap.
@@ -161,15 +191,60 @@ async function boot(): Promise<void> {
     // The card id comes from the catalog the server shipped; `sendVote` just
     // puts it on the wire, and the server checks it against the same list.
     onVote: (courseId) => session.sendVote(courseId),
-    // The pill echoes back the value it is showing, and the server only
-    // accepts the message while a match is running.
-    onSkip: (value) => session.sendSkip(value),
+    // Equipping IS a wardrobe change: optimistically remember the pick so the
+    // picker and a reload agree, whatever the server echoes back (it will
+    // reject any id the account does not own, and the store only records the
+    // account's copy, so a rejected equip never corrupts it).
+    onEquip: (trailId) => {
+      session.sendEquip(trailId);
+      const next = account.ownedTrails.includes(trailId) ? trailId : account.equippedTrail;
+      if (next !== account.equippedTrail) {
+        account.equippedTrail = next;
+        saveAccount(account);
+      }
+    },
+    ownedTrails: () => account.ownedTrails,
+    // Body colour is exactly the same optimistic wardrobe cycle as trails:
+    // remember the pick locally whatever the server echoes, so the picker and
+    // a reload agree, and a id the server rejects never corrupts the store.
+    onEquipColor: (colorId) => {
+      session.sendEquipColor(colorId);
+      const next = account.ownedBodyColors.includes(colorId)
+        ? colorId
+        : account.equippedBodyColor;
+      if (next !== account.equippedBodyColor) {
+        account.equippedBodyColor = next;
+        saveAccount(account);
+      }
+    },
+    ownedBodyColors: () => account.ownedBodyColors,
+    // Hats are the same optimistic wardrobe cycle as the other two cosmetics.
+    onEquipHat: (hatId) => {
+      session.sendEquipHat(hatId);
+      const next = account.ownedHats.includes(hatId) ? hatId : account.equippedHat;
+      if (next !== account.equippedHat) {
+        account.equippedHat = next;
+        saveAccount(account);
+      }
+    },
+    ownedHats: () => account.ownedHats,
+    // Renaming IS identity here, off-chain: the local name travels at join,
+    // the server echoes a rename so the whole room sees it, and the store
+    // keeps the last name the server accepted — a reload comes back as
+    // yourself, not as whoever the account minted first.
+    onRename: (name) => {
+      session.sendRename(name);
+      if (name !== account.name) {
+        account.name = name;
+        saveAccount(account);
+      }
+    },
   });
   const coreVisual = createCoreVisual(stage.scene);
 
   // Reused every frame: the loop below must not allocate.
   const localPose: LocalPose = {
-    x: 0, y: 0, z: 0, vx: 0, vz: 0, speed: 0, grounded: false, carrying: false, dashing: false, teleported: false,
+    x: 0, y: 0, z: 0, vx: 0, vz: 0, speed: 0, grounded: false, carrying: false, dashing: false, teleported: false, trailId: '', bodyColorId: '', hatId: '',
   };
   const coreState: CoreVisualState = { x: 0, y: 0, z: 0, carried: false, immune: false };
 
@@ -411,6 +486,12 @@ async function boot(): Promise<void> {
     // dash cue, which is yours and needs zero latency.
     localPose.carrying = selfCarries;
     localPose.dashing = sim.dashTicks > 0;
+    // The equipped trail and body colour are replicated server state; the
+    // account's copy is the fallback for the frame before the first patch
+    // lands.
+    localPose.trailId = session.self()?.equippedTrailId ?? account.equippedTrail;
+    localPose.bodyColorId = session.self()?.equippedBodyColorId ?? account.equippedBodyColor;
+    localPose.hatId = session.self()?.equippedHatId ?? account.equippedHat;
     visuals.sync(localPose, delta);
 
     remotes.sync(delta);
@@ -569,6 +650,7 @@ async function boot(): Promise<void> {
       `${session.room.state.players.size} racing · ` +
       `step ${(FIXED_TIMESTEP * 1000).toFixed(2)}ms · ` +
       `you are "${session.self()?.name ?? '—'}" · ` +
+      `sign-in "${account.loginMethod}" · ` +
       'WASD move · Space jump · Shift dash · mouse look · C camera · M mute',
   );
 

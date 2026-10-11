@@ -93,9 +93,11 @@ export const PlayerState = schema(
     rank: t.number().default(0),
 
     /**
-     * Course id this racer has voted for in the current lobby window, or ''
-     * for no vote. A client may only ever name an id the server shipped in
-     * `GameState.catalog`; the server resolves ids to files itself.
+     * Course id this racer has voted for, or '' for no vote. In a lobby
+     * window it is the ballot pick; while a match runs it doubles as the
+     * change-map vote (see `votedToSkip`). A client may only ever name an
+     * id the server shipped in `GameState.catalog`; the server resolves ids
+     * to files itself.
      */
     votedFor: t.string().default(''),
 
@@ -104,9 +106,35 @@ export const PlayerState = schema(
      * during `countdown`/`playing`, carried as an explicit boolean so a
      * reconnect cannot invert the intent, and cleared when the lobby resets.
      * A strict majority of the connected racers cancels the match straight
-     * back to `ready`.
+     * back to `ready`. Also raised by a mid-match change-map pick (see
+     * `votedFor`): the vote that ends the run is the same pick that settles
+     * the next map.
      */
     votedToSkip: t.boolean().default(false),
+
+    /**
+     * The trail cosmetic this racer wears, as a catalog id, or '' for the
+     * stock trail. Presentational: it is a render key every client resolves
+     * through `shared/cosmetics.ts`, and nothing on the determinism path may
+     * read it. Present so others see your trail, not just you.
+     */
+    equippedTrailId: t.string().default(''),
+
+    /**
+     * The body-colour cosmetic this racer wears, as a catalog id, or '' for
+     * the stock seat colour. Presentational exactly like `equippedTrailId`:
+     * it is the identity tint the render lerps toward, resolved through
+     * `shared/cosmetics.ts`, and nothing on the determinism path may read it.
+     */
+    equippedBodyColorId: t.string().default(''),
+
+    /**
+     * The hat cosmetic this racer wears, as a catalog id, or '' for the stock
+     * entry (no hat). Presentational exactly like the other two: it is a look
+     * key resolved through `shared/cosmetics.ts`, and nothing on the
+     * determinism path may read it.
+     */
+    equippedHatId: t.string().default(''),
   },
   'PlayerState',
 );

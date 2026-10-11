@@ -16,6 +16,7 @@
 import { DASH, MATCH } from '../constants.ts';
 import type { GameStateInstance, PlayerStateInstance } from '../shared/state.ts';
 import type { SimBody } from '../shared/sim.ts';
+import { TRAILS, BODY_COLORS, HATS } from '../shared/cosmetics.ts';
 
 /** The slice of the predicted sim the HUD reads. */
 export type HudSim = Pick<SimBody, 'dashTicks' | 'dashCooldownTicks' | 'carrying'>;
@@ -50,11 +51,52 @@ export interface HudOptions {
   onVote?(courseId: string): void;
 
   /**
-   * Toggle your mid-match skip vote. Carries the explicit desired value
-   * rather than "flip it", so a stale click against a tally the server has
-   * already moved cannot invert what was meant.
+   * A trail card was clicked. The id comes from the LOCAL account's wardrobe,
+   * and the server validates both existence and ownership before it lands on
+   * the wire — this is just the click becoming a request.
    */
-  onSkip?(value: boolean): void;
+  onEquip?(trailId: string): void;
+
+  /**
+   * The trail ids the local account owns, live. This is off-chain state (the
+   * account in net/account.ts), so the HUD cannot read it from replicated
+   * state; it asks the caller instead. Re-read per lobby render so an equip
+   * never draws a stale wardrobe.
+   */
+  ownedTrails?(): readonly string[];
+
+  /**
+   * A body-colour card was clicked. Same contract as `onEquip`: the id comes
+   * from the LOCAL account's wardrobe, and the server validates both
+   * existence and ownership before it lands on the wire.
+   */
+  onEquipColor?(colorId: string): void;
+
+  /**
+   * The body-colour ids the local account owns, live. Same off-chain source
+   * and the same re-read-per-lobby-render rule as `ownedTrails`.
+   */
+  ownedBodyColors?(): readonly string[];
+
+  /**
+   * A hat card was clicked. Same contract as `onEquip`: the id comes from the
+   * LOCAL account's wardrobe, and the server validates both existence and
+   * ownership before it lands on the wire.
+   */
+  onEquipHat?(hatId: string): void;
+
+  /**
+   * The hat ids the local account owns, live. Same off-chain source and the
+   * same re-read-per-lobby-render rule as `ownedTrails`.
+   */
+  ownedHats?(): readonly string[];
+
+  /**
+   * A new racer name was committed in the customize panel. The id comes from
+   * the local input field; the server sanitises and echoes it, so this is just
+   * the commit becoming a request.
+   */
+  onRename?(name: string): void;
 }
 
 /** `gain` is good for you, `loss` is bad for you, `info` is someone else's moment. */
@@ -105,34 +147,123 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
   const status = new Slot(div('hud hud-status', container));
   const hold = new Slot(div('hud hud-hold', container));
   const banner = new Slot(div('banner', container));
-  const lobby = new Slot(div('lobby', container));
-  lobby.el.hidden = true;
+  // The lobby is two separate panels — customize avatar (name, trail, colour,
+  // hat) and the map ballot — toggled by a button pair pinned to the top-right
+  // corner, one panel open at a time. The panels' skeletons are built once and
+  // only the card rows rewrite; the name field must survive re-renders whole
+  // (a rebuilt input would drop the caret mid-type), so its value is synced
+  // from the echoed server name only when it is not focused.
+  const lobby = div('lobby', container);
+  const customizeToggle = button('lobby-toggle', 'customize', lobby);
+  customizeToggle.setAttribute('data-panel', 'customize');
+  const voteToggle = button('lobby-toggle', 'vote map', lobby);
+  voteToggle.setAttribute('data-panel', 'vote');
+
+  const customizePanel = div('lobby-panel is-customize', container);
+  customizePanel.hidden = true;
+  const customizeHead = div('lobby-head', customizePanel);
+  customizeHead.textContent = 'customize avatar';
+  const nameRow = div('name-row', customizePanel);
+  const nameLabel = div('field-label', nameRow);
+  nameLabel.textContent = 'name';
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.maxLength = 20;
+  nameInput.autocomplete = 'off';
+  nameInput.spellcheck = false;
+  nameInput.setAttribute('aria-label', 'racer name');
+  nameRow.appendChild(nameInput);
+  const trailLabel = div('field-label is-trail', customizePanel);
+  trailLabel.textContent = 'trail / cosmetics';
+  const trailCards = new Slot(div('lobby-cards', customizePanel));
+  const colorLabel = div('field-label', customizePanel);
+  colorLabel.textContent = 'body color';
+  const colorCards = new Slot(div('lobby-cards', customizePanel));
+  const hatLabel = div('field-label', customizePanel);
+  hatLabel.textContent = 'hat';
+  const hatCards = new Slot(div('lobby-cards', customizePanel));
+
+  const votePanel = div('lobby-panel is-vote', container);
+  votePanel.hidden = true;
+  const voteHead = div('lobby-head', votePanel);
+  voteHead.textContent = 'vote the next map';
+  const voteCards = new Slot(div('lobby-cards', votePanel));
+  const voteHint = new Slot(div('lobby-hint', votePanel));
+
+  // Typing never reaches the game: keys staged for racing (Space jump, C
+  // camera) would otherwise fire while the field is focused, and the field
+  // would never see a space. Stopping propagation keeps the two inputs apart.
+  nameInput.addEventListener('keydown', (event) => {
+    event.stopPropagation();
+    // Enter commits the name; an explicit cue beats relying on a blur nobody
+    // asked for. Space is a perfectly good character in a name, so only Enter
+    // binds.
+    if ((event as KeyboardEvent).key === 'Enter') {
+      event.preventDefault();
+      commitName();
+      nameInput.blur();
+    }
+  });
+  nameInput.addEventListener('keyup', (event) => event.stopPropagation());
+  nameInput.addEventListener('blur', () => commitName());
+
+  function commitName(): void {
+    const value = nameInput.value.trim();
+    if (!value || value === lastSentName) return;
+    lastSentName = value;
+    options.onRename?.(value);
+  }
+
   // Delegated on the container, not on the cards: the Slot rewrites the
   // cards' innerHTML whenever the tally moves, and per-card listeners would
   // die with each rewrite. Clicking a card in a locked-pointer game would
   // otherwise also leave focus behind — blur so Space keeps meaning jump.
-  lobby.el.addEventListener('click', (event) => {
-    const target =
-      event.target instanceof Element ? event.target.closest<HTMLElement>('[data-course]') : null;
+  // Kept named so dispose() can remove it: the HUD's contract is that it
+  // takes everything it made with it.
+  const onLobbyClick = (event: Event): void => {
+    const el = event.target instanceof Element ? event.target : null;
+
+    // A lobby toggle first: which panel the top-right buttons control. One
+    // panel is open at a time; a tap on the open one's button closes it.
+    const toggleBtn = el?.closest<HTMLElement>('[data-panel]');
+    const panelId = toggleBtn?.dataset['panel'];
+    if (panelId === 'customize' || panelId === 'vote') {
+      toggleBtn?.blur();
+      openPanel = openPanel === panelId ? null : panelId;
+      return;
+    }
+
+    // Cosmetic cards first: they are also `<button class="map-card">`, so the
+    // course check below must not swallow them. All three cosmetic kinds share
+    // the shape, matched before the course lookup.
+    const hatBtn = el?.closest<HTMLElement>('[data-hat]');
+    const hatId = hatBtn?.dataset['hat'];
+    if (hatId) {
+      hatBtn?.blur();
+      options.onEquipHat?.(hatId);
+      return;
+    }
+    const colorBtn = el?.closest<HTMLElement>('[data-color]');
+    const colorId = colorBtn?.dataset['color'];
+    if (colorId) {
+      colorBtn?.blur();
+      options.onEquipColor?.(colorId);
+      return;
+    }
+    const trailBtn = el?.closest<HTMLElement>('[data-trail]');
+    const trailId = trailBtn?.dataset['trail'];
+    if (trailId) {
+      trailBtn?.blur();
+      options.onEquip?.(trailId);
+      return;
+    }
+    const target = el?.closest<HTMLElement>('[data-course]');
     const courseId = target?.dataset['course'];
     if (!courseId) return;
     target.blur();
     options.onVote?.(courseId);
-  });
-  const skip = new Slot(div('skip', container));
-  skip.el.hidden = true;
-  // Same delegation as the ballot above: the tally rewrites the pill's
-  // markup whenever any racer votes, and the listener lives on the wrapper.
-  // Blur for the same reason — mid-race, focus here would turn Space into a
-  // skip click instead of a jump.
-  skip.el.addEventListener('click', (event) => {
-    const target =
-      event.target instanceof Element ? event.target.closest<HTMLElement>('[data-skip]') : null;
-    const next = target?.dataset['skip'];
-    if (!target || next === undefined) return;
-    target.blur();
-    options.onSkip?.(next === '1');
-  });
+  };
+  container.addEventListener('click', onLobbyClick);
   const connection = div('hud hud-connection', container);
   const board = new Slot(div('board', container));
   const readout = new Slot(div('hud hud-readout', container));
@@ -151,6 +282,12 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
   let lastConnection = '';
   // Whole seconds of your hold time last frame, for the per-second pop.
   let lastHoldSecond = -1;
+  // Last name sent as a rename, so blur/Enter never re-send the same value;
+  // re-seeded to the echoed server name each lobby render.
+  let lastSentName = '';
+  // Which lobby panel is open. 'vote' is the default — it is the lobby's
+  // primary action — and a tap on the open panel's button closes it.
+  let openPanel: 'customize' | 'vote' | null = 'vote';
 
   return {
     update(state, selfId, course, linkStatus, sim) {
@@ -159,6 +296,18 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
 
       if (phase === 'playing' && lastPhase === 'countdown') {
         flashUntil = performance.now() + GO_FLASH_MS;
+      }
+      // A phase edge decides the lobby panels. When the match stops — or the
+      // ballot goes live — the vote panel pops up so the next map is the first
+      // thing seen. When play resumes, whatever panel was open closes so it
+      // cannot sit over the race; the top-right toggle buttons stay up in every
+      // phase, and reopening (customize, especially) works mid-match.
+      if (phase !== lastPhase) {
+        if (phase === 'ready' || phase === 'results') {
+          openPanel = 'vote';
+        } else {
+          openPanel = null;
+        }
       }
       lastPhase = phase;
 
@@ -227,20 +376,41 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
 
       renderBanner(banner, state, selfId, performance.now() < flashUntil);
 
-      // --- the map ballot ---------------------------------------------------
-      // Only in the two lobby windows, and only when the server shipped a
-      // catalog to pick from. Votes themselves are server state: this just
-      // draws who has voted for what.
-      const voting = (phase === 'ready' || phase === 'results') && state.catalog.length > 0;
-      lobby.hidden(!voting);
-      if (voting) lobby.html(lobbyMarkup(state, course, selfId));
+      // --- the lobby --------------------------------------------------------
+      // Two separate panels — customize avatar (name, trail) and the map
+      // ballot — each toggled by a top-right button, one open at a time (or
+      // none). The buttons stay pinned top-right in EVERY phase: equipping
+      // cosmetics or renaming works mid-match (the server accepts both in any
+      // phase), so the customize panel is available whenever play slows down.
+      // The vote panel opens anywhere too — in a lobby window it is the
+      // ballot, and while a match runs picking a card IS the change-map vote
+      // (the server honours it: a majority ends the run and the picks settle
+      // the next map). Panels auto-close when play starts (see the phase-edge
+      // check above) so nothing sits over the race; the buttons themselves
+      // never hide.
+      customizePanel.hidden = openPanel !== 'customize';
+      votePanel.hidden = openPanel !== 'vote';
+      customizeToggle.classList.toggle('is-on', openPanel === 'customize');
+      voteToggle.classList.toggle('is-on', openPanel === 'vote');
+      if (openPanel) {
+        trailCards.html(trailCardsMarkup(state, selfId, options.ownedTrails?.() ?? []));
+        colorCards.html(bodyColorCardsMarkup(state, selfId, options.ownedBodyColors?.() ?? []));
+        hatCards.html(hatCardsMarkup(state, selfId, options.ownedHats?.() ?? []));
+        voteCards.html(voteCardsMarkup(state, course, selfId));
+        voteHint.html(voteHintMarkup(state));
 
-      // --- the skip vote ---------------------------------------------------
-      // Mid-match only — the pill is a control, not a readout, and in a
-      // lobby window the ballot below already carries the decision.
-      const skipping = phase === 'countdown' || phase === 'playing';
-      skip.hidden(!skipping);
-      if (skipping) skip.html(skipMarkup(state, selfId));
+        // The echoed server name is truth. It only writes back into the field
+        // while the player is NOT typing — overwriting a focused field every
+        // time a patch arrives would fight the caret.
+        const echoedName = self?.name ?? '';
+        if (document.activeElement !== nameInput && nameInput.value !== echoedName) {
+          nameInput.value = echoedName;
+        }
+        lastSentName = echoedName;
+      } else if (document.activeElement === nameInput) {
+        // A closed panel must not keep the game's keys hostage.
+        nameInput.blur(); // commits any in-progress rename, like any blur
+      }
 
       board.hidden(!playing);
       if (playing) board.html(boardMarkup(state, selfId));
@@ -259,6 +429,7 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
 
     dispose() {
       clearTimeout(announceTimer);
+      container.removeEventListener('click', onLobbyClick);
       announcer.remove();
       for (const el of [
         courseLabel,
@@ -266,8 +437,9 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
         status.el,
         hold.el,
         banner.el,
-        lobby.el,
-        skip.el,
+        lobby,
+        customizePanel,
+        votePanel,
         connection,
         board.el,
         readout.el,
@@ -294,6 +466,15 @@ function restartAnimation(el: HTMLElement, className: string): void {
 function div(className: string, parent: HTMLElement): HTMLDivElement {
   const el = document.createElement('div');
   el.className = className;
+  parent.appendChild(el);
+  return el;
+}
+
+function button(className: string, text: string, parent: HTMLElement): HTMLButtonElement {
+  const el = document.createElement('button');
+  el.type = 'button';
+  el.className = className;
+  el.textContent = text;
   parent.appendChild(el);
   return el;
 }
@@ -394,18 +575,15 @@ function renderBanner(
  * marked rather than hidden, because staying put is a real outcome of a tie
  * or an empty ballot, and a card that vanished the moment it won would read
  * as a bug.
+ *
+ * While a match runs (`countdown`/`playing`) the same cards are the
+ * change-map vote: a pick is a wish for that map AND a vote to end the run,
+ * and each card shows the room tally `n/m` as well as the names, so the
+ * majority's progress is visible at a glance. Same-card re-pick withdraws.
  */
-function lobbyMarkup(
-  state: GameStateInstance,
-  course: HudCourse,
-  selfId: string,
-): string {
-  const settle =
-    state.phase === 'results'
-      ? 'votes settle when the lobby resets'
-      : 'votes settle the moment every player has voted — or when the window runs out';
-
-  const cards = state.catalog
+function voteCardsMarkup(state: GameStateInstance, course: HudCourse, selfId: string): string {
+  const racing = state.phase === 'countdown' || state.phase === 'playing';
+  return state.catalog
     .map((info) => {
       const voters: string[] = [];
       state.players.forEach((player, id) => {
@@ -414,10 +592,12 @@ function lobbyMarkup(
       const current = info.id === course.id;
       const mine = state.players.get(selfId)?.votedFor === info.id;
       const cls = `map-card${current ? ' is-current' : ''}${mine ? ' is-voted' : ''}`;
-      const votes =
-        voters.length > 0
-          ? `<span class="map-votes">${escapeHtml(voters.join(' · '))}</span>`
-          : '';
+      const names = voters.join(' · ');
+      const line = racing
+        ? `${voters.length}/${state.players.size} picked` +
+          (voters.length > 0 ? ` · ${names}` : '')
+        : names;
+      const votes = line ? `<span class="map-votes">${escapeHtml(line)}</span>` : '';
       const now = current ? `<span class="map-now">now running</span>` : '';
       return (
         `<button type="button" class="${cls}" data-course="${escapeHtml(info.id)}">` +
@@ -429,41 +609,121 @@ function lobbyMarkup(
       );
     })
     .join('');
+}
 
-  return (
-    `<div class="lobby-head">vote the next map</div>` +
-    `<div class="lobby-cards">${cards}</div>` +
-    `<div class="lobby-hint">${settle}</div>`
-  );
+/** The one line under the ballot explaining when votes settle. */
+function voteHintMarkup(state: GameStateInstance): string {
+  if (state.phase === 'results') return 'votes settle when the lobby resets';
+  if (state.phase === 'ready')
+    return 'votes settle the moment every player has voted — or when the window runs out';
+  // Mid-match the cards are the change-map vote; re-picking your card withdraws.
+  return 'pick a map to play next — a majority pick calls the match off and plays it';
 }
 
 /**
- * The mid-match skip pill: your vote, and the tally the server weighs.
+ * The trail picker: one card per acquired trail from the LOCAL account's
+ * wardrobe, marked against the EQUIPPED id the server replicated. Reuses the
+ * map-card styling so it needs no new CSS; the swatch is an inline dot, so a
+ * cosmetic's colour shows without a palette table living in this file.
  *
- * `n/m` is skip votes over everyone connected — abstaining counts as a vote
- * to play on, which is exactly what it means to the majority rule, so the
- * pill shows the real threshold rather than a count of voters.
- *
- * The next value travels in `data-skip`: the wrapper rewrites this markup
- * whenever any racer votes, and the click handler reads back what was shown
- * instead of tracking state the tally has since moved past.
+ * Returns '' (and draws nothing) when the account owns nothing.
  */
-function skipMarkup(state: GameStateInstance, selfId: string): string {
-  let votes = 0;
-  let mine = false;
-  state.players.forEach((player, id) => {
-    if (player.votedToSkip) votes += 1;
-    if (id === selfId) mine = player.votedToSkip;
-  });
+function trailCardsMarkup(
+  state: GameStateInstance,
+  selfId: string,
+  owned: readonly string[],
+): string {
+  const equipped = state.players.get(selfId)?.equippedTrailId ?? '';
+  return owned
+    .map((id) => {
+      const def = TRAILS[id];
+      if (!def) return '';
+      const on = id === equipped;
+      const swatch =
+        def.color === null
+          ? 'var(--ink-dim)'
+          : `#${def.color.toString(16).padStart(6, '0')}`;
+      return (
+        `<button type="button" class="map-card${on ? ' is-voted' : ''}" data-trail="${escapeHtml(id)}">` +
+        `<span class="map-name">` +
+        `<span style="display:inline-block;width:9px;height:9px;margin-right:8px;border-radius:50%;vertical-align:middle;background:${swatch};box-shadow:0 0 8px ${swatch}"></span>` +
+        `${escapeHtml(def.name)}</span>` +
+        `<span class="map-stats">${on ? 'equipped' : 'acquired'}</span>` +
+        `</button>`
+      );
+    })
+    .join('');
+}
 
-  const cls = mine ? 'skip-btn is-voted' : 'skip-btn';
-  const label = mine ? 'skip ✓' : 'skip match';
-  return (
-    `<button type="button" class="${cls}" data-skip="${mine ? '0' : '1'}">` +
-    `<span class="skip-label">${label}</span>` +
-    `<span class="skip-count">${votes}/${state.players.size}</span>` +
-    `</button>`
-  );
+/**
+ * The body-colour picker: one card per acquired colour from the LOCAL
+ * account's wardrobe, marked against the EQUIPPED id the server replicated.
+ * Same shape and swatch language as the trail picker; the swatch IS the body
+ * tint, so a pick previews the look. Stock draws as the dim ink because it
+ * inherits the seat colour, which lives in the render palette, not here.
+ *
+ * Returns '' (and draws nothing) when the account owns nothing.
+ */
+function bodyColorCardsMarkup(
+  state: GameStateInstance,
+  selfId: string,
+  owned: readonly string[],
+): string {
+  const equipped = state.players.get(selfId)?.equippedBodyColorId ?? '';
+  return owned
+    .map((id) => {
+      const def = BODY_COLORS[id];
+      if (!def) return '';
+      const on = id === equipped;
+      const swatch =
+        def.color === null
+          ? 'var(--ink-dim)'
+          : `#${def.color.toString(16).padStart(6, '0')}`;
+      return (
+        `<button type="button" class="map-card${on ? ' is-voted' : ''}" data-color="${escapeHtml(id)}">` +
+        `<span class="map-name">` +
+        `<span style="display:inline-block;width:9px;height:9px;margin-right:8px;border-radius:50%;vertical-align:middle;background:${swatch};box-shadow:0 0 8px ${swatch}"></span>` +
+        `${escapeHtml(def.name)}</span>` +
+        `<span class="map-stats">${on ? 'equipped' : 'acquired'}</span>` +
+        `</button>`
+      );
+    })
+    .join('');
+}
+
+/**
+ * The hat picker: one card per acquired hat from the LOCAL account's
+ * wardrobe, marked against the EQUIPPED id the server replicated. Same shape
+ * as the other pickers; the swatch is the hat's main static colour (dim ink
+ * for Stock, which draws nothing on the head).
+ *
+ * Returns '' (and draws nothing) when the account owns nothing.
+ */
+function hatCardsMarkup(
+  state: GameStateInstance,
+  selfId: string,
+  owned: readonly string[],
+): string {
+  const equipped = state.players.get(selfId)?.equippedHatId ?? '';
+  return owned
+    .map((id) => {
+      const def = HATS[id];
+      if (!def) return '';
+      const on = id === equipped;
+      const swatch =
+        def.color === null
+          ? 'var(--ink-dim)'
+          : `#${def.color.toString(16).padStart(6, '0')}`;
+      return (
+        `<button type="button" class="map-card${on ? ' is-voted' : ''}" data-hat="${escapeHtml(id)}">` +
+        `<span class="map-name">` +
+        `<span style="display:inline-block;width:9px;height:9px;margin-right:8px;border-radius:50%;vertical-align:middle;background:${swatch};box-shadow:0 0 8px ${swatch}"></span>` +
+        `${escapeHtml(def.name)}</span>` +
+        `<span class="map-stats">${on ? 'equipped' : 'acquired'}</span>` +
+        `</button>`
+      );
+    })
+    .join('');
 }
 
 /** Live standings by hold time, with the carrier marked. */

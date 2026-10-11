@@ -18,6 +18,7 @@ import { getCameraMode } from '../input.ts';
 import { fxSpeed, reducedMotion } from './fx.ts';
 import { NEON, PALETTE, RACER_IDENTITY, RAMP } from './palette.ts';
 import { createCharacter } from './character.ts';
+import { getBodyColor } from '../shared/cosmetics.ts';
 import type { Pose } from '../physics/player.ts';
 
 /**
@@ -37,6 +38,12 @@ export interface LocalPose extends Pose {
   carrying: boolean;
   /** Predicted dash in progress (`sim.dashTicks > 0`). */
   dashing: boolean;
+  /** The trail cosmetic id this racer wears, from replicated state. A render key. */
+  trailId: string;
+  /** The body-colour cosmetic id this racer wears, from replicated state. A render key. */
+  bodyColorId: string;
+  /** The hat cosmetic id this racer wears, from replicated state. A render key. */
+  hatId: string;
   /**
    * A position teleport is in flight: the sim body arrived at the new place
    * (adoptTruth) but the reconciler's smoothed pose is still gliding toward
@@ -158,6 +165,10 @@ export function buildScene(stage: Stage): SceneVisuals {
   // The blocky mannequin from render/character.ts, the same one remote racers
   // use. The physics capsule is invisible now; this only follows it.
   const character = createCharacter(scene, RACER_IDENTITY[0]!);
+  // The trail is swapped on the frame the replicated id changes; seeded '' so
+  // the first frame re-applies the (stock) default harmlessly.
+  let lastTrailId = '';
+  let lastHatId = '';
 
   // A flat ring under the capsule reads as a contact cue, which makes grounded
   // vs airborne obvious without a shadow map. Neon rather than a dark shadow:
@@ -178,8 +189,14 @@ export function buildScene(stage: Stage): SceneVisuals {
   const tint = new THREE.Color();
   // Your identity colour. The body no longer shifts to amber in the air: with
   // saturated racer hues that would strip your identity on every jump. The
-  // ground ring below still carries the airborne cue.
-  const identityTint = new THREE.Color(RACER_IDENTITY[0]!);
+  // ground ring below still carries the airborne cue. The seat hue is the one
+  // the palette gave you; equipping a body colour retargets `identityTint`
+  // away from it (Stock is `null` and comes back here).
+  const seatTint = new THREE.Color(RACER_IDENTITY[0]!);
+  const identityTint = seatTint.clone();
+  // Reused on the rare frame an equipped colour changes, so it costs nothing.
+  const bodyScratch = new THREE.Color();
+  let lastBodyColorId = '';
   const groundedMarker = new THREE.Color(NEON.cyan);
   const airborneMarker = new THREE.Color(NEON.amber);
   // Same white as remote carriers (net/remotes.ts), so the cue reads identically
@@ -241,6 +258,23 @@ export function buildScene(stage: Stage): SceneVisuals {
 
   return {
     sync(pose, dt) {
+      if (pose.trailId !== lastTrailId) {
+        lastTrailId = pose.trailId;
+        character.setTrail(pose.trailId);
+      }
+      // A hat is a straight look swap, same change-once rule as the trail.
+      if (pose.hatId !== lastHatId) {
+        lastHatId = pose.hatId;
+        character.setHat(pose.hatId);
+      }
+      // A body colour is a retarget of the identity tint, same change-once
+      // rule as the trail: resolved here against the catalog, with Stock
+      // meaning "back to my seat colour".
+      if (pose.bodyColorId !== lastBodyColorId) {
+        lastBodyColorId = pose.bodyColorId;
+        const def = getBodyColor(pose.bodyColorId);
+        identityTint.copy(def.color === null ? seatTint : bodyScratch.setHex(def.color));
+      }
       character.update(pose, dt);
 
       // The lobby shows no racer: the character and its ground ring hide for

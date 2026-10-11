@@ -12,6 +12,7 @@ import * as THREE from 'three/webgpu';
 import { PLAYER } from '../constants.ts';
 import { NEON, RACER_IDENTITY } from '../render/palette.ts';
 import { createCharacter, type Character, type CharacterState } from '../render/character.ts';
+import { getBodyColor } from '../shared/cosmetics.ts';
 import type { PlayerStateInstance } from '../shared/state.ts';
 import type { Session } from './session.ts';
 
@@ -68,6 +69,14 @@ interface Racer {
   label: THREE.Sprite;
   /** Identity hue the tint returns to when not carrying or airborne. */
   color: THREE.Color;
+  /** The seat hue this racer was given at join; `body-stock` restores it. */
+  seatColor: THREE.Color;
+  /** The catalog id currently worn, so a change is one `setTrail` per change. */
+  trailId: string;
+  /** The body-colour id currently worn. Same change-once rule as `trailId`. */
+  bodyColorId: string;
+  /** The hat id currently worn. Same change-once rule as `trailId`. */
+  hatId: string;
 }
 
 /** Reused per racer per frame, so `sync` allocates nothing. */
@@ -84,15 +93,23 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
     racer.label.visible = visible;
   };
 
-  const add = (id: string, name: string) => {
+  const add = (id: string, name: string, trailId: string) => {
     const identity = new THREE.Color(IDENTITY[racers.size % IDENTITY.length]!);
 
-    const character = createCharacter(scene, identity);
+    const character = createCharacter(scene, identity, trailId);
 
     const label = makeLabel(name, identity);
     scene.add(label);
 
-    const racer: Racer = { character, label, color: identity };
+    const racer: Racer = {
+      character,
+      label,
+      color: identity,
+      seatColor: identity.clone(),
+      trailId,
+      bodyColorId: '',
+      hatId: '',
+    };
     racers.set(id, racer);
     return racer;
   };
@@ -119,7 +136,32 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
         if (id === selfId) return;
 
         let racer = racers.get(id);
-        if (!racer) racer = add(id, player.name);
+        if (!racer) racer = add(id, player.name, player.equippedTrailId);
+
+        // Track the equipped look even while hidden, so a lobby equip is
+        // already applied the frame the racer reappears at GO.
+        if (player.equippedTrailId !== racer.trailId) {
+          racer.trailId = player.equippedTrailId;
+          racer.character.setTrail(player.equippedTrailId);
+        }
+
+        // A body colour is a retarget of the identity hue, plus a repaint of
+        // the name label so the tag follows the body. Tracked even while
+        // hidden, like the trail, so a lobby equip is already applied at GO.
+        if (player.equippedBodyColorId !== racer.bodyColorId) {
+          racer.bodyColorId = player.equippedBodyColorId;
+          const colorDef = getBodyColor(player.equippedBodyColorId);
+          racer.color.copy(
+            colorDef.color === null ? racer.seatColor : new THREE.Color(colorDef.color),
+          );
+          recolorLabel(racer.label, racer.color);
+        }
+
+        // A hat is a straight look swap, same change-once rule as the trail.
+        if (player.equippedHatId !== racer.hatId) {
+          racer.hatId = player.equippedHatId;
+          racer.character.setHat(player.equippedHatId);
+        }
 
         // The lobby shows no racers: anyone who joined while hidden stays
         // hidden in place, and the label goes with them. The frame after the
@@ -189,46 +231,18 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
  *
  * Sprites rather than DOM overlays: the racers move every frame, and keeping
  * their labels in the 3D scene means one projection path instead of two.
+ *
+ * The drawn text is stashed on the sprite (`userData.labelText`) so a
+ * body-colour equip can repaint the label in the new colour without re-minting
+ * the texture — see `recolorLabel`.
  */
 function makeLabel(name: string, color: THREE.Color): THREE.Sprite {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 64;
 
-  const ctx = canvas.getContext('2d');
-  if (ctx) {
-    // No backing plate. The previous version filled the whole sprite with 55%
-    // black, which was readable over a bright daytime course and is an opaque
-    // smear over a near-black one. The hairline below carries the separation
-    // instead.
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'alphabetic';
-
-    // Set before measuring: `measureText` uses the current font, and measuring
-    // with the 10px default made every label sit off-centre.
-    ctx.font = '500 22px ui-sans-serif, "Helvetica Neue", Helvetica, Arial, sans-serif';
-
-    // Uppercase with manual tracking, because canvas 2D has no letter-spacing in
-    // a portable form across browsers and the wide tracking is the whole look.
-    const text = name.slice(0, 12).toUpperCase();
-    const spacing = 2;
-    let width = 0;
-    for (const ch of text) width += ctx.measureText(ch).width + spacing;
-    width -= spacing;
-
-    let x = (canvas.width - width) / 2;
-    for (const ch of text) {
-      ctx.fillStyle = `#${color.getHexString()}`;
-      ctx.fillText(ch, x, 34);
-      x += ctx.measureText(ch).width + spacing;
-    }
-
-    ctx.fillStyle = `#${color.getHexString()}`;
-    ctx.globalAlpha = 0.4;
-    ctx.fillRect((canvas.width - width) / 2, 42, width, 1);
-  }
+  const text = name.slice(0, 12).toUpperCase();
+  drawLabel(canvas, text, color);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.needsUpdate = true;
@@ -239,6 +253,54 @@ function makeLabel(name: string, color: THREE.Color): THREE.Sprite {
   sprite.scale.set(2.4, 0.6, 1);
   // Labels draw over geometry so a racer behind a rail is still identifiable.
   sprite.renderOrder = 10;
+  sprite.userData['labelText'] = text;
 
   return sprite;
+}
+
+/** Paint a name label in one colour onto a label canvas. */
+function drawLabel(canvas: HTMLCanvasElement, text: string, color: THREE.Color): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  // No backing plate. The previous version filled the whole sprite with 55%
+  // black, which was readable over a bright daytime course and is an opaque
+  // smear over a near-black one. The hairline below carries the separation
+  // instead.
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+
+  // Set before measuring: `measureText` uses the current font, and measuring
+  // with the 10px default made every label sit off-centre.
+  ctx.font = '500 22px ui-sans-serif, "Helvetica Neue", Helvetica, Arial, sans-serif';
+
+  // Uppercase with manual tracking, because canvas 2D has no letter-spacing in
+  // a portable form across browsers and the wide tracking is the whole look.
+  const spacing = 2;
+  let width = 0;
+  for (const ch of text) width += ctx.measureText(ch).width + spacing;
+  width -= spacing;
+
+  const fill = `#${color.getHexString()}`;
+  let x = (canvas.width - width) / 2;
+  for (const ch of text) {
+    ctx.fillStyle = fill;
+    ctx.fillText(ch, x, 34);
+    x += ctx.measureText(ch).width + spacing;
+  }
+
+  ctx.fillStyle = fill;
+  ctx.globalAlpha = 0.4;
+  ctx.fillRect((canvas.width - width) / 2, 42, width, 1);
+}
+
+/** Repaint an existing label sprite in a new colour, redrawing its stored text. */
+function recolorLabel(sprite: THREE.Sprite, color: THREE.Color): void {
+  const material = sprite.material as THREE.SpriteMaterial;
+  const canvas = material.map?.image as HTMLCanvasElement | undefined;
+  const text = sprite.userData['labelText'] as string | undefined;
+  if (!canvas || !text || !material.map) return;
+  drawLabel(canvas, text, color);
+  material.map.needsUpdate = true;
 }
