@@ -1561,6 +1561,7 @@ function wallCourse(withSecondWall = false): Course {
     solids,
     pads: [],
     decor: [],
+    pickups: [],
   };
 }
 

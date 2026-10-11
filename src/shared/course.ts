@@ -7,12 +7,14 @@
  *
  * Deliberately minimal: a field the engine does not implement is a promise
  * the format cannot keep. Every field here has behaviour behind it --
- * `rotation` (ramps), `pads` (boost and jump, in the shared sim) and `decor`
- * (visual only, never simulated) were each added together with the code
- * that honours them.
+ * `rotation` (ramps), `pads` (boost and jump, in the shared sim), `decor`
+ * (visual only, never simulated) and `pickups` (cosmetic balls, captured
+ * server-side) were each added together with the code that honours them.
  */
 
 export type Vec3 = [number, number, number];
+
+import { ACQUIRABLE_ITEMS, isAcquirableItem } from './cosmetics.ts';
 
 /**
  * An object-shaped 3-vector, matching the shape Rapier and Three.js use.
@@ -138,6 +140,25 @@ export interface CourseGoal {
 }
 
 /**
+ * A cosmetic pickup: a ball a racer can run through to add `item` to their
+ * wardrobe for the rest of the session (the inventory, and from there the
+ * customise panel). Resolved INSIDE the shared step? No — capture is
+ * server-side only (`server/room.ts`), so the sim never sees these. The render
+ * draws them from the replicated pickup state, not from this list.
+ *
+ * `item` is a non-stock catalog id (`shared/cosmetics.ts`): the parser checks
+ * it against the catalog here, so a typo'd id is a loud parse error, not a
+ * ball that grants nothing. `position` is the floating ball's centre.
+ */
+export interface CoursePickup {
+  id: string;
+  /** An acquirable cosmetic id: a trail, body colour, hat or gear that is not stock. */
+  item: string;
+  /** Centre of the ball. Float it about waist height, over walkable ground. */
+  position: Vec3;
+}
+
+/**
  * The course's own look: sky, fog, and how thick the fog is.
  *
  * Present means the course owns its atmosphere, so the client drops its
@@ -186,6 +207,12 @@ export interface Course {
   pads: CoursePad[];
   /** Visual-only scenery. Empty when absent. */
   decor: CourseDecor[];
+  /**
+   * Cosmetic pickup balls. Empty when absent. Capture is server-side (not
+   * simulated), and the render comes from the replicated pickup state, so this
+   * list is the world's source of truth only while the room is (re)built.
+   */
+  pickups: CoursePickup[];
   /**
    * The course's own atmosphere. Declaring one also drops the client's
    * generic ground grid and far-field platforms — the course's own decor
@@ -377,6 +404,28 @@ export function parseCourse(raw: unknown, source: string): Course {
     return item;
   });
 
+  const pickups: CoursePickup[] = optionalArray(root.pickups, source, 'pickups').map((entry, index) => {
+    const path = `pickups[${index}]`;
+    const po = asObject(entry, source, path);
+    const id = asString(po.id, source, `${path}.id`);
+    if (seenIds.has(id)) fail(source, `${path}.id`, `duplicate id "${id}"`);
+    seenIds.add(id);
+
+    // The item must name a grantable cosmetic, checked against the catalog
+    // right here: a pickup that grants nothing (a typo, or a stock default)
+    // is a format error, not a quiet no-op ball.
+    const item = asString(po.item, source, `${path}.item`);
+    if (!isAcquirableItem(item)) {
+      fail(
+        source,
+        `${path}.item`,
+        `"${item}" is not an acquirable cosmetic — expected one of ${ACQUIRABLE_ITEMS.join(', ')}`,
+      );
+    }
+
+    return { id, item, position: asVec3(po.position, source, `${path}.position`) };
+  });
+
   const course: Course = {
     id: asString(root.id, source, 'id'),
     name: asString(root.name, source, 'name'),
@@ -385,6 +434,7 @@ export function parseCourse(raw: unknown, source: string): Course {
     solids,
     pads,
     decor,
+    pickups,
   };
   // Assigned only when present so a race course round-trips without stray
   // `undefined` keys. Present-but-malformed still fails loudly: a half-written

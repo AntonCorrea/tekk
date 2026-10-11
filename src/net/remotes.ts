@@ -69,7 +69,7 @@ interface Racer {
   label: THREE.Sprite;
   /** Identity hue the tint returns to when not carrying or airborne. */
   color: THREE.Color;
-  /** The seat hue this racer was given at join; `body-stock` restores it. */
+  /** The seat hue this racer was given at join; the null-fallback for the body tint. */
   seatColor: THREE.Color;
   /** The catalog id currently worn, so a change is one `setTrail` per change. */
   trailId: string;
@@ -77,6 +77,8 @@ interface Racer {
   bodyColorId: string;
   /** The hat id currently worn. Same change-once rule as `trailId`. */
   hatId: string;
+  /** The gear id currently worn. Same change-once rule as `trailId`. */
+  gearId: string;
 }
 
 /** Reused per racer per frame, so `sync` allocates nothing. */
@@ -109,6 +111,7 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
       trailId,
       bodyColorId: '',
       hatId: '',
+      gearId: '',
     };
     racers.set(id, racer);
     return racer;
@@ -161,6 +164,12 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
         if (player.equippedHatId !== racer.hatId) {
           racer.hatId = player.equippedHatId;
           racer.character.setHat(player.equippedHatId);
+        }
+
+        // Gear is the same straight look swap, change-once like the trail.
+        if (player.equippedGearId !== racer.gearId) {
+          racer.gearId = player.equippedGearId;
+          racer.character.setGear(player.equippedGearId);
         }
 
         // The lobby shows no racers: anyone who joined while hidden stays

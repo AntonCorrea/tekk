@@ -50,8 +50,8 @@ export interface SessionOptions {
   name?: string;
   /**
    * The off-chain account (see net/account.ts). Its wardrobe travels at join
-   * so the server can seed `equippedTrailId`/`equippedBodyColorId` and answer
-   * later `equip` sends against something it actually stored.
+   * so the server can seed the equipped cosmetic ids and answer later `equip`
+   * sends against something it actually stored.
    */
   account?: CosmeticIdentity;
 }
@@ -150,6 +150,12 @@ export interface Session {
   sendEquipHat(hatId: string): void;
 
   /**
+   * Equip a gear piece, same contract as `sendEquip` — a fourth field on the
+   * same `equip` message, validated against the owned set server-side.
+   */
+  sendEquipGear(gearId: string): void;
+
+  /**
    * Rename yourself. Display-only, like `equip`: the server sanitises the name
    * the same way it sanitised the join and echoes the result to the room, so
    * anything the input field holds is safe to send — junk falls back to
@@ -183,6 +189,8 @@ export async function connectSession(
     color: options.account?.equippedBodyColor,
     hats: options.account?.ownedHats,
     hat: options.account?.equippedHat,
+    gears: options.account?.ownedGears,
+    gear: options.account?.equippedGear,
   });
 
   // --- wait for the authoritative course ---------------------------------
@@ -347,6 +355,10 @@ export async function connectSession(
 
     sendEquipHat(hatId: string) {
       room.send('equip', { hatId });
+    },
+
+    sendEquipGear(gearId: string) {
+      room.send('equip', { gearId });
     },
 
     sendRename(name: string) {

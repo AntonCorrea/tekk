@@ -135,6 +135,14 @@ export const PlayerState = schema(
      * determinism path may read it.
      */
     equippedHatId: t.string().default(''),
+
+    /**
+     * The gear cosmetic this racer wears, as a catalog id, or '' for the
+     * stock gear. Presentational: it is a render key every client resolves
+     * through the gear catalog, and the server normalises it against the
+     * account's owned set the same way it does the trail, colour and hat.
+     */
+    equippedGearId: t.string().default(''),
   },
   'PlayerState',
 );
@@ -161,6 +169,38 @@ export const MapInfo = schema(
 );
 
 export type MapInfoInstance = InstanceType<typeof MapInfo>;
+
+/**
+ * One cosmetic pickup ball in the world: where it floats, what it grants, and
+ * whether a racer has taken it. Positions are copied from the course when the
+ * room (re)builds; `taken`/`takenBy` are the only live parts. The take is
+ * authoritative — the server grants `item` into the collector's owned set and
+ * sets `takenBy` — so the client credits the local account from here, it does
+ * not predict it.
+ */
+export const PickupState = schema(
+  {
+    /** The course entity id, unique within a course. Stable across patches. */
+    id: t.string().default(''),
+    /** A non-stock cosmetic catalog id (trail, body colour, hat or gear). */
+    item: t.string().default(''),
+    /** Ball centre. */
+    x: t.number().default(0),
+    y: t.number().default(0),
+    z: t.number().default(0),
+    /**
+     * Taken for the life of this map: once a ball is collected it stays gone
+     * until the room swaps maps, which refills the list fresh. See
+     * `server/room.ts` `refreshPickups`.
+     */
+    taken: t.boolean().default(false),
+    /** sessionId of the racer who took it; '' while free. */
+    takenBy: t.string().default(''),
+  },
+  'PickupState',
+);
+
+export type PickupStateInstance = InstanceType<typeof PickupState>;
 
 /**
  * Match phases, in the order they occur.
@@ -220,6 +260,14 @@ export const GameState = schema(
 
     /** sessionId of the match winner during `results`, '' otherwise. */
     winnerId: t.string().default(''),
+
+    /**
+     * The cosmetic pickup balls in the world. Refilled at room creation and on
+     * every map swap — a new map brings fresh, untaken balls (see the
+     * collect-model note in server/room.ts). The client renders from here and
+     * watches `takenBy` to credit the local account.
+     */
+    pickups: t.array(PickupState),
 
     players: t.map(PlayerState),
   },

@@ -42,11 +42,13 @@ import {
   type CourseAtmosphere,
   type CourseDecor,
   type CoursePad,
+  type CoursePickup,
   type CourseSolid,
   type DecorKind,
   type PadKind,
   type Vec3,
 } from '../shared/course.ts';
+import { ACQUIRABLE_ITEMS, itemColor, itemKind, itemName } from '../shared/cosmetics.ts';
 
 /**
  * Every course file that shipped with this build, inlined by Vite.
@@ -91,9 +93,9 @@ const DECOR_SIZE_DEFAULT: Partial<Record<DecorKind, Vec3>> = {
   ball: [3, 3, 3],
 };
 
-// The three lists the format has, as the panel's tabs address them.
-type ListKey = 'solids' | 'pads' | 'decor';
-// What a selection points at. The first three are list entries keyed by id;
+// The four lists the format has, as the panel's tabs address them.
+type ListKey = 'solids' | 'pads' | 'decor' | 'pickups';
+// What a selection points at. The first four are list entries keyed by id;
 // the two points are singular and carry their own fixed id for symmetry.
 type SelGroup = ListKey | 'spawn' | 'coreSpawn';
 
@@ -138,6 +140,7 @@ function templateCourse(): Course {
       solids: [{ id: 'floor', kind: 'box', position: [0, -1, 0], size: [24, 2, 24], color: '#b35bf7' }],
       pads: [],
       decor: [],
+      pickups: [],
     },
     'built-in template',
   );
@@ -149,6 +152,7 @@ function uniqueId(course: Course, base: string): string {
   for (const solid of course.solids) taken.add(solid.id);
   for (const pad of course.pads) taken.add(pad.id);
   for (const piece of course.decor) taken.add(piece.id);
+  for (const pickup of course.pickups) taken.add(pickup.id);
   if (!taken.has(base)) return base;
   for (let n = 2; n < 1000; n++) {
     const candidate = `${base}-${n}`;
@@ -172,6 +176,16 @@ function safeFileName(id: string): string {
 function baseName(path: string): string {
   const file = path.slice(path.lastIndexOf('/') + 1);
   return file.endsWith('.json') ? file.slice(0, -5) : file;
+}
+
+/** The category a pickup item belongs to, for the brush and the inspector. */
+function pickupKindLabel(item: string): string {
+  const kind = itemKind(item);
+  if (kind === 'trail') return 'trail';
+  if (kind === 'color') return 'colour';
+  if (kind === 'hat') return 'hat';
+  if (kind === 'gear') return 'gear';
+  return '?';
 }
 
 const deg = THREE.MathUtils.degToRad;
@@ -238,6 +252,33 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
   );
   markers.add(spawnMarker, coreMarker);
   scene.add(markers);
+
+  // Pickup balls have no mesh in `buildCourse` (the game draws them from
+  // replicated state), so the editor draws its own small sphere per ball, in
+  // the item's colour — the same visual promise the game keeps.
+  const pickupMarkers = new THREE.Group();
+  scene.add(pickupMarkers);
+  const pickupSphere = new THREE.SphereGeometry(0.32, 12, 8);
+
+  function updatePickupMarkers(): void {
+    for (const child of [...pickupMarkers.children]) {
+      const mesh = child as THREE.Mesh;
+      mesh.geometry.dispose();
+      (mesh.material as THREE.Material).dispose();
+      pickupMarkers.remove(child);
+    }
+    for (const pickup of course.pickups) {
+      const mesh = new THREE.Mesh(
+        pickupSphere,
+        new THREE.MeshBasicMaterial({
+          color: new THREE.Color(itemColor(pickup.item)),
+          toneMapped: false,
+        }),
+      );
+      mesh.position.set(pickup.position[0], pickup.position[1], pickup.position[2]);
+      pickupMarkers.add(mesh);
+    }
+  }
 
   function updateMarkers(): void {
     spawnMarker.position.set(course.spawn[0], course.spawn[1], course.spawn[2]);
@@ -315,6 +356,10 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
         );
       }
       return box(piece.position, piece.size, [0, piece.rotationY ?? 0, 0]);
+    }
+    if (s.group === 'pickups') {
+      // A pickup is a point, not a volume: a small box around its ball.
+      return box((item as CoursePickup).position, [0.9, 0.9, 0.9]);
     }
     const padItem = item as CoursePad;
     return box(padItem.position, padItem.size);
@@ -397,6 +442,9 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
     if (course.coreSpawn) {
       push({ group: 'coreSpawn', id: 'coreSpawn' }, proxySphere, course.coreSpawn, [1.5, 1.5, 1.5]);
     }
+    for (const pickup of course.pickups) {
+      push({ group: 'pickups', id: pickup.id }, proxySphere, pickup.position, [0.9, 0.9, 0.9]);
+    }
   }
 
   function pick(clientX: number, clientY: number): void {
@@ -424,6 +472,7 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
     stage.setAtmosphere(course.atmosphere);
     rebuildProxies();
     updateMarkers();
+    updatePickupMarkers();
     updateHighlight();
     renderHeader();
   }
@@ -538,7 +587,7 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
     sel = next;
     if (
       next &&
-      (next.group === 'solids' || next.group === 'pads' || next.group === 'decor')
+      (next.group === 'solids' || next.group === 'pads' || next.group === 'decor' || next.group === 'pickups')
     ) {
       activeList = next.group;
     }
@@ -547,12 +596,13 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
     updateHighlight();
   }
 
-  function selectedListItem(): CourseSolid | CoursePad | CourseDecor | null {
+  function selectedListItem(): CourseSolid | CoursePad | CourseDecor | CoursePickup | null {
     const s = sel;
     if (!s) return null;
     if (s.group === 'solids') return course.solids.find((entry) => entry.id === s.id) ?? null;
     if (s.group === 'pads') return course.pads.find((entry) => entry.id === s.id) ?? null;
     if (s.group === 'decor') return course.decor.find((entry) => entry.id === s.id) ?? null;
+    if (s.group === 'pickups') return course.pickups.find((entry) => entry.id === s.id) ?? null;
     return null;
   }
 
@@ -626,6 +676,7 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
     // lagged its own outline would feel broken.
     updateMarkers();
     updateHighlight();
+    if (sel?.group === 'pickups') updatePickupMarkers();
   });
 
   // --- element operations -------------------------------------------------
@@ -639,6 +690,7 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
     }
     if (s.group === 'solids') course.solids = course.solids.filter((entry) => entry.id !== s.id);
     else if (s.group === 'pads') course.pads = course.pads.filter((entry) => entry.id !== s.id);
+    else if (s.group === 'pickups') course.pickups = course.pickups.filter((entry) => entry.id !== s.id);
     else course.decor = course.decor.filter((entry) => entry.id !== s.id);
     touch(true);
     select(null);
@@ -662,6 +714,9 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
     } else if (s.group === 'pads') {
       const list = course.pads;
       list.splice(list.findIndex((entry) => entry.id === s.id) + 1, 0, copy as CoursePad);
+    } else if (s.group === 'pickups') {
+      const list = course.pickups;
+      list.splice(list.findIndex((entry) => entry.id === s.id) + 1, 0, copy as CoursePickup);
     } else {
       const list = course.decor;
       list.splice(list.findIndex((entry) => entry.id === s.id) + 1, 0, copy as CourseDecor);
@@ -720,6 +775,20 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
     select({ group: 'decor', id: item.id });
   }
 
+  function addPickup(itemId: string): void {
+    const position = placementPoint();
+    const item: CoursePickup = {
+      id: uniqueId(course, 'pickup'),
+      item: itemId,
+      // A ball floats about waist height, so it starts a little above the
+      // placement point and the author nudges it down if they want it lower.
+      position: [position[0], position[1] + 1, position[2]],
+    };
+    course.pickups.push(item);
+    touch(true);
+    select({ group: 'pickups', id: item.id });
+  }
+
   function changePadKind(item: CoursePad, kind: PadKind): void {
     item.kind = kind;
     if (kind === 'boost' && !item.direction) item.direction = [0, 1];
@@ -753,7 +822,7 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
     renderCourseFields();
     renderElements();
     renderInspector();
-    status(`loaded "${next.id}" — ${next.solids.length} solids, ${next.pads.length} pads`);
+    status(`loaded "${next.id}" — ${next.solids.length} solids, ${next.pads.length} pads, ${next.pickups.length} pickups`);
   }
 
   function guardEdits(): boolean {
@@ -1206,6 +1275,15 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
     option.textContent = kind;
     decorKindSelect.append(option);
   }
+  // The pickup brush picks an item from the same grantable list the parser
+  // accepts, so a pickup born here is saveable the instant it exists.
+  const pickupItemSelect = el('select', 'ed-in ed-kindsel');
+  for (const item of ACQUIRABLE_ITEMS) {
+    const option = el('option');
+    option.value = item;
+    option.textContent = `${itemName(item)} (${pickupKindLabel(item)})`;
+    pickupItemSelect.append(option);
+  }
   const listEl = el('ul', 'ed-list');
 
   function renderElements(): void {
@@ -1213,10 +1291,11 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
       solids: course.solids.length,
       pads: course.pads.length,
       decor: course.decor.length,
+      pickups: course.pickups.length,
     };
 
     tabsRow.replaceChildren();
-    for (const key of ['solids', 'pads', 'decor'] as ListKey[]) {
+    for (const key of ['solids', 'pads', 'decor', 'pickups'] as ListKey[]) {
       const tab = button(`${key} ${countsByList[key]}`, () => {
         activeList = key;
         renderElements();
@@ -1234,6 +1313,8 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
         button('+ boost', () => addPad('boost'), true),
         button('+ jump', () => addPad('jump'), true),
       );
+    } else if (activeList === 'pickups') {
+      addRow.append(button('+ pickup', () => addPickup(pickupItemSelect.value), true), pickupItemSelect);
     } else {
       addRow.append(button('+ decor', () => addDecor(decorKindSelect.value as DecorKind), true), decorKindSelect);
     }
@@ -1244,7 +1325,9 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
         ? course.solids.map((entry) => ({ id: entry.id, kind: entry.kind }))
         : activeList === 'pads'
           ? course.pads.map((entry) => ({ id: entry.id, kind: entry.kind }))
-          : course.decor.map((entry) => ({ id: entry.id, kind: entry.kind }));
+          : activeList === 'decor'
+            ? course.decor.map((entry) => ({ id: entry.id, kind: entry.kind }))
+            : course.pickups.map((entry) => ({ id: entry.id, kind: entry.item }));
 
     if (entries.length === 0) {
       const empty = el('li', 'ed-item is-empty', `no ${activeList} yet`);
@@ -1306,7 +1389,14 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
       select(null);
       return;
     }
-    const label = s.group === 'solids' ? 'Solid' : s.group === 'pads' ? 'Pad' : 'Decor';
+    const label =
+      s.group === 'solids'
+        ? 'Solid'
+        : s.group === 'pads'
+          ? 'Pad'
+          : s.group === 'decor'
+            ? 'Decor'
+            : 'Pickup';
     inspector.append(sectionLabel(label));
 
     // The rename path retargets the selection so the list highlight, the
@@ -1329,16 +1419,26 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
       vec3Row('position', item.position, 0.5, () => {
         touch(false);
         updateHighlight();
-      }),
-      vec3Row('size', item.size, 0.5, () => {
-        touch(false);
-        updateHighlight();
+        // The editor's own ball markers track the course, so a nudge moves them.
+        if (s.group === 'pickups') updatePickupMarkers();
       }),
     );
+    // A pickup has no size — it is a point the renderer draws at a fixed ball
+    // radius — so only volume-carrying entries get the size row.
+    if (s.group !== 'pickups') {
+      const sized = item as CourseSolid | CoursePad | CourseDecor;
+      inspector.append(
+        vec3Row('size', sized.size, 0.5, () => {
+          touch(false);
+          updateHighlight();
+        }),
+      );
+    }
 
     if (s.group === 'solids') renderSolidFields(item as CourseSolid);
     else if (s.group === 'pads') renderPadFields(item as CoursePad);
-    else renderDecorFields(item as CourseDecor);
+    else if (s.group === 'decor') renderDecorFields(item as CourseDecor);
+    else renderPickupFields(item as CoursePickup);
 
     const actions = el('div', 'ed-row');
     actions.append(button('duplicate', duplicateSelection), button('delete', deleteSelection));
@@ -1570,11 +1670,38 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
     }
   }
 
+  function renderPickupFields(pickup: CoursePickup): void {
+    inspector.append(
+      fieldBlock(
+        'item',
+        selectInput(
+          ACQUIRABLE_ITEMS.map((id) => ({ value: id, label: `${itemName(id)} (${pickupKindLabel(id)})` })),
+          pickup.item,
+          (value) => {
+            pickup.item = value;
+            touch(true);
+            // The marker recolours to the new item's look immediately; the
+            // parser would reject a stale id at save anyway.
+            updatePickupMarkers();
+          },
+        ),
+      ),
+      el(
+        'div',
+        'ed-note',
+        'Running through this ball grants the item to your wardrobe for the ' +
+          'session. A ball is taken once per map; a map change refreshes it.',
+      ),
+    );
+  }
+
   // --- header / hint ------------------------------------------------------
 
   function renderHeader(): void {
     fileLabel.textContent = safeFileName(course.id);
-    counts.textContent = `${course.solids.length} solids · ${course.pads.length} pads · ${course.decor.length} decor`;
+    counts.textContent =
+      `${course.solids.length} solids · ${course.pads.length} pads · ` +
+      `${course.decor.length} decor · ${course.pickups.length} pickups`;
   }
 
   const hint = el(

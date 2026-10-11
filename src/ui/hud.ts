@@ -16,7 +16,7 @@
 import { DASH, MATCH } from '../constants.ts';
 import type { GameStateInstance, PlayerStateInstance } from '../shared/state.ts';
 import type { SimBody } from '../shared/sim.ts';
-import { TRAILS, BODY_COLORS, HATS } from '../shared/cosmetics.ts';
+import { TRAILS, BODY_COLORS, HATS, GEARS } from '../shared/cosmetics.ts';
 
 /** The slice of the predicted sim the HUD reads. */
 export type HudSim = Pick<SimBody, 'dashTicks' | 'dashCooldownTicks' | 'carrying'>;
@@ -39,6 +39,12 @@ export interface Hud {
    * stack into a pile of text.
    */
   announce(text: string, tone: AnnounceTone): void;
+  /**
+   * A small, quiet confirmation pill — "unlocked the Golden body". Unlike
+   * `announce`, several toasts may be up at once and each fades on its own
+   * timer, so collecting two balls in a row stacks instead of clobbering.
+   */
+  toast(text: string): void;
   dispose(): void;
 }
 
@@ -92,6 +98,19 @@ export interface HudOptions {
   ownedHats?(): readonly string[];
 
   /**
+   * A gear card was clicked. Same contract as `onEquip`: the id comes from
+   * the LOCAL account's wardrobe, and the server validates both existence and
+   * ownership before it lands on the wire.
+   */
+  onEquipGear?(gearId: string): void;
+
+  /**
+   * The gear ids the local account owns, live. Same off-chain source and the
+   * same re-read-per-lobby-render rule as `ownedTrails`.
+   */
+  ownedGears?(): readonly string[];
+
+  /**
    * A new racer name was committed in the customize panel. The id comes from
    * the local input field; the server sanitises and echoes it, so this is just
    * the commit becoming a request.
@@ -104,6 +123,9 @@ export type AnnounceTone = 'gain' | 'loss' | 'info';
 
 /** How long a callout stays up. Matches the CSS animation in style.css. */
 const ANNOUNCE_MS = 1100;
+
+/** How long an unlock toast stays up, plus the fade-out headroom. */
+const TOAST_MS = 2600;
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'lost';
 
@@ -148,7 +170,7 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
   const hold = new Slot(div('hud hud-hold', container));
   const banner = new Slot(div('banner', container));
   // The lobby is two separate panels — customize avatar (name, trail, colour,
-  // hat) and the map ballot — toggled by a button pair pinned to the top-right
+  // hat, gear) and the map ballot — toggled by a button pair pinned to the top-right
   // corner, one panel open at a time. The panels' skeletons are built once and
   // only the card rows rewrite; the name field must survive re-renders whole
   // (a rebuilt input would drop the caret mid-type), so its value is synced
@@ -163,6 +185,12 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
   customizePanel.hidden = true;
   const customizeHead = div('lobby-head', customizePanel);
   customizeHead.textContent = 'customize avatar';
+  // A close button pinned to the panel's top-right corner — the mirror of the
+  // toggle that raised it. It only ever takes the panel down.
+  const customizeClose = button('panel-close', '✕', customizePanel);
+  customizeClose.setAttribute('data-close', 'customize');
+  customizeClose.setAttribute('aria-label', 'close customize panel');
+  customizeClose.title = 'close';
   const nameRow = div('name-row', customizePanel);
   const nameLabel = div('field-label', nameRow);
   nameLabel.textContent = 'name';
@@ -182,6 +210,9 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
   const hatLabel = div('field-label', customizePanel);
   hatLabel.textContent = 'hat';
   const hatCards = new Slot(div('lobby-cards', customizePanel));
+  const gearLabel = div('field-label', customizePanel);
+  gearLabel.textContent = 'gear';
+  const gearCards = new Slot(div('lobby-cards', customizePanel));
 
   const votePanel = div('lobby-panel is-vote', container);
   votePanel.hidden = true;
@@ -223,6 +254,15 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
   const onLobbyClick = (event: Event): void => {
     const el = event.target instanceof Element ? event.target : null;
 
+    // A panel close button beats the toggles: it always takes its panel down,
+    // never flips it back open.
+    const closeBtn = el?.closest<HTMLElement>('[data-close]');
+    if (closeBtn) {
+      closeBtn.blur();
+      openPanel = null;
+      return;
+    }
+
     // A lobby toggle first: which panel the top-right buttons control. One
     // panel is open at a time; a tap on the open one's button closes it.
     const toggleBtn = el?.closest<HTMLElement>('[data-panel]');
@@ -234,13 +274,20 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
     }
 
     // Cosmetic cards first: they are also `<button class="map-card">`, so the
-    // course check below must not swallow them. All three cosmetic kinds share
+    // course check below must not swallow them. All four cosmetic kinds share
     // the shape, matched before the course lookup.
     const hatBtn = el?.closest<HTMLElement>('[data-hat]');
     const hatId = hatBtn?.dataset['hat'];
     if (hatId) {
       hatBtn?.blur();
       options.onEquipHat?.(hatId);
+      return;
+    }
+    const gearBtn = el?.closest<HTMLElement>('[data-gear]');
+    const gearId = gearBtn?.dataset['gear'];
+    if (gearId) {
+      gearBtn?.blur();
+      options.onEquipGear?.(gearId);
       return;
     }
     const colorBtn = el?.closest<HTMLElement>('[data-color]');
@@ -271,6 +318,19 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
   const announcer = div('announce', container);
   announcer.hidden = true;
   let announceTimer = 0;
+  // Toasts pile in the bottom-left, each fading on its own timer.
+  const toasts = div('toasts', container);
+  const toastTimers: number[] = [];
+
+  function pushToast(text: string): void {
+    const pill = div('toast', toasts);
+    pill.textContent = text;
+    restartAnimation(pill, 'is-in');
+    const timer = window.setTimeout(() => {
+      pill.remove();
+    }, TOAST_MS);
+    toastTimers.push(timer);
+  }
   const controls = div('hud hud-controls', container);
   controls.textContent = 'WASD / ARROWS move · SPACE jump · SHIFT dash · MOUSE look · M mute';
 
@@ -396,6 +456,7 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
         trailCards.html(trailCardsMarkup(state, selfId, options.ownedTrails?.() ?? []));
         colorCards.html(bodyColorCardsMarkup(state, selfId, options.ownedBodyColors?.() ?? []));
         hatCards.html(hatCardsMarkup(state, selfId, options.ownedHats?.() ?? []));
+        gearCards.html(gearCardsMarkup(state, selfId, options.ownedGears?.() ?? []));
         voteCards.html(voteCardsMarkup(state, course, selfId));
         voteHint.html(voteHintMarkup(state));
 
@@ -427,10 +488,16 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
       }, ANNOUNCE_MS);
     },
 
+    toast(text) {
+      pushToast(text);
+    },
+
     dispose() {
       clearTimeout(announceTimer);
+      for (const timer of toastTimers) clearTimeout(timer);
       container.removeEventListener('click', onLobbyClick);
       announcer.remove();
+      toasts.remove();
       for (const el of [
         courseLabel,
         timer.el,
@@ -726,7 +793,40 @@ function hatCardsMarkup(
     .join('');
 }
 
-/** Live standings by hold time, with the carrier marked. */
+/**
+ * The gear picker: one card per acquired gear piece from the LOCAL account's
+ * wardrobe, marked against the EQUIPPED id the server replicated. Same shape
+ * as the other pickers; the swatch is the gear's main static colour (dim ink
+ * for Stock, which draws nothing on the body).
+ *
+ * Returns '' (and draws nothing) when the account owns nothing.
+ */
+function gearCardsMarkup(
+  state: GameStateInstance,
+  selfId: string,
+  owned: readonly string[],
+): string {
+  const equipped = state.players.get(selfId)?.equippedGearId ?? '';
+  return owned
+    .map((id) => {
+      const def = GEARS[id];
+      if (!def) return '';
+      const on = id === equipped;
+      const swatch =
+        def.color === null
+          ? 'var(--ink-dim)'
+          : `#${def.color.toString(16).padStart(6, '0')}`;
+      return (
+        `<button type="button" class="map-card${on ? ' is-voted' : ''}" data-gear="${escapeHtml(id)}">` +
+        `<span class="map-name">` +
+        `<span style="display:inline-block;width:9px;height:9px;margin-right:8px;border-radius:50%;vertical-align:middle;background:${swatch};box-shadow:0 0 8px ${swatch}"></span>` +
+        `${escapeHtml(def.name)}</span>` +
+        `<span class="map-stats">${on ? 'equipped' : 'acquired'}</span>` +
+        `</button>`
+      );
+    })
+    .join('');
+}
 function boardMarkup(state: GameStateInstance, selfId: string): string {
   return sortedPlayers(state, false)
     .map(({ player, id }) => {

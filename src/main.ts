@@ -24,7 +24,7 @@ import { buildCourse } from './course/build.ts';
 import { createPhysicsWorld, initPhysics } from './physics/world.ts';
 import { connectSession } from './net/session.ts';
 import { createRacerVisuals } from './net/remotes.ts';
-import { loadAccount, saveAccount } from './net/account.ts';
+import { loadAccount, grantOwned, saveAccount } from './net/account.ts';
 import { createHud, type ConnectionStatus } from './ui/hud.ts';
 import { promptLogin } from './ui/login.ts';
 import {
@@ -42,6 +42,7 @@ import { createCoreVisual, type CoreVisualState } from './render/core.ts';
 import type { LocalPose } from './render/scene.ts';
 import { CAMERA, CORE, FIXED_TIMESTEP } from './constants.ts';
 import type { Course } from './shared/course.ts';
+import { DEFAULT_BODY_COLOR, DEFAULT_GEAR, DEFAULT_HAT, DEFAULT_TRAIL, itemKind, itemName } from './shared/cosmetics.ts';
 
 /**
  * The map's bounding-box centre, in world units.
@@ -150,6 +151,8 @@ async function boot(): Promise<void> {
       equippedBodyColor: account.equippedBodyColor,
       ownedHats: account.ownedHats,
       equippedHat: account.equippedHat,
+      ownedGears: account.ownedGears,
+      equippedGear: account.equippedGear,
     },
   });
   // `let`, not destructured once: a map swap replaces both of these, and the
@@ -187,47 +190,76 @@ async function boot(): Promise<void> {
   };
   applyLobbyView(session.room.state.phase);
 
+  // Equipping IS a wardrobe change: optimistically remember the pick so the
+  // picker and a reload agree, whatever the server echoes back (it will
+  // reject any id the account does not own, and the store only records the
+  // account's copy, so a rejected equip never corrupts it). Named rather than
+  // inlined so the pickup auto-equip below can drive the exact same path.
+  const equipTrail = (trailId: string): void => {
+    session.sendEquip(trailId);
+    const next = account.ownedTrails.includes(trailId) ? trailId : account.equippedTrail;
+    if (next !== account.equippedTrail) {
+      account.equippedTrail = next;
+      saveAccount(account);
+    }
+  };
+  // Body colour is exactly the same optimistic wardrobe cycle as trails:
+  // remember the pick locally whatever the server echoes, so the picker and
+  // a reload agree, and a id the server rejects never corrupts the store.
+  const equipColor = (colorId: string): void => {
+    session.sendEquipColor(colorId);
+    const next = account.ownedBodyColors.includes(colorId)
+      ? colorId
+      : account.equippedBodyColor;
+    if (next !== account.equippedBodyColor) {
+      account.equippedBodyColor = next;
+      saveAccount(account);
+    }
+  };
+  // Hats are the same optimistic wardrobe cycle as the other two cosmetics.
+  const equipHat = (hatId: string): void => {
+    session.sendEquipHat(hatId);
+    const next = account.ownedHats.includes(hatId) ? hatId : account.equippedHat;
+    if (next !== account.equippedHat) {
+      account.equippedHat = next;
+      saveAccount(account);
+    }
+  };
+  // Gear is the same optimistic wardrobe cycle as the other three cosmetics.
+  const equipGear = (gearId: string): void => {
+    session.sendEquipGear(gearId);
+    const next = account.ownedGears.includes(gearId) ? gearId : account.equippedGear;
+    if (next !== account.equippedGear) {
+      account.equippedGear = next;
+      saveAccount(account);
+    }
+  };
+
+  /**
+   * A freshly collected item auto-wears when its slot is still Stock: the
+   * pickup asked for "inventory", so collection never replaces a look someone
+   * chose — it only fills a slot nothing was chosen for.
+   */
+  const autoEquip = (itemId: string): void => {
+    const kind = itemKind(itemId);
+    if (kind === 'trail' && account.equippedTrail === DEFAULT_TRAIL) equipTrail(itemId);
+    else if (kind === 'color' && account.equippedBodyColor === DEFAULT_BODY_COLOR) equipColor(itemId);
+    else if (kind === 'hat' && account.equippedHat === DEFAULT_HAT) equipHat(itemId);
+    else if (kind === 'gear' && account.equippedGear === DEFAULT_GEAR) equipGear(itemId);
+  };
+
   const hud = createHud(container, {
     // The card id comes from the catalog the server shipped; `sendVote` just
     // puts it on the wire, and the server checks it against the same list.
     onVote: (courseId) => session.sendVote(courseId),
-    // Equipping IS a wardrobe change: optimistically remember the pick so the
-    // picker and a reload agree, whatever the server echoes back (it will
-    // reject any id the account does not own, and the store only records the
-    // account's copy, so a rejected equip never corrupts it).
-    onEquip: (trailId) => {
-      session.sendEquip(trailId);
-      const next = account.ownedTrails.includes(trailId) ? trailId : account.equippedTrail;
-      if (next !== account.equippedTrail) {
-        account.equippedTrail = next;
-        saveAccount(account);
-      }
-    },
+    onEquip: equipTrail,
     ownedTrails: () => account.ownedTrails,
-    // Body colour is exactly the same optimistic wardrobe cycle as trails:
-    // remember the pick locally whatever the server echoes, so the picker and
-    // a reload agree, and a id the server rejects never corrupts the store.
-    onEquipColor: (colorId) => {
-      session.sendEquipColor(colorId);
-      const next = account.ownedBodyColors.includes(colorId)
-        ? colorId
-        : account.equippedBodyColor;
-      if (next !== account.equippedBodyColor) {
-        account.equippedBodyColor = next;
-        saveAccount(account);
-      }
-    },
+    onEquipColor: equipColor,
     ownedBodyColors: () => account.ownedBodyColors,
-    // Hats are the same optimistic wardrobe cycle as the other two cosmetics.
-    onEquipHat: (hatId) => {
-      session.sendEquipHat(hatId);
-      const next = account.ownedHats.includes(hatId) ? hatId : account.equippedHat;
-      if (next !== account.equippedHat) {
-        account.equippedHat = next;
-        saveAccount(account);
-      }
-    },
+    onEquipHat: equipHat,
     ownedHats: () => account.ownedHats,
+    onEquipGear: equipGear,
+    ownedGears: () => account.ownedGears,
     // Renaming IS identity here, off-chain: the local name travels at join,
     // the server echoes a rename so the whole room sees it, and the store
     // keeps the last name the server accepted — a reload comes back as
@@ -244,7 +276,7 @@ async function boot(): Promise<void> {
 
   // Reused every frame: the loop below must not allocate.
   const localPose: LocalPose = {
-    x: 0, y: 0, z: 0, vx: 0, vz: 0, speed: 0, grounded: false, carrying: false, dashing: false, teleported: false, trailId: '', bodyColorId: '', hatId: '',
+    x: 0, y: 0, z: 0, vx: 0, vz: 0, speed: 0, grounded: false, carrying: false, dashing: false, teleported: false, trailId: '', bodyColorId: '', hatId: '', gearId: '',
   };
   const coreState: CoreVisualState = { x: 0, y: 0, z: 0, carried: false, immune: false };
 
@@ -255,6 +287,12 @@ async function boot(): Promise<void> {
   // The previous frame's phase, so entering a lobby window can be seen as a
   // transition (see the pointer-lock release in the frame).
   let lastPhase = session.room.state.phase;
+  // Pickup flips are watched to credit the local account once each: the set
+  // resets when the map changes, because a new map's refill makes the same
+  // pickup ids live again. (Re-collecting an item you already own is a silent
+  // no-op at the account, so the set is the only thing that needs this.)
+  let pickupCourse = '';
+  const processedPickups = new Set<string>();
 
   // --- feel ----------------------------------------------------------------
   // Hit-stop: the image holds for a beat on a steal you were part of. Only the
@@ -492,10 +530,37 @@ async function boot(): Promise<void> {
     localPose.trailId = session.self()?.equippedTrailId ?? account.equippedTrail;
     localPose.bodyColorId = session.self()?.equippedBodyColorId ?? account.equippedBodyColor;
     localPose.hatId = session.self()?.equippedHatId ?? account.equippedHat;
+    localPose.gearId = session.self()?.equippedGearId ?? account.equippedGear;
     visuals.sync(localPose, delta);
 
     remotes.sync(delta);
     courseHandle.update(delta);
+
+    // --- cosmetic pickups ------------------------------------------------
+    // Balls render from the replicated list, and a taken ball whose `takenBy`
+    // is this session credits the local account exactly once. Every credit
+    // toasts, so a pickup never passes silently: "unlocked <item>" when the
+    // grant is new (and auto-wear it if its slot is still stock), or a plain
+    // "already have <item>" on a repeat collect. The server's grant is
+    // authoritative — the client only echoes it into the store so a reload
+    // and the customise panel see the same wardrobe.
+    visuals.setPickups(state.pickups, now / 1000);
+    if (course.id !== pickupCourse) {
+      pickupCourse = course.id;
+      processedPickups.clear();
+    }
+    for (const pickup of state.pickups) {
+      if (!pickup.taken || pickup.takenBy !== session.sessionId) continue;
+      const key = `${pickup.id}:${pickup.item}`;
+      if (processedPickups.has(key)) continue;
+      processedPickups.add(key);
+      if (grantOwned(account, pickup.item)) {
+        hud.toast(`unlocked ${itemName(pickup.item)}`);
+        autoEquip(pickup.item);
+      } else {
+        hud.toast(`already have ${itemName(pickup.item)}`);
+      }
+    }
 
     // --- the Core ------------------------------------------------------
     // Where it is drawn depends on who holds it, so it never visibly lags its

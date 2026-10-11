@@ -10,7 +10,7 @@
  * before any of those are wired. Porting to Privy replaces this one file (the
  * account becomes the verified user object) and leaves the cosmetic plumbing
  * untouched: the server still receives a `CosmeticIdentity` and the renderer
- * still reads `equippedTrailId`/`equippedBodyColorId`/`equippedHatId`.
+ * still reads the equipped cosmetic ids (`equippedTrailId` and friends).
  *
  * Nothing here is authoritative. It lives on the client because the whole
  * point of the prototype is that there is no database yet; in the real build
@@ -28,6 +28,9 @@ import {
   isHat,
   STARTER_HATS,
   DEFAULT_HAT,
+  isGear,
+  STARTER_GEARS,
+  DEFAULT_GEAR,
   type CosmeticIdentity,
 } from '../shared/cosmetics.ts';
 import { randomRacerName } from '../shared/input.ts';
@@ -83,6 +86,24 @@ export interface Account extends CosmeticIdentity {
    * The hat currently worn. Mutable for the same reason as `equippedTrail`.
    */
   equippedHat: string;
+
+  /**
+   * The gear piece currently worn. Mutable for the same reason as
+   * `equippedTrail`: equipping updates and persists it, and the reload agrees.
+   */
+  equippedGear: string;
+
+  /**
+   * The owned sets. Mutable for the same reason as the equipped fields: a
+   * pickup grant (`grantOwned`) appends to them and persists, so the picker
+   * and a reload agree. `CosmeticIdentity` marks them readonly because the
+   * identity presented to the server must not be treated as live state there;
+   * the account side owns them.
+   */
+  ownedTrails: string[];
+  ownedBodyColors: string[];
+  ownedHats: string[];
+  ownedGears: string[];
 }
 
 /** A stable local handle. Not a secret and not security — just a recognisable id. */
@@ -98,6 +119,9 @@ const DEFAULT_EQUIPPED_COLOR = DEFAULT_BODY_COLOR;
 
 /** The hat a new account starts wearing. */
 const DEFAULT_EQUIPPED_HAT = DEFAULT_HAT;
+
+/** The gear a new account starts wearing. */
+const DEFAULT_EQUIPPED_GEAR = DEFAULT_GEAR;
 
 /**
  * Load the account, minting one on first run.
@@ -126,6 +150,11 @@ export function loadAccount(): Account {
       isHat(stored.equippedHat) && ownedHats.includes(stored.equippedHat)
         ? stored.equippedHat
         : ownedHats[0]!;
+    const ownedGears = normaliseOwnedGears(stored.ownedGears);
+    const equippedGear =
+      isGear(stored.equippedGear) && ownedGears.includes(stored.equippedGear)
+        ? stored.equippedGear
+        : ownedGears[0]!;
     return {
       id: typeof stored.id === 'string' && stored.id.length > 0 ? stored.id : randomAccountId(),
       name:
@@ -139,6 +168,8 @@ export function loadAccount(): Account {
       equippedBodyColor: equippedColor,
       ownedHats,
       equippedHat,
+      ownedGears,
+      equippedGear,
     };
   }
 
@@ -152,6 +183,8 @@ export function loadAccount(): Account {
     equippedBodyColor: DEFAULT_EQUIPPED_COLOR,
     ownedHats: [...STARTER_HATS],
     equippedHat: DEFAULT_EQUIPPED_HAT,
+    ownedGears: [...STARTER_GEARS],
+    equippedGear: DEFAULT_EQUIPPED_GEAR,
   };
   saveAccount(fresh);
   return fresh;
@@ -165,6 +198,40 @@ export function saveAccount(account: Account): void {
     // Private mode, quota, or no DOM. The session still carries the account;
     // it just will not survive a reload.
   }
+}
+
+/**
+ * Credit a collected pickup item into the account's wardrobe and persist it.
+ *
+ * Returns true only when the item is NEW to the account — the signal the
+ * caller (main.ts) uses to toast "unlocked" and auto-equip. Re-collecting an
+ * item on a later map is an idempotent no-op that returns false, matching the
+ * server's own idempotent grant.
+ */
+export function grantOwned(account: Account, itemId: string): boolean {
+  if (isTrail(itemId) && !account.ownedTrails.includes(itemId)) {
+    account.ownedTrails = [...account.ownedTrails, itemId];
+    saveAccount(account);
+    return true;
+  }
+  if (isBodyColor(itemId) && !account.ownedBodyColors.includes(itemId)) {
+    account.ownedBodyColors = [...account.ownedBodyColors, itemId];
+    saveAccount(account);
+    return true;
+  }
+  if (isHat(itemId) && !account.ownedHats.includes(itemId)) {
+    account.ownedHats = [...account.ownedHats, itemId];
+    saveAccount(account);
+    return true;
+  }
+  if (isGear(itemId) && !account.ownedGears.includes(itemId)) {
+    account.ownedGears = [...account.ownedGears, itemId];
+    saveAccount(account);
+    return true;
+  }
+  // A stock default or an unknown id never reaches here (the course parser and
+  // the server both reject them), so falling through means "already owned".
+  return false;
 }
 
 function readStore(): Partial<Account> | null {
@@ -196,5 +263,12 @@ function normaliseOwnedColors(raw: unknown): string[] {
 function normaliseOwnedHats(raw: unknown): string[] {
   const owned = Array.isArray(raw) ? raw.filter(isHat) : [];
   if (owned.length === 0) owned.push(...STARTER_HATS);
+  return [...new Set(owned)];
+}
+
+/** Keep only ids the current catalog still ships; seed a fresh set if empty. */
+function normaliseOwnedGears(raw: unknown): string[] {
+  const owned = Array.isArray(raw) ? raw.filter(isGear) : [];
+  if (owned.length === 0) owned.push(...STARTER_GEARS);
   return [...new Set(owned)];
 }

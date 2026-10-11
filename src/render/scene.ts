@@ -18,8 +18,10 @@ import { getCameraMode } from '../input.ts';
 import { fxSpeed, reducedMotion } from './fx.ts';
 import { NEON, PALETTE, RACER_IDENTITY, RAMP } from './palette.ts';
 import { createCharacter } from './character.ts';
+import { createPickupLayer } from './pickups.ts';
 import { getBodyColor } from '../shared/cosmetics.ts';
 import type { Pose } from '../physics/player.ts';
+import type { PickupStateInstance } from '../shared/state.ts';
 
 /**
  * Where the local racer is and what it is doing.
@@ -44,6 +46,8 @@ export interface LocalPose extends Pose {
   bodyColorId: string;
   /** The hat cosmetic id this racer wears, from replicated state. A render key. */
   hatId: string;
+  /** The gear cosmetic id this racer wears, from replicated state. A render key. */
+  gearId: string;
   /**
    * A position teleport is in flight: the sim body arrived at the new place
    * (adoptTruth) but the reconciler's smoothed pose is still gliding toward
@@ -91,6 +95,13 @@ export interface SceneVisuals {
   heading(): number;
 
   /**
+   * Reconcile the cosmetic pickup balls with the replicated pickup list. Call
+   * once per rendered frame with the current state and seconds since boot —
+   * the layer rebuilds its balls only when the list actually changes.
+   */
+  setPickups(pickups: readonly PickupStateInstance[], timeSec: number): void;
+
+  /**
    * Add screen-shake trauma, 0..1. Trauma decays on its own and shake grows
    * with its square, so small kicks stay subtle and big ones land hard.
    */
@@ -127,6 +138,10 @@ function orbitOffset(out: THREE.Vector3, yaw: number, pitch: number): THREE.Vect
 
 export function buildScene(stage: Stage): SceneVisuals {
   const { scene } = stage;
+
+  // The cosmetic pickup balls live here: they are world décor driven by the
+  // replicated pickup state, not by the course file.
+  const pickups = createPickupLayer(scene);
 
   // --- lighting ------------------------------------------------------------
   // Built for a near-black scene. There is no sun and no sky, so every light
@@ -169,6 +184,7 @@ export function buildScene(stage: Stage): SceneVisuals {
   // the first frame re-applies the (stock) default harmlessly.
   let lastTrailId = '';
   let lastHatId = '';
+  let lastGearId = '';
 
   // A flat ring under the capsule reads as a contact cue, which makes grounded
   // vs airborne obvious without a shadow map. Neon rather than a dark shadow:
@@ -267,9 +283,14 @@ export function buildScene(stage: Stage): SceneVisuals {
         lastHatId = pose.hatId;
         character.setHat(pose.hatId);
       }
+      // Gear is the same straight look swap, change-once like the trail.
+      if (pose.gearId !== lastGearId) {
+        lastGearId = pose.gearId;
+        character.setGear(pose.gearId);
+      }
       // A body colour is a retarget of the identity tint, same change-once
-      // rule as the trail: resolved here against the catalog, with Stock
-      // meaning "back to my seat colour".
+      // rule as the trail: resolved here against the catalog, with `null`
+      // meaning "back to my seat colour" (no entry uses it today).
       if (pose.bodyColorId !== lastBodyColorId) {
         lastBodyColorId = pose.bodyColorId;
         const def = getBodyColor(pose.bodyColorId);
@@ -494,8 +515,13 @@ export function buildScene(stage: Stage): SceneVisuals {
       }
     },
 
+    setPickups(list, timeSec) {
+      pickups.sync(list, timeSec);
+    },
+
     dispose() {
       scene.remove(marker, hemi, key, rimCyan, rimMagenta);
+      pickups.dispose();
       character.dispose();
       marker.geometry.dispose();
       markerMaterial.dispose();

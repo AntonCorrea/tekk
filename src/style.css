@@ -570,6 +570,50 @@ body {
   text-shadow: none;
 }
 
+/*
+ * Unlock toasts: small pills bottom-left, one per collected cosmetic, each
+ * fading on its own timer. Deliberately quieter than the announce callout —
+ * an item unlock is a slow reward, not a loud beat.
+ */
+.toasts {
+  position: fixed;
+  left: 24px;
+  bottom: 22px;
+  z-index: 24;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  font-family: var(--grotesk);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--white);
+  background: #0b0b0ef0;
+  border: 1px solid #ffffff26;
+  box-shadow: 0 0 18px #4eabe840;
+  padding: 8px 14px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  animation: toast-in 0.22s ease-out;
+}
+
+.toast::before {
+  content: '\25C6';
+  margin-right: 8px;
+  color: var(--cyan-blue);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
 /* ---------------------------------------------------------------- lobby */
 
 /*
@@ -652,6 +696,32 @@ body {
   text-indent: 0.24em;
   text-transform: uppercase;
   color: var(--ink-dim);
+}
+
+/* The panel's own close button: a quiet square pinned to the top-right
+   corner, the mirror of the top-right toggle that raised it. Absolute so it
+   never participates in the panel's flex column. */
+.panel-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  background: rgba(2, 2, 2, 0.55);
+  color: var(--ink-dim);
+  font-family: var(--grotesk);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.panel-close:hover {
+  border-color: var(--lavender);
+  color: var(--ink);
 }
 
 .lobby-cards {

@@ -109,6 +109,18 @@ export const CORE = {
   carryHeight: 1.6,
 } as const;
 
+/**
+ * Cosmetic pickup balls.
+ *
+ * A racer captures a ball whose centre is within `captureRadius` of their own
+ * body centre (a generous 3D sphere, so a ball floats at waist height or a
+ * little higher and a run-through grabs it). Tunable like everything else;
+ * the renderer's ball is smaller than this on purpose, so capture feels fair.
+ */
+export const PICKUP = {
+  captureRadius: 0.9,
+} as const;
+
 /** Match flow: ready -> countdown -> playing -> results -> ready. */
 export const MATCH = {
   /**

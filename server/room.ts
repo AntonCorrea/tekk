@@ -23,7 +23,7 @@ import type { Client } from '@colyseus/core';
 import { Room } from '@colyseus/core';
 import type { RigidBody, World } from '@dimforge/rapier3d-compat';
 
-import { CORE, FIXED_TIMESTEP } from '../src/constants.ts';
+import { CORE, FIXED_TIMESTEP, PICKUP } from '../src/constants.ts';
 import type { Course, Vec3 } from '../src/shared/course.ts';
 import { MoveInput, idleInput } from '../src/shared/input.ts';
 import type { MoveInputInstance } from '../src/shared/input.ts';
@@ -35,7 +35,7 @@ import {
   moveSimBody,
   type SimBody,
 } from '../src/shared/sim.ts';
-import { GameState, MapInfo, PlayerState } from '../src/shared/state.ts';
+import { GameState, MapInfo, PickupState, PlayerState } from '../src/shared/state.ts';
 import type { GameStateInstance, MatchPhase, PlayerStateInstance } from '../src/shared/state.ts';
 import {
   STARTER_TRAILS,
@@ -44,6 +44,9 @@ import {
   isBodyColor,
   STARTER_HATS,
   isHat,
+  STARTER_GEARS,
+  isGear,
+  itemKind,
 } from '../src/shared/cosmetics.ts';
 import { createPhysicsWorld, initPhysics } from '../src/physics/world.ts';
 import { DEFAULT_COURSE_PATH, loadCourse } from './course.ts';
@@ -102,6 +105,15 @@ export interface RaceJoinOptions {
    */
   hats?: string[];
   hat?: string;
+  /**
+   * Gear ids the client claims to own, and the piece it wants to wear.
+   *
+   * Same trust model as `trails`/`hats`: the claim is normalised against the
+   * catalog on arrival and held per session; a stale or malicious join option
+   * degrades to Stock (no gear) rather than to a piece the racer does not own.
+   */
+  gears?: string[];
+  gear?: string;
 }
 
 /**
@@ -172,8 +184,33 @@ export class RaceRoom extends Room<RaceRoomOptions> {
    */
   private readonly cosmetics = new Map<
     string,
-    { accountId: string; ownedTrails: Set<string>; ownedColors: Set<string>; ownedHats: Set<string> }
+    {
+      accountId: string;
+      ownedTrails: Set<string>;
+      ownedColors: Set<string>;
+      ownedHats: Set<string>;
+      ownedGears: Set<string>;
+    }
   >();
+
+  /**
+   * The pickup balls on the current map, and who has taken each.
+   *
+   * Server truth for capture; the replicated `state.pickups` mirrors it. The
+   * list is rebuilt from the course whenever the room (re)builds a map, and
+   * importantly NOT when a match restarts on the same map: a taken ball stays
+   * taken for the life of the map, per the collect model — a new map is what
+   * refreshes everyone's chance at a ball (see `refreshPickups`).
+   */
+  private pickupEntities: Array<{
+    id: string;
+    item: string;
+    x: number;
+    y: number;
+    z: number;
+    taken: boolean;
+    takenBy: string;
+  }> = [];
 
   /**
    * The match clock, in fixed ticks. See `PhaseClock` in rules.ts for why it
@@ -206,6 +243,10 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     // from it via the shared builder. Rewritten on a map swap, and that
     // rewrite is the client's signal to rebuild.
     this.state.courseJson = JSON.stringify(this.course);
+
+    // The cosmetic pickup balls for this map. Refilled only when the room
+    // (re)builds a map: a map swap is what refreshes taken balls.
+    this.refreshPickups();
 
     // --- the ballot --------------------------------------------------------
     // Every playable map next to the default course, plus this room's own
@@ -283,17 +324,22 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     // --- equip a cosmetic ----------------------------------------------------
     // Presentational: what a racer wears feeds nothing into the sim, so this
     // message exists in every phase, including the lobby. The server still
-    // validates both ways — the id must name a real trail, body colour or hat,
-    // and the racer must own it — so a client can never self-declare a look it
-    // did not acquire. Ownership is the claim carried at join for now (no DB);
-    // the real build swaps the owned sets for a lookup against the account's
-    // record, and this handler does not change one line.
+    // validates both ways — the id must name a real trail, body colour, hat or
+    // gear, and the racer must own it — so a client can never self-declare a
+    // look it did not acquire. Ownership is the claim carried at join for now
+    // (no DB); the real build swaps the owned sets for a lookup against the
+    // account's record, and this handler does not change one line.
     this.onMessage('equip', (client, message: unknown) => {
       const player = this.state.players.get(client.sessionId);
       const wardrobe = this.cosmetics.get(client.sessionId);
       if (!player || !wardrobe) return;
 
-      const body = (message ?? null) as { trailId?: unknown; colorId?: unknown; hatId?: unknown } | null;
+      const body = (message ?? null) as {
+        trailId?: unknown;
+        colorId?: unknown;
+        hatId?: unknown;
+        gearId?: unknown;
+      } | null;
       const trailId = body?.trailId;
       if (isTrail(trailId) && wardrobe.ownedTrails.has(trailId)) {
         player.equippedTrailId = trailId;
@@ -310,6 +356,13 @@ export class RaceRoom extends Room<RaceRoomOptions> {
       if (isHat(hatId) && wardrobe.ownedHats.has(hatId)) {
         player.equippedHatId = hatId;
         log(`${player.name} equipped hat "${hatId}"`);
+        return;
+      }
+      const gearId = body?.gearId;
+      if (isGear(gearId) && wardrobe.ownedGears.has(gearId)) {
+        player.equippedGearId = gearId;
+        log(`${player.name} equipped gear "${gearId}"`);
+        return;
       }
     });
 
@@ -340,6 +393,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
 
     log(
       `room "${this.course.id}" -- ${this.course.solids.length} solids, ` +
+        `${this.course.pickups.length} pickups, ` +
         `step ${(FIXED_TIMESTEP * 1000).toFixed(2)}ms, ` +
         `match lobby=${this.timings.lobbyMs}ms, ` +
         `${this.timings.countdownMs}/${this.timings.durationMs}/${this.timings.resultsMs}ms`,
@@ -375,11 +429,19 @@ export class RaceRoom extends Room<RaceRoomOptions> {
         ? requestedHat
         : ownedHats[0]!;
 
+    const ownedGears = normaliseOwnedGears(options?.gears);
+    const requestedGear = options?.gear;
+    const equippedGear =
+      isGear(requestedGear) && ownedGears.includes(requestedGear)
+        ? requestedGear
+        : ownedGears[0]!;
+
     this.cosmetics.set(client.sessionId, {
       accountId: typeof options?.accountId === 'string' ? options.accountId : '',
       ownedTrails: new Set(ownedTrails),
       ownedColors: new Set(ownedColors),
       ownedHats: new Set(ownedHats),
+      ownedGears: new Set(ownedGears),
     });
 
     const state = new PlayerState();
@@ -387,6 +449,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     state.equippedTrailId = equippedTrail;
     state.equippedBodyColorId = equippedColor;
     state.equippedHatId = equippedHat;
+    state.equippedGearId = equippedGear;
     publishBody(state, sim);
 
     this.state.players.set(client.sessionId, state);
@@ -460,8 +523,12 @@ export class RaceRoom extends Room<RaceRoomOptions> {
 
     // --- the Core ---------------------------------------------------------
     // Only while playing, and against post-step positions: the step is what
-    // moved everyone, so that is where everyone is.
-    if (this.state.phase === 'playing') this.runCoreRules(dtMs);
+    // moved everyone, so that is where everyone is. Cosmetic pickup capture is
+    // the same shape — server-side, post-step, playing only.
+    if (this.state.phase === 'playing') {
+      this.runCoreRules(dtMs);
+      this.runPickupRules();
+    }
 
     // --- match clock ------------------------------------------------------
     // After the rules, so the last playing tick still scores before results
@@ -620,6 +687,91 @@ export class RaceRoom extends Room<RaceRoomOptions> {
       this.state.coreX = this.coreSpawn[0];
       this.state.coreY = this.coreSpawn[1];
       this.state.coreZ = this.coreSpawn[2];
+    }
+  }
+
+  // ------------------------------------------------------------ pickups
+
+  /**
+   * Point every pickup ball at the current course, freshly untaken, and mirror
+   * it into the replicated state.
+   *
+   * Called at room creation and on every map swap — and nowhere else. That is
+   * the collect model: a taken ball stays taken for the life of the map, and
+   * only a NEW map refreshes everyone's chance at it. Re-collecting an item
+   * you already own is an idempotent no-op (the grant is a Set add), so
+   * nothing here needs per-match bookkeeping.
+   */
+  private refreshPickups(): void {
+    const entities = this.course.pickups.map((pickup) => ({
+      id: pickup.id,
+      item: pickup.item,
+      x: pickup.position[0],
+      y: pickup.position[1],
+      z: pickup.position[2],
+      taken: false,
+      takenBy: '',
+    }));
+    this.pickupEntities = entities;
+
+    this.state.pickups.splice(0, this.state.pickups.length);
+    for (const entity of entities) {
+      const record = new PickupState();
+      record.id = entity.id;
+      record.item = entity.item;
+      record.x = entity.x;
+      record.y = entity.y;
+      record.z = entity.z;
+      this.state.pickups.push(record);
+    }
+  }
+
+  /**
+   * One tick of pickup capture: an untaken ball within `PICKUP.captureRadius`
+   * of a racer's body centre is granted to them, then marked taken for the
+   * life of this map.
+   *
+   * Server-side only — the shared sim never sees the balls — so this runs
+   * after the step, against post-step positions, exactly like the Core rules.
+   * At most one taker per ball per tick (the first in iteration order wins).
+   * The grant lands in the collector's owned set, which is the same set the
+   * `equip` handler validates against, so a collected item is equippable with
+   * no further plumbing. The client learns who got what from `takenBy`.
+   */
+  private runPickupRules(): void {
+    for (const entity of this.pickupEntities) {
+      if (entity.taken) continue;
+
+      for (const [sessionId, sim] of this.racers) {
+        const p = sim.body.translation();
+        const dx = p.x - entity.x;
+        const dy = p.y - entity.y;
+        const dz = p.z - entity.z;
+        if (dx * dx + dy * dy + dz * dz > PICKUP.captureRadius * PICKUP.captureRadius) {
+          continue;
+        }
+
+        const wardrobe = this.cosmetics.get(sessionId);
+        if (!wardrobe) continue;
+
+        entity.taken = true;
+        entity.takenBy = sessionId;
+        const record = this.state.pickups.find((candidate) => candidate.id === entity.id);
+        if (record) {
+          record.taken = true;
+          record.takenBy = sessionId;
+        }
+
+        const kind = itemKind(entity.item);
+        if (kind === 'trail') wardrobe.ownedTrails.add(entity.item);
+        else if (kind === 'color') wardrobe.ownedColors.add(entity.item);
+        else if (kind === 'hat') wardrobe.ownedHats.add(entity.item);
+        else if (kind === 'gear') wardrobe.ownedGears.add(entity.item);
+
+        const name = this.state.players.get(sessionId)?.name ?? sessionId;
+        log(`${name} picked up "${entity.item}"`);
+        break;
+      }
     }
   }
 
@@ -792,6 +944,9 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     // The rebuild signal: the client re-parses this string, swaps its own
     // colliders and body, and rebuilds the course visuals to match.
     this.state.courseJson = JSON.stringify(next);
+    // A new map brings fresh pickup balls: taken stays per map, so a swap is
+    // the only thing that refreshes them.
+    this.refreshPickups();
     this.freeCore();
     // The fresh bodies sit at the nominal spawn; this lands them on its
     // surface and publishes the cut, so every client sees the truth at once.
@@ -877,6 +1032,16 @@ function normaliseOwnedColors(raw: unknown): string[] {
 function normaliseOwnedHats(raw: unknown): string[] {
   const owned = Array.isArray(raw) ? raw.filter(isHat) : [];
   if (owned.length === 0) owned.push(...STARTER_HATS);
+  return [...new Set(owned)];
+}
+
+/**
+ * Keep only ids the current catalog still ships, falling back to the starter
+ * set when the claim is empty — same rule as the trails, colours and hats.
+ */
+function normaliseOwnedGears(raw: unknown): string[] {
+  const owned = Array.isArray(raw) ? raw.filter(isGear) : [];
+  if (owned.length === 0) owned.push(...STARTER_GEARS);
   return [...new Set(owned)];
 }
 

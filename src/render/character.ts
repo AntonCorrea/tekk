@@ -43,7 +43,7 @@ import {
 import { MOVE, PLAYER } from '../constants.ts';
 import { NEON, PALETTE, POST } from './palette.ts';
 import { fxBeat } from './fx.ts';
-import { DEFAULT_TRAIL, getTrail, getHat, type TrailDef } from '../shared/cosmetics.ts';
+import { DEFAULT_TRAIL, getTrail, getHat, getGear, type TrailDef } from '../shared/cosmetics.ts';
 
 /** See net/remotes.ts for why these node types are spelled out. */
 type Vec3Uniform = THREE.UniformNode<'vec3', THREE.Vector3>;
@@ -87,6 +87,12 @@ export interface Character {
    * fall back to the stock (empty) hat.
    */
   setHat(hatId: string): void;
+  /**
+   * Swap the gear cosmetic to the catalog entry named by `id`. Presentational
+   * only — nothing in the sim ever reads it. Ids the catalog does not know
+   * fall back to Stock (no body covering).
+   */
+  setGear(gearId: string): void;
   dispose(): void;
 }
 
@@ -341,6 +347,134 @@ export function createCharacter(
     }
     // Ghosts are frozen clones of the WHOLE body, taken when the pool was
     // built; a hat changes the silhouette, so re-clone the pool to include it.
+    rebuildGhosts();
+  };
+
+  // --- gear ------------------------------------------------------------------
+  // Voxel body armour: a small shell of boxes over the chest, shoulders and
+  // (for the heavier ids) the hips — so a shirt, a vest and a full armour kit
+  // are the same three-material uniform graph with different box sets. Like
+  // hats, gear is its own object with fixed catalog colours and never follows
+  // the racer's tint, so it keeps its look while the body dims to carrier
+  // white or flares through a dash.
+  const gearGroup = new THREE.Group();
+  torso.add(gearGroup);
+  let gearMeshes: THREE.Mesh[] = [];
+  const gearScratch = new THREE.Color();
+  const gearWhite = new THREE.Color(0xffffff);
+  // Main fill: the same gentler fresnel cousin the hats use, in the gear's own
+  // colour at a fraction of the body's glow.
+  const gearColor = uniform(new THREE.Vector3(1, 1, 1)) as unknown as Vec3Uniform;
+  const gearMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.4, metalness: 0.15 });
+  gearMat.colorNode = mul(gearColor, 0.75);
+  gearMat.emissiveNode = mul(gearColor, mul(add(0.08, mul(fresnel, 0.5)), mul(glow, POST.emissiveGain)));
+  // Neon outline in a brightened copy of the main colour, like the body edges.
+  const gearEdge = uniform(new THREE.Vector3(1, 1, 1)) as unknown as Vec3Uniform;
+  const gearEdgeMat = new THREE.LineBasicNodeMaterial({ toneMapped: false });
+  gearEdgeMat.colorNode = mul(gearEdge, mul(glow, POST.emissiveGain * 1.25));
+  // Accent trim: a bright flat colour, like the visor.
+  const gearAccent = uniform(new THREE.Vector3(1, 1, 1)) as unknown as Vec3Uniform;
+  const gearAccentMat = new THREE.MeshBasicNodeMaterial({ toneMapped: false });
+  gearAccentMat.colorNode = gearAccent;
+
+  /** Point one of the gear colour uniforms at a catalog hex. */
+  const paintGear = (target: Vec3Uniform, hex: number): void => {
+    gearScratch.setHex(hex);
+    target.value.set(gearScratch.r, gearScratch.g, gearScratch.b);
+  };
+
+  /** Build one box into the gear, like `box()` but tracked for swap disposal. */
+  const gearBox = (
+    w: number, h: number, d: number,
+    material: THREE.Material,
+    x: number, y: number, z: number,
+  ): THREE.Mesh => {
+    const geometry = new THREE.BoxGeometry(w, h, d);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(x, y, z);
+    gearGroup.add(mesh);
+    if (material === gearMat) {
+      const edges = new THREE.EdgesGeometry(geometry);
+      mesh.add(new THREE.LineSegments(edges, gearEdgeMat));
+    }
+    gearMeshes.push(mesh);
+    return mesh;
+  };
+
+  /** Drop the current gear and release its geometry. */
+  const clearGear = (): void => {
+    for (const mesh of gearMeshes) {
+      gearGroup.remove(mesh);
+      mesh.geometry.dispose();
+      for (const child of mesh.children) {
+        if (child instanceof THREE.LineSegments) child.geometry.dispose();
+      }
+    }
+    gearMeshes = [];
+  };
+
+  /** Rebuild the body armour from a catalog id. See `Character.setGear`. */
+  const applyGear = (gearId: string): void => {
+    clearGear();
+    const def = getGear(gearId);
+    paintGear(gearColor, def.color ?? 0x888888);
+    paintGear(gearEdge, gearScratch.setHex(def.color ?? 0x888888).lerp(gearWhite, 0.45).getHex());
+    paintGear(gearAccent, def.accent ?? 0x888888);
+    const M = gearMat;
+    const A = gearAccentMat;
+    switch (gearId) {
+      // shirt: a full chest + belly wrap with a front placket, worn proud of
+      // the body — roomier than the old thin layer, with the placket riding
+      // the wrap's front face.
+      case 'gear-carbon':
+        gearBox(0.52, 0.32, 0.32, M, 0, 0.30, 0);
+        gearBox(0.44, 0.17, 0.26, M, 0, 0.11, 0);
+        gearBox(0.04, 0.32, 0.02, A, 0, 0.28, 0.185);
+        break;
+      // vest: a broad chest + belly shell with a hem trim — the wrap stops
+      // short of the shoulders so the joints stay clear.
+      case 'gear-royal':
+        gearBox(0.54, 0.36, 0.28, M, 0, 0.28, 0);
+        gearBox(0.44, 0.18, 0.24, M, 0, 0.11, 0);
+        gearBox(0.54, 0.03, 0.28, A, 0, 0.16, 0);
+        break;
+      // red shell: the carbon shirt's wrap + placket, red and the biggest of
+      // the shirts — a full-bodied race jacket in the crimson colourway.
+      case 'gear-crimson':
+        gearBox(0.56, 0.34, 0.36, M, 0, 0.30, 0);
+        gearBox(0.46, 0.18, 0.29, M, 0, 0.11, 0);
+        gearBox(0.04, 0.34, 0.02, A, 0, 0.28, 0.20);
+        break;
+      // tortoise shell: a green backpack built from stepped bands on the back,
+      // the dome shrinking upward with a dark top cap and hem like the shell's
+      // scutes, plus two thin straps crossing the shoulders to the shell.
+      case 'gear-mint':
+        gearBox(0.50, 0.11, 0.26, M, 0, 0.20, -0.21);
+        gearBox(0.44, 0.12, 0.23, M, 0, 0.30, -0.20);
+        gearBox(0.35, 0.12, 0.19, M, 0, 0.40, -0.18);
+        gearBox(0.24, 0.08, 0.14, A, 0, 0.46, -0.16);
+        gearBox(0.54, 0.04, 0.28, A, 0, 0.14, -0.21);
+        gearBox(0.04, 0.06, 0.22, A, 0.19, 0.42, 0.02);
+        gearBox(0.04, 0.06, 0.22, A, -0.19, 0.42, 0.02);
+        break;
+      // armour-full: the heaviest kit — a big chest, large pauldrons with
+      // accent piping, a heavy belt and hip guards.
+      case 'gear-plasma':
+        gearBox(0.54, 0.32, 0.32, M, 0, 0.29, 0);
+        gearBox(0.24, 0.17, 0.28, M, 0.27, 0.42, 0);
+        gearBox(0.24, 0.17, 0.28, M, -0.27, 0.42, 0);
+        gearBox(0.18, 0.07, 0.30, A, 0.27, 0.44, 0);
+        gearBox(0.18, 0.07, 0.30, A, -0.27, 0.44, 0);
+        gearBox(0.48, 0.08, 0.26, A, 0, 0.14, 0);
+        gearBox(0.22, 0.20, 0.24, M, 0.12, -0.07, 0);
+        gearBox(0.22, 0.20, 0.24, M, -0.12, -0.07, 0);
+        break;
+      // 'gear-stock' and anything the catalog does not know: no body covering.
+      default:
+        break;
+    }
+    // Ghosts are frozen clones of the WHOLE body; a gear swap changes the
+    // silhouette, so re-clone the pool to include it, like the hat does.
     rebuildGhosts();
   };
 
@@ -779,10 +913,23 @@ export function createCharacter(
       applyHat(nextHatId);
     },
 
+    setGear(nextGearId) {
+      applyGear(nextGearId);
+    },
+
     dispose() {
       scene.remove(root);
       for (const trail of [...footTrails, ...handTrails]) scene.remove(trail.mesh);
       for (const geometry of geometries) geometry.dispose();
+      for (const mesh of gearMeshes) {
+        mesh.geometry.dispose();
+        for (const child of mesh.children) {
+          if (child instanceof THREE.LineSegments) child.geometry.dispose();
+        }
+      }
+      gearMat.dispose();
+      gearEdgeMat.dispose();
+      gearAccentMat.dispose();
       for (const mesh of hatMeshes) {
         mesh.geometry.dispose();
         for (const child of mesh.children) {
