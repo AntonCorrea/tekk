@@ -111,6 +111,12 @@ export const CORE = {
 
 /** Match flow: ready -> countdown -> playing -> results -> ready. */
 export const MATCH = {
+  /**
+   * The ready (lobby) window. While it is open nobody can move and no racer is
+   * shown: the room is for choosing the next map. The countdown starts when
+   * the window runs out (it only ticks while at least one player is inside).
+   */
+  lobbyMs: 30_000,
   countdownMs: 3_000,
   durationMs: 120_000,
   resultsMs: 10_000,

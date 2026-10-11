@@ -25,11 +25,57 @@ import { createPhysicsWorld, initPhysics } from './physics/world.ts';
 import { connectSession } from './net/session.ts';
 import { createRacerVisuals } from './net/remotes.ts';
 import { createHud, type ConnectionStatus } from './ui/hud.ts';
-import { clearInput, initInput, lookAngles, stageInput, toggleCameraMode } from './input.ts';
+import {
+  clearInput,
+  getCameraMode,
+  initInput,
+  lookAngles,
+  resetLookZoom,
+  setCameraMode,
+  stageInput,
+  toggleCameraMode,
+} from './input.ts';
 import { initTouchControls } from './touch.ts';
 import { createCoreVisual, type CoreVisualState } from './render/core.ts';
 import type { LocalPose } from './render/scene.ts';
 import { CAMERA, CORE, FIXED_TIMESTEP } from './constants.ts';
+import type { Course } from './shared/course.ts';
+
+/**
+ * The map's bounding-box centre, in world units.
+ *
+ * The lobby camera orbits this point while the ballot is open, so a vote
+ * previews the actual course rather than one corner of it. Computed from the
+ * solids — the floor slab alone would pin it to the deck, and the towers are
+ * what a map looks like. Falls back to the origin if a course somehow shipped
+ * without solids (the parser requires some, so this is defensive only).
+ */
+function mapCenter(course: Course): { x: number; y: number; z: number } {
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
+  for (const solid of course.solids) {
+    const p = solid.position;
+    const hx = solid.size[0] / 2;
+    const hy = solid.size[1] / 2;
+    const hz = solid.size[2] / 2;
+    if (p[0] - hx < minX) minX = p[0] - hx;
+    if (p[1] - hy < minY) minY = p[1] - hy;
+    if (p[2] - hz < minZ) minZ = p[2] - hz;
+    if (p[0] + hx > maxX) maxX = p[0] + hx;
+    if (p[1] + hy > maxY) maxY = p[1] + hy;
+    if (p[2] + hz > maxZ) maxZ = p[2] + hz;
+  }
+  if (!Number.isFinite(minX)) return { x: 0, y: 1, z: 0 };
+  return {
+    x: (minX + maxX) / 2,
+    y: (minY + maxY) / 2,
+    z: (minZ + maxZ) / 2,
+  };
+}
 
 /**
  * Where the game server is.
@@ -88,6 +134,29 @@ async function boot(): Promise<void> {
   stage.setAtmosphere(course.atmosphere);
   const visuals = buildScene(stage);
   const remotes = createRacerVisuals(stage.scene, session);
+
+  // The pre-match ballot: no racers on the map, the camera free-orbiting the
+  // course centre. `spectatePoint` is refreshed on a map swap; `applyLobbyView`
+  // is the one place that decides what the lobby LOOKS like, and it runs both
+  // at boot (a fresh join lands in `ready` with 30 s on the clock) and on every
+  // phase transition.
+  const spectatePoint = mapCenter(course);
+  let savedCameraMode: 'follow' | 'drag' = 'follow';
+  const applyLobbyView = (phase: string): void => {
+    const inLobby = phase === 'ready';
+    remotes.setVisible(!inLobby);
+    visuals.setSpectating(inLobby, spectatePoint);
+    if (inLobby) {
+      const mode = getCameraMode();
+      if (mode !== 'lobby') savedCameraMode = mode;
+      setCameraMode('lobby');
+    } else {
+      setCameraMode(savedCameraMode);
+      resetLookZoom();
+    }
+  };
+  applyLobbyView(session.room.state.phase);
+
   const hud = createHud(container, {
     // The card id comes from the catalog the server shipped; `sendVote` just
     // puts it on the wire, and the server checks it against the same list.
@@ -203,6 +272,12 @@ async function boot(): Promise<void> {
       courseHandle.dispose();
       courseHandle = buildCourse(stage.scene, course);
       stage.setAtmosphere(course.atmosphere);
+      // The lobby orbit follows the NEW map: the viewer should be looking at
+      // what they voted in, not where the old one used to be.
+      const centre = mapCenter(course);
+      spectatePoint.x = centre.x;
+      spectatePoint.y = centre.y;
+      spectatePoint.z = centre.z;
       console.info(`TEKK — map swapped to "${course.id}" (${course.name})`);
     }
 
@@ -231,6 +306,17 @@ async function boot(): Promise<void> {
 
     for (let step = 0; step < steps; step++) {
       stageInput(session.input.data, stageYaw);
+      // The match gates the racer, not the lobby: before the countdown and
+      // GO there is nothing to drive. Staging zeros here instead of skipping
+      // the step keeps the wire shape identical (reconciliation depends on it)
+      // and stops a wish held through the lobby from firing the instant GO
+      // arrives — a fresh press is the contract, never a buffered one.
+      if (session.room.state.phase !== 'playing') {
+        session.input.data.moveX = 0;
+        session.input.data.moveZ = 0;
+        session.input.data.dash = false;
+        session.input.data.jump = false;
+      }
       session.input.send();
     }
 
@@ -402,12 +488,16 @@ async function boot(): Promise<void> {
     // --- the ballot needs a free cursor --------------------------------
     // Under pointer lock every click is swallowed by the canvas, so a locked
     // player could never reach the vote cards. Released once per entry into a
-    // lobby window; clicking the scene simply re-engages the lock, and Esc
-    // releases it again while the cards matter.
+    // lobby window; while the ballot is open the camera is orbit-dragged
+    // instead of captured, and the countdown hands it back at GO.
     if (state.phase !== lastPhase) {
       if ((state.phase === 'ready' || state.phase === 'results') && document.pointerLockElement) {
         document.exitPointerLock();
       }
+      // The lobby is a spectator view: no racers, the camera orbits the map.
+      // Entering it saves the player's follow/drag choice and forces the
+      // lobby rig; leaving — countdown, playing, results — restores it.
+      applyLobbyView(state.phase);
       lastPhase = state.phase;
     }
 

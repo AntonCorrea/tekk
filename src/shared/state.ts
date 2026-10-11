@@ -137,8 +137,11 @@ export type MapInfoInstance = InstanceType<typeof MapInfo>;
 /**
  * Match phases, in the order they occur.
  *
- * `ready`     — waiting; the first movement input starts the countdown.
- * `countdown` — racers may move to warm up; the Core is not live yet.
+ * `ready`     — the lobby: vote for the next map. Nobody can move, and the
+ *               countdown starts the moment every player has voted — the
+ *               window is only the fallback for abstentions.
+ * `countdown` — the countdown number, racers frozen at their spawns until GO;
+ *               the Core is not live yet.
  * `playing`   — the Core is live and `holdMs` accrues.
  * `results`   — ranks are final; the room resets to `ready` when it expires.
  */

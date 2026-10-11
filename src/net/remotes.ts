@@ -51,6 +51,14 @@ export interface RacerVisuals {
    * `delta` is the real frame delta in seconds.
    */
   sync(delta: number): void;
+
+  /**
+   * Hide or show every remote racer at once. The ready lobby shows nobody, so
+   * the ballot is about the map, not the racers standing on it. Racers joined
+   * while hidden join already hidden and reappear in place.
+   */
+  setVisible(visible: boolean): void;
+
   dispose(): void;
 }
 
@@ -69,6 +77,12 @@ const characterState: CharacterState = {
 
 export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerVisuals {
   const racers = new Map<string, Racer>();
+  let racersVisible = true;
+
+  const applyVisibility = (racer: Racer, visible: boolean): void => {
+    racer.character.setVisible(visible);
+    racer.label.visible = visible;
+  };
 
   const add = (id: string, name: string) => {
     const identity = new THREE.Color(IDENTITY[racers.size % IDENTITY.length]!);
@@ -106,6 +120,14 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
 
         let racer = racers.get(id);
         if (!racer) racer = add(id, player.name);
+
+        // The lobby shows no racers: anyone who joined while hidden stays
+        // hidden in place, and the label goes with them. The frame after the
+        // lobby ends, `setVisible(true)` brings them all back.
+        if (!racersVisible) {
+          applyVisibility(racer, false);
+          return;
+        }
 
         // The smoothed read. Falls back to raw authority before the first
         // interpolation sample arrives, so a racer never pops in at the origin.
@@ -149,6 +171,11 @@ export function createRacerVisuals(scene: THREE.Scene, session: Session): RacerV
         // screen still says who is who.
         racer.label.visible = true;
       });
+    },
+
+    setVisible(visible) {
+      racersVisible = visible;
+      for (const racer of racers.values()) applyVisibility(racer, visible);
     },
 
     dispose() {

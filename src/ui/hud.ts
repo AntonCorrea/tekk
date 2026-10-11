@@ -175,9 +175,16 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
       const playing = phase === 'playing';
 
       // --- match clock ---------------------------------------------------
-      // Countdown and ready show the full match length and results shows zero,
-      // so the clock's slot never looks broken between matches.
-      const clockMs = playing ? state.phaseRemainingMs : phase === 'results' ? 0 : MATCH.durationMs;
+      // Playing shows the real match clock; ready shows the lobby window
+      // counting down to the countdown; countdown and results fill the slot
+      // so it never looks broken between matches.
+      const clockMs = playing
+        ? state.phaseRemainingMs
+        : phase === 'ready'
+          ? state.phaseRemainingMs
+          : phase === 'results'
+            ? 0
+            : MATCH.durationMs;
       timer.html(
         `<span class="${playing && clockMs <= 10_000 ? 'is-low' : ''}">${formatClock(clockMs)}</span>`,
       );
@@ -328,7 +335,8 @@ function renderBanner(
     case 'ready':
       banner.hidden(false);
       banner.html(
-        `<div class="banner-title">MOVE TO START</div><div class="banner-hint">${TAGLINE}</div>`,
+        `<div class="banner-title">VOTE FOR THE NEXT MAP</div>` +
+          `<div class="banner-hint">${TAGLINE} · countdown runs once everyone has voted — else in ${formatClock(state.phaseRemainingMs)}</div>`,
       );
       return;
 
@@ -395,7 +403,7 @@ function lobbyMarkup(
   const settle =
     state.phase === 'results'
       ? 'votes settle when the lobby resets'
-      : 'votes settle when someone starts the countdown';
+      : 'votes settle the moment every player has voted — or when the window runs out';
 
   const cards = state.catalog
     .map((info) => {

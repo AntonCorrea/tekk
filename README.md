@@ -32,7 +32,7 @@ the server did. That only holds if both sides simulate identically, which is a
 strong claim. So it is tested:
 
 ```
-npm run harness     # 134 checks
+npm run harness     # 136 checks
 ```
 
 Three tiers, in increasing order of what they prove:
@@ -104,6 +104,7 @@ run `npx vite --host` (npm does not pass `--host` through) and open
 | Bounce | `Space` again **in mid-air** against a wall — the kick follows `WASD`: push in to pop against the wall, pull away to launch off it. |
 | Dash | `Shift` — 32 u/s for 0.15 s, 0.8 s cooldown. The only way to steal. |
 | Look | Mouse (click to capture, `Esc` to release) |
+| Lobby | Drag to orbit the map, scroll to zoom — no capture in the lobby, the cursor stays free for the map cards. |
 | Mute | `M` |
 
 There is no separate sprint key. A map this size wants a dash, not a walk
@@ -115,8 +116,8 @@ speed toggle, so `Shift` belongs to the dash.
 
 | Phase | Length |
 |---|---|
-| `ready` | waits for someone to move |
-| `countdown` | 3 s |
+| `ready` | 30 s lobby — no racers on the map; vote for the next one. The countdown starts the moment everyone has voted (the window is the fallback) |
+| `countdown` | 3 s — frozen at your spawn, GO releases you |
 | `playing` | 120 s |
 | `results` | 10 s, then back to `ready` |
 
@@ -144,7 +145,7 @@ speed toggle, so `Shift` belongs to the dash.
 ```bash
 npm run typecheck    # tsc --noEmit
 npm run smoke        # 15 checks — routing, CORS, protocol
-npm run harness      # 134 checks — determinism, rollback, rules, pads, bounce, wire, map vote
+npm run harness      # 136 checks — determinism, rollback, rules, pads, bounce, wire, map vote
 ```
 
 **Run the harness more than once.** An earlier version gave its end-to-end
@@ -271,9 +272,10 @@ The local racer renders from the reconciler's interpolated pose, never from
   one room may rubber-band. Not yet measured under load.
 - **The server sleeps after 15 minutes idle** and takes about a minute to wake.
   First load after a quiet period looks like a hang.
-- **Match start teleports everyone.** At the end of the countdown the server
-  sends each player to their spawn, and the client renders that as a
-  correction.
+- **The countdown parks everyone at their spawn.** The lobby's racers stand
+  frozen there; when the lobby ends — every player has voted, or the window
+  ran out — the server parks them again (the client renders that as a
+  correction), and GO releases them.
 - **New York is large for two players.** Catching a carrier across the map is
   hard. Not yet measured.
 - **No GPU shows the raw error.** A device without WebGPU or WebGL2 gets the

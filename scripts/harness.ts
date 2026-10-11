@@ -38,7 +38,7 @@ import {
 } from '../src/shared/sim.ts';
 import { MoveInput } from '../src/shared/input.ts';
 import type { MoveInputData } from '../src/shared/input.ts';
-import { PlayerState } from '../src/shared/state.ts';
+import { PlayerState, type MatchPhase } from '../src/shared/state.ts';
 import { BOOST, CORE, DASH, FIXED_TIMESTEP, GRAVITY, MATCH, MOVE, PLAYER, WALL } from '../src/constants.ts';
 import {
   advancePhase,
@@ -733,37 +733,52 @@ function testRules(course: Course) {
   const dtMs = FIXED_TIMESTEP * 1000;
   const t = DEFAULT_TIMINGS;
   {
-    const idle = advancePhase({ phase: 'ready', ticks: 0 }, false, dtMs, t);
-    const moved = advancePhase({ phase: 'ready', ticks: 0 }, true, dtMs, t);
-    check('clock: ready waits for movement and reports 0 remaining',
-      idle.entered === null && idle.clock.phase === 'ready' && idle.remainingMs === 0);
-    check('clock: movement in ready enters the countdown',
-      moved.entered === 'countdown' && moved.remainingMs === MATCH.countdownMs);
+    const empty = advancePhase({ phase: 'ready', ticks: 0 }, false, false, dtMs, t);
+    check('clock: an empty lobby holds its full window',
+      empty.entered === null && empty.clock.phase === 'ready' && empty.remainingMs === t.lobbyMs);
+    const open = advancePhase({ phase: 'ready', ticks: 0 }, true, false, dtMs, t);
+    check('clock: an occupied lobby ticks down without any input',
+      open.entered === null && open.clock.phase === 'ready' && open.clock.ticks === 1 &&
+        open.remainingMs === t.lobbyMs - dtMs);
+    const voted = advancePhase({ phase: 'ready', ticks: 0 }, true, true, dtMs, t);
+    check('clock: everyone voting starts the countdown at once',
+      voted.entered === 'countdown' && voted.clock.phase === 'countdown' &&
+        voted.remainingMs === MATCH.countdownMs,
+      `entered=${String(voted.entered)} remaining=${voted.remainingMs.toFixed(0)}ms`);
+    const votedEmpty = advancePhase({ phase: 'ready', ticks: 10 }, false, true, dtMs, t);
+    check('clock: an empty lobby holds even with votes on the table',
+      votedEmpty.entered === null && votedEmpty.clock.phase === 'ready' &&
+        votedEmpty.remainingMs === t.lobbyMs);
   }
   {
     // Run each timed phase tick by tick and count exactly how long it lasts.
-    const lengthInTicks = (phase: 'countdown' | 'playing' | 'results') => {
+    // ready (the lobby) is just another length now: it enters the countdown on
+    // its own once the window is used up, with nobody moving. The length walk
+    // passes no votes, so the window — not a full ballot — ends the lobby.
+    const lengthInTicks = (phase: MatchPhase) => {
       let clock: PhaseClock = { phase, ticks: 0 };
       for (let n = 1; n < 100_000; n++) {
-        const step = advancePhase(clock, false, dtMs, t);
+        const step = advancePhase(clock, true, false, dtMs, t);
         if (step.entered) return { n, next: step.entered };
         clock = step.clock;
       }
       return { n: -1, next: null };
     };
+    const lb = lengthInTicks('ready');
     const cd = lengthInTicks('countdown');
     const pl = lengthInTicks('playing');
     const rs = lengthInTicks('results');
     check('clock: each phase lasts exactly its MATCH length in fixed ticks',
-      cd.n === MATCH.countdownMs / dtMs && pl.n === Math.round(MATCH.durationMs / dtMs) &&
-        rs.n === Math.round(MATCH.resultsMs / dtMs),
-      `countdown ${cd.n}, playing ${pl.n}, results ${rs.n} ticks`);
-    check('clock: countdown -> playing -> results -> ready',
-      cd.next === 'playing' && pl.next === 'results' && rs.next === 'ready');
+      lb.n === Math.round(MATCH.lobbyMs / dtMs) && cd.n === Math.round(MATCH.countdownMs / dtMs) &&
+        pl.n === Math.round(MATCH.durationMs / dtMs) && rs.n === Math.round(MATCH.resultsMs / dtMs),
+      `lobby ${lb.n}, countdown ${cd.n}, playing ${pl.n}, results ${rs.n} ticks`);
+    check('clock: ready -> countdown -> playing -> results -> ready',
+      lb.next === 'countdown' && cd.next === 'playing' && pl.next === 'results' && rs.next === 'ready');
   }
   check('timings: production defaults are the MATCH constants',
     resolveTimings(undefined).durationMs === MATCH.durationMs &&
-      resolveTimings({}).countdownMs === MATCH.countdownMs);
+      resolveTimings({}).countdownMs === MATCH.countdownMs &&
+      resolveTimings({}).lobbyMs === MATCH.lobbyMs);
   {
     let threw = false;
     try {
@@ -839,11 +854,12 @@ function testRules(course: Course) {
  * match take two minutes. Passed through `createGameServer`, i.e. at define
  * time, which is the only path that can set them -- see server/index.ts.
  *
- * The countdown is long enough to sample a racer running during it, and the
- * match long enough to fit a pickup, the 1.5s steal immunity, a steal and a
- * drop with room for a loaded machine.
+ * The lobby is long enough to hold the lockout probes without letting the
+ * countdown start early; the countdown is long enough to prove racers are
+ * FROZEN during it, and the match long enough to fit a pickup, the 1.5s steal
+ * immunity, a steal and a drop with room for a loaded machine.
  */
-const WIRE_TIMINGS = { countdownMs: 1500, durationMs: 16_000, resultsMs: 1500 };
+const WIRE_TIMINGS = { lobbyMs: 2000, countdownMs: 1500, durationMs: 16_000, resultsMs: 1500 };
 
 async function testWire(course: Course) {
   console.log('\n=== D. live server + SDK clients ===');
@@ -961,39 +977,56 @@ async function testWire(course: Course) {
     return cond();
   };
 
-  // 1. Idle: the match must NOT start.
+  // 1. The lobby window is open: it does not start anything on its own yet, and
+//    nobody can move while it runs — the lockout is proven by the frozen
+//    probes in step 2, and here by the phase simply holding at `ready`.
   for (let i = 0; i < 30; i++) {
     both(0, 0);
     await sleep(16);
   }
-  check('idle input does not start the match',
-    s().phase === 'ready' && s().phaseRemainingMs === 0,
-    `phase=${s().phase} remaining=${s().phaseRemainingMs}`);
+  const zReady = me(A)!.z;
+  check('the lobby holds while its window is open',
+    s().phase === 'ready' && s().phaseRemainingMs > 0 && s().phaseRemainingMs <= WIRE_TIMINGS.lobbyMs,
+    `phase=${s().phase} remaining=${s().phaseRemainingMs.toFixed(0)}ms of ${WIRE_TIMINGS.lobbyMs}`);
+  check('input is ignored while the lobby is open',
+    me(A)!.z === zReady && Math.abs(me(A)!.z - course.spawn[2]) < 1,
+    `A z ${zReady.toFixed(2)} -> ${me(A)!.z.toFixed(2)}`);
 
-  // 2. Move: the countdown starts. The axis is wildly out of range, which also
-  //    proves sanitize clamps it -- racers may move during the countdown.
-  const z0 = me(A)!.z;
-  let peakSpeed = 0;
-  let sawCountdown = false;
+  // 2. Everyone voting starts the countdown at once. A and B both pick the
+  //    first map in the catalog, and the countdown must begin well before the
+  //    window would have run out on its own — the ballot decides, not the
+  //    clock. The poll deadline ends short of the remaining window, so a
+  //    countdown seen inside it can only have been started by the votes.
+  const votedFor = s().catalog[0]!.id;
+  const lobbyLeftAtVote = s().phaseRemainingMs;
+  roomA.send('vote', { courseId: votedFor });
+  roomB.send('vote', { courseId: votedFor });
   let countdownRemaining = -1;
-  for (let i = 0; i < 40; i++) {
+  {
+    const deadline = Date.now() + Math.max(250, lobbyLeftAtVote - 250);
+    while (Date.now() < deadline && s().phase !== 'countdown') {
+      both(0, 0);
+      await sleep(16);
+    }
+    countdownRemaining = s().phaseRemainingMs;
+  }
+  check('everyone voting starts the countdown at once',
+    s().phase === 'countdown' && countdownRemaining > 0 && countdownRemaining <= WIRE_TIMINGS.countdownMs,
+    `phase=${s().phase}, remaining at first sight ${countdownRemaining.toFixed(0)}ms, ` +
+      `lobby had ${lobbyLeftAtVote.toFixed(0)}ms left`);
+  check('the Core is not live during the countdown', s().carrierId === '' && coreAtSpawn());
+  // Frozen in the countdown too: driving input must not false-start the match.
+  const zCount = me(A)!.z;
+  let peakLocked = 0;
+  for (let i = 0; i < 20; i++) {
     send(hA, -9999);
     send(hB, 0);
     await sleep(16);
-    peakSpeed = Math.max(peakSpeed, me(A)!.speed);
-    if (s().phase === 'countdown' && !sawCountdown) {
-      sawCountdown = true;
-      countdownRemaining = s().phaseRemainingMs;
-    }
+    peakLocked = Math.max(peakLocked, me(A)!.speed);
   }
-  check('movement starts the countdown',
-    sawCountdown && countdownRemaining > 0 && countdownRemaining <= WIRE_TIMINGS.countdownMs,
-    `phase=${s().phase}, remaining at first sight ${countdownRemaining.toFixed(0)}ms`);
-  check('racers move during the countdown', me(A)!.z < z0 - 1, `z ${z0.toFixed(2)} -> ${me(A)!.z.toFixed(2)}`);
-  check('out-of-range input is clamped, not trusted',
-    peakSpeed > 1 && peakSpeed <= MOVE.runSpeed + 0.5,
-    `peak speed=${peakSpeed.toFixed(2)} (tuned run is ${MOVE.runSpeed})`);
-  check('the Core is not live during the countdown', s().carrierId === '' && coreAtSpawn());
+  check('racers are frozen during the countdown',
+    me(A)!.z === zCount && peakLocked === 0,
+    `A z ${zCount.toFixed(2)} -> ${me(A)!.z.toFixed(2)}, peak speed ${peakLocked.toFixed(3)}`);
 
   // 3. Countdown -> playing, everyone back on spawn.
   const playing = await waitFor(() => s().phase === 'playing', 10_000);
@@ -1010,6 +1043,18 @@ async function testWire(course: Course) {
   check('a new match starts with clean scores and a free Core',
     me(A)!.holdMs === 0 && me(A)!.lastHeldAtMs === -1 && me(A)!.rank === 0 &&
       s().carrierId === '' && s().immuneRemainingMs === 0 && coreAtSpawn());
+  // The lockout probes above could not measure clamping (input did nothing at
+  // all), so prove the clamp on live movement instead.
+  let peakClamped = 0;
+  for (let i = 0; i < 12; i++) {
+    send(hA, -9999);
+    send(hB, 0);
+    await sleep(16);
+    peakClamped = Math.max(peakClamped, me(A)!.speed);
+  }
+  check('out-of-range input is clamped, not trusted',
+    peakClamped > 1 && peakClamped <= MOVE.runSpeed + 0.5,
+    `peak speed=${peakClamped.toFixed(2)} (tuned run is ${MOVE.runSpeed})`);
 
   // 4. A runs straight north from spawn, up the dais steps, onto the Core.
   const transfers0 = s().coreTransfers;
@@ -1125,9 +1170,11 @@ async function testWire(course: Course) {
   await waitFor(() => me(A)!.holdMs === 0 && Math.abs(me(A)!.z - course.spawn[2]) < 1, 2000);
   check('results expire back to ready with scores cleared',
     ready && me(A)!.holdMs === 0 && me(A)!.lastHeldAtMs === -1 && me(A)!.rank === 0 &&
-      s().winnerId === '' && s().phaseRemainingMs === 0 && coreAtSpawn() &&
+      s().winnerId === '' && coreAtSpawn() &&
+      s().phaseRemainingMs > 0 && s().phaseRemainingMs <= WIRE_TIMINGS.lobbyMs &&
       Math.abs(me(A)!.z - course.spawn[2]) < 1,
-    `phase=${s().phase} holdMs=${me(A)!.holdMs} rank=${me(A)!.rank} z=${me(A)!.z.toFixed(2)}`);
+    `phase=${s().phase} holdMs=${me(A)!.holdMs} rank=${me(A)!.rank} ` +
+      `lobby remaining=${s().phaseRemainingMs.toFixed(0)}ms of ${WIRE_TIMINGS.lobbyMs} z=${me(A)!.z.toFixed(2)}`);
 
   // 9. Respawn: is the spawn point on solid ground?
   const probe = respawnFeet(
@@ -1153,8 +1200,12 @@ async function testWire(course: Course) {
 /**
  * Phases for the vote suite: short enough that three lobby -> match -> lobby
  * cycles fit in a test run, long enough for a vote to land between patches.
+ *
+ * The lobby window is 3 s: wide open for every ballot interaction (joins,
+ * accept/reject checks, a second voter) to happen inside it, and short enough
+ * that the three windows the suite waits out do not dominate the run.
  */
-const VOTE_TIMINGS = { countdownMs: 500, durationMs: 2000, resultsMs: 500 };
+const VOTE_TIMINGS = { lobbyMs: 3000, countdownMs: 500, durationMs: 2000, resultsMs: 500 };
 
 /**
  * The lobby ballot over the wire: what syncs down, what the server accepts,
@@ -1223,12 +1274,11 @@ async function testMapVote(): Promise<void> {
       await sleep(16);
     }
   };
-  /** Move A until the room commits to a countdown (the ready-window settle point). */
+  /** Wait for the lobby window to run out into the countdown (its settle point). */
   const startCountdown = async () => {
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + VOTE_TIMINGS.lobbyMs + 5000;
     while (Date.now() < deadline && s().phase !== 'countdown') {
-      send(hA, -1);
-      send(hB, 0);
+      idle();
       await sleep(16);
     }
     idle();
@@ -1288,14 +1338,22 @@ async function testMapVote(): Promise<void> {
     ballotOf(A) === target1, `votedFor=${ballotOf(A) || "''"}`);
 
   vote(roomB, target1);
-  await waitWhile(() => ballotOf(B) !== target1, 1500);
-  check('a second racer\'s vote lands alongside the first',
-    ballotOf(A) === target1 && ballotOf(B) === target1,
-    `A=${ballotOf(A) || "''"} B=${ballotOf(B) || "''"}`);
-
-  // --- 1. unanimous ready-ballot swaps at the countdown --------------------
-  check('movement starts the countdown with votes pending', await startCountdown(),
-    `phase=${s().phase}`);
+  // B's vote completes the ballot, and that — not the 3 s window — starts the
+  // countdown. The poll deadline ends well short of the remaining window, so a
+  // countdown inside it can only have been triggered by the finished ballot;
+  // if B's vote had been rejected, the phase would still be sitting in ready.
+  const lobbyLeftAtBVote = s().phaseRemainingMs;
+  let earlyCountdown: boolean;
+  {
+    const deadline = Date.now() + Math.max(250, lobbyLeftAtBVote - 500);
+    while (Date.now() < deadline && s().phase !== 'countdown') {
+      idle();
+      await sleep(16);
+    }
+    earlyCountdown = s().phase === 'countdown';
+  }
+  check('everyone voting starts the countdown at once',
+    earlyCountdown, `phase=${s().phase}, lobby had ${lobbyLeftAtBVote.toFixed(0)}ms left`);
   await waitWhile(() => currentId() === startId, 2000);
   check('a unanimous ready-ballot swaps the map as the countdown starts',
     currentId() === target1, `course=${currentId()}, wanted ${target1}`);
@@ -1368,7 +1426,7 @@ async function testMapVote(): Promise<void> {
     vote(roomA, tieA);
     vote(roomB, tieB);
     await waitWhile(() => ballotOf(A) !== tieA || ballotOf(B) !== tieB, 1500);
-    check('movement starts the countdown on a tied ballot', await startCountdown(),
+    check('everyone voting on a tied ballot starts the countdown at once', await startCountdown(),
       `phase=${s().phase}`);
     await idleFor(250);
     check('a tied ready-ballot leaves the current map in place',
@@ -1449,7 +1507,7 @@ async function testMapVote(): Promise<void> {
     `A=${ballotOf(A) || "''"} B=${ballotOf(B) || "''"}`);
 
   const beforeSolo = currentId();
-  check('movement starts the countdown for the solo ballot', await startCountdown(),
+  check('the lobby window runs into the countdown for the solo ballot', await startCountdown(),
     `phase=${s().phase}`);
   await idleFor(250);
   check('a solo vote wins the ballot (abstentions are not votes)',

@@ -214,7 +214,8 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     log(
       `room "${this.course.id}" -- ${this.course.solids.length} solids, ` +
         `step ${(FIXED_TIMESTEP * 1000).toFixed(2)}ms, ` +
-        `match ${this.timings.countdownMs}/${this.timings.durationMs}/${this.timings.resultsMs}ms`,
+        `match lobby=${this.timings.lobbyMs}ms, ` +
+        `${this.timings.countdownMs}/${this.timings.durationMs}/${this.timings.resultsMs}ms`,
     );
   }
 
@@ -269,8 +270,6 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     const dtMs = dt * 1000;
     this.world.timestep = dt;
 
-    let anyoneMoving = false;
-
     // --- integrate every racer, then advance the world exactly once --------
     // Order matters. One solver step moves every body together, so each racer
     // gets exactly one input per tick. That is why this loop uses `next()`
@@ -281,10 +280,16 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     // `sim.carrying` was set by last tick's rules, so the carrier's slower
     // speed and dash lock take effect on this step -- the same step at which
     // the client, adopting `carrierId` from that tick's state, replays it.
+    //
+    // Input only exists inside a live match (playing, and the results stroll
+    // that follows it). During the ready lobby and the countdown the racers
+    // stand frozen at their spawns: a W held through the lobby must not leave
+    // the gate, and a false start must be impossible by construction.
     for (const [sessionId, sim] of this.racers) {
       const input = this.inputs.get(sessionId).next() ?? idleInput();
-      if (input.moveX !== 0 || input.moveZ !== 0) anyoneMoving = true;
-      applyInput(sim, input, dt);
+      if (this.state.phase !== 'ready' && this.state.phase !== 'countdown') {
+        applyInput(sim, input, dt);
+      }
     }
 
     this.world.step();
@@ -296,10 +301,29 @@ export class RaceRoom extends Room<RaceRoomOptions> {
 
     // --- match clock ------------------------------------------------------
     // After the rules, so the last playing tick still scores before results
-    // freeze it.
-    const advance = advancePhase(this.clockState, anyoneMoving, dtMs, this.timings);
+    // freeze it. The lobby window only ticks while the room is occupied, and
+    // a full ballot ends it early: the moment every player here has voted,
+    // the countdown begins at once — the window is only the fallback when
+    // somebody abstains. 'Everyone' is everyone currently in the room: a
+    // racer who joins mid-lobby holds the countdown until they vote too.
+    let allVoted = this.state.players.size > 0;
+    if (allVoted) {
+      for (const player of this.state.players.values()) {
+        if (player.votedFor === '') {
+          allVoted = false;
+          break;
+        }
+      }
+    }
+
+    const advance = advancePhase(this.clockState, this.racers.size > 0, allVoted, dtMs, this.timings);
     this.clockState = advance.clock;
-    if (advance.entered) this.enterPhase(advance.entered);
+    if (advance.entered) {
+      if (advance.entered === 'countdown') {
+        log(allVoted ? 'countdown -- everyone voted' : 'countdown -- lobby window up');
+      }
+      this.enterPhase(advance.entered);
+    }
     this.state.phaseRemainingMs = advance.remainingMs;
 
     // --- the mid-match skip -------------------------------------------------
@@ -438,12 +462,12 @@ export class RaceRoom extends Room<RaceRoomOptions> {
   private enterPhase(phase: MatchPhase): void {
     switch (phase) {
       case 'countdown':
-        // Whoever moved also committed the lobby: the ready-window's votes
-        // settle exactly here, which may rebuild the room onto a new map —
-        // everyone landing on its spawn before the countdown runs out.
+        // The ready-window's votes settle exactly here, whether the ballot
+        // completed or the window ran out: on a swap everyone lands on the
+        // new map's spawn before the countdown runs out, frozen until GO.
         this.settleVotes();
+        this.respawnAll();
         this.state.phase = 'countdown';
-        log('countdown');
         break;
       case 'playing':
         this.enterPlaying();
@@ -513,7 +537,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     this.freeCore();
     this.state.winnerId = '';
     this.state.phase = 'ready';
-    this.state.phaseRemainingMs = 0;
+    this.state.phaseRemainingMs = this.timings.lobbyMs;
     log('reset to ready');
   }
 

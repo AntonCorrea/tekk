@@ -13,6 +13,7 @@ import * as THREE from 'three/webgpu';
 
 import type { Stage } from '../core/stage.ts';
 import { CAMERA, MOVE } from '../constants.ts';
+import { lookZoom } from '../input.ts';
 import { getCameraMode } from '../input.ts';
 import { fxSpeed, reducedMotion } from './fx.ts';
 import { NEON, PALETTE, RACER_IDENTITY, RAMP } from './palette.ts';
@@ -64,6 +65,14 @@ export interface SceneVisuals {
    * nothing here is sent to the server.
    */
   orbit(yaw: number, pitch: number): void;
+
+  /**
+   * Enter or leave the pre-match lobby view. While active the camera orbits
+   * `point` (the map centre) instead of the racer, and the local racer — body
+   * and ground ring — hides: the lobby is a ballot, not a race. The point is
+   * copied, so the caller may reuse the object.
+   */
+  setSpectating(active: boolean, point: { x: number; y: number; z: number } | null): void;
 
   /**
    * The yaw the view is actually rendered from this frame, in radians, with
@@ -187,6 +196,16 @@ export function buildScene(stage: Stage): SceneVisuals {
   let pitch: number = CAMERA.pitch;
   let snapping = true;
 
+  // --- lobby (pre-match) view -------------------------------------------------
+  // The ready phase is a spectator ballot: nobody races, so the camera orbits
+  // the map centre and the local racer hides. `spectatePoint` is written by
+  // `setSpectating`, `racerVisible` gates the character + ground ring once per
+  // change (character.update still runs hidden — it animates the dash ghosts,
+  // which matters the frame GO releases everyone).
+  let spectating = false;
+  const spectatePoint = new THREE.Vector3();
+  let racerVisible = true;
+
   // --- camera mode state ---------------------------------------------------
   // `yaw`/`pitch` above are the DRAG targets written by `orbit()` from the
   // pointer. The angles actually rendered live in `displayYaw`/`displayPitch`
@@ -223,6 +242,15 @@ export function buildScene(stage: Stage): SceneVisuals {
   return {
     sync(pose, dt) {
       character.update(pose, dt);
+
+      // The lobby shows no racer: the character and its ground ring hide for
+      // as long as the map is being voted on, and come back the moment the
+      // countdown starts.
+      if (racerVisible === spectating) {
+        racerVisible = !spectating;
+        character.setVisible(racerVisible);
+        marker.visible = racerVisible;
+      }
 
       // The ring stays at ground level rather than following the capsule, so it
       // doubles as a height cue while airborne.
@@ -276,6 +304,13 @@ export function buildScene(stage: Stage): SceneVisuals {
       // otherwise poison the rig until reload. The initial value is (0,0,0).
       if (Number.isFinite(pose.x) && Number.isFinite(pose.y) && Number.isFinite(pose.z)) {
         followTarget.set(pose.x, pose.y + CAMERA.lookAtHeight, pose.z);
+      }
+      // In the lobby the focus is the map, not the (hidden) racer: the camera
+      // orbits the course while the ballot is open. The same finite guard —
+      // a poisoned centre would drag the view into NaN.
+      if (spectating && Number.isFinite(spectatePoint.x) && Number.isFinite(spectatePoint.y) &&
+          Number.isFinite(spectatePoint.z)) {
+        followTarget.copy(spectatePoint);
       }
       // Snap on the first frame (the camera would otherwise fly in from
       // wherever core/stage.ts seeded it) and when a teleport is in flight
@@ -338,6 +373,9 @@ export function buildScene(stage: Stage): SceneVisuals {
       }
 
       orbitOffset(cameraOffset, displayYaw, displayPitch);
+      // Lobby wheel-zoom (input.ts). Outside the lobby `lookZoom()` is pinned
+      // at 1, so this is a no-op for the racing rig.
+      cameraOffset.multiplyScalar(lookZoom());
       stage.camera.position.copy(followPoint).add(cameraOffset);
       // Terminal guard: a non-finite camera position renders NaN to the whole
       // frame — a black screen that never self-heals. If anything upstream
@@ -413,6 +451,13 @@ export function buildScene(stage: Stage): SceneVisuals {
     orbit(y, p) {
       yaw = y;
       pitch = clampNumber(p, CAMERA.minPitch, CAMERA.maxPitch);
+    },
+
+    setSpectating(active, point) {
+      spectating = active;
+      if (point && Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z)) {
+        spectatePoint.set(point.x, point.y, point.z);
+      }
     },
 
     dispose() {

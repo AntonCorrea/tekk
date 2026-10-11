@@ -203,12 +203,14 @@ export function hasSkipMajority(skipVotes: number, players: number): boolean {
 
 /** Phase lengths in ms. Production uses `MATCH`; tests may shorten them. */
 export interface MatchTimings {
+  lobbyMs: number;
   countdownMs: number;
   durationMs: number;
   resultsMs: number;
 }
 
 export const DEFAULT_TIMINGS: MatchTimings = {
+  lobbyMs: MATCH.lobbyMs,
   countdownMs: MATCH.countdownMs,
   durationMs: MATCH.durationMs,
   resultsMs: MATCH.resultsMs,
@@ -224,7 +226,7 @@ export function resolveTimings(raw: unknown): MatchTimings {
   if (typeof raw !== 'object') throw new Error(`match timings must be an object, got ${typeof raw}`);
 
   const out = { ...DEFAULT_TIMINGS };
-  for (const key of ['countdownMs', 'durationMs', 'resultsMs'] as const) {
+  for (const key of ['lobbyMs', 'countdownMs', 'durationMs', 'resultsMs'] as const) {
     const value = (raw as Record<string, unknown>)[key];
     if (value === undefined) continue;
     if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
@@ -235,11 +237,11 @@ export function resolveTimings(raw: unknown): MatchTimings {
   return out;
 }
 
-/** How long a phase lasts, or null for `ready`, which waits for movement. */
-export function phaseLengthMs(phase: MatchPhase, timings: MatchTimings): number | null {
+/** How long a phase lasts — every phase has a length; ready is the lobby window. */
+export function phaseLengthMs(phase: MatchPhase, timings: MatchTimings): number {
   switch (phase) {
     case 'ready':
-      return null;
+      return timings.lobbyMs;
     case 'countdown':
       return timings.countdownMs;
     case 'playing':
@@ -282,30 +284,48 @@ export interface PhaseAdvance {
   clock: PhaseClock;
   /** The phase entered on this tick, or null if the phase did not change. */
   entered: MatchPhase | null;
-  /** Time left in the (possibly new) phase, ms. 0 in `ready`. */
+  /** Time left in the (possibly new) phase, ms. */
   remainingMs: number;
 }
 
 /**
  * Advance the match clock by one fixed tick.
  *
- * `ready` has no deadline: it leaves only when someone moves. Every other
- * phase leaves when its length is used up. At most one transition per tick,
- * and a phase entered this tick starts at 0 ticks.
+ * `ready` is the lobby: a timed window (`lobbyMs`) with an early exit. The
+ * moment every player in the room has voted, the countdown begins at once —
+ * the ballot decides, not the clock. The window only remains as the fallback
+ * for abstentions, and it only ticks while the room is occupied (an empty
+ * room holds its full window, so a late joiner always gets the whole lobby
+ * to vote). Input is ignored and racers stand frozen at their spawns until
+ * the countdown lets the match through. Every other phase leaves when its
+ * length is used up. At most one transition per tick, and a phase entered
+ * this tick starts at 0 ticks.
  */
 export function advancePhase(
   clock: PhaseClock,
-  anyoneMoving: boolean,
+  occupied: boolean,
+  allVoted: boolean,
   dtMs: number,
   timings: MatchTimings,
 ): PhaseAdvance {
   if (clock.phase === 'ready') {
-    if (!anyoneMoving) return { clock, entered: null, remainingMs: 0 };
-    return enter('countdown', timings);
+    if (!occupied) return { clock, entered: null, remainingMs: timings.lobbyMs };
+    // A full ballot ends the lobby immediately: with every player's vote on
+    // the table the countdown starts now, however much window was left.
+    if (allVoted) return enter('countdown', timings);
+    const ticks = clock.ticks + 1;
+    // Same epsilon as the timed phases below: lobbyMs must be a whole number
+    // of fixed ticks for the window to end on schedule.
+    if (ticks * dtMs >= timings.lobbyMs - 1e-6) return enter('countdown', timings);
+    return {
+      clock: { phase: 'ready', ticks },
+      entered: null,
+      remainingMs: timings.lobbyMs - ticks * dtMs,
+    };
   }
 
   const ticks = clock.ticks + 1;
-  const length = phaseLengthMs(clock.phase, timings)!;
+  const length = phaseLengthMs(clock.phase, timings);
   // A small epsilon so 180 ticks of 16.666...ms meets a 3000ms deadline
   // instead of missing it by a rounding error and running one tick long.
   if (ticks * dtMs >= length - 1e-6) return enter(nextPhase(clock.phase), timings);
@@ -314,5 +334,5 @@ export function advancePhase(
 }
 
 function enter(phase: MatchPhase, timings: MatchTimings): PhaseAdvance {
-  return { clock: { phase, ticks: 0 }, entered: phase, remainingMs: phaseLengthMs(phase, timings) ?? 0 };
+  return { clock: { phase, ticks: 0 }, entered: phase, remainingMs: phaseLengthMs(phase, timings) };
 }

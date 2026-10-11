@@ -109,6 +109,13 @@ export function initInput(target: EventTarget = window, viewport?: HTMLElement):
   if (viewport) {
     viewport.addEventListener('click', onViewportClick);
     viewport.addEventListener('contextmenu', onContextMenu);
+    // Lobby orbit: drag to look (no pointer lock in the lobby) and scroll to
+    // zoom. Both are gated on cameraMode inside the handlers, so they are
+    // inert for the whole match.
+    viewport.addEventListener('mousedown', onLobbyDragStart);
+    globalThis.addEventListener('mousemove', onLobbyDragMove);
+    globalThis.addEventListener('mouseup', onLobbyDragEnd);
+    viewport.addEventListener('wheel', onLobbyWheel, { passive: false });
   }
 }
 
@@ -120,6 +127,10 @@ export function disposeInput(target: EventTarget = window, viewport?: HTMLElemen
   if (viewport) {
     viewport.removeEventListener('click', onViewportClick);
     viewport.removeEventListener('contextmenu', onContextMenu);
+    viewport.removeEventListener('mousedown', onLobbyDragStart);
+    globalThis.removeEventListener('mousemove', onLobbyDragMove);
+    globalThis.removeEventListener('mouseup', onLobbyDragEnd);
+    viewport.removeEventListener('wheel', onLobbyWheel);
   }
 
   // Releasing the lock rather than leaving it held: a stray `locked` flag would
@@ -131,6 +142,9 @@ function onViewportClick(event: Event): void {
   // Ignore the click that is itself unlocking, or capture would immediately
   // re-engage and the player could never let go.
   if (document.pointerLockElement) return;
+  // The lobby is lock-free on purpose: the cursor must stay free to click a
+  // map card, and orbit drags (with the mouse button held) take its place.
+  if (cameraMode === 'lobby') return;
   // Touch devices have no mouse to capture; on iOS `requestPointerLock` does
   // not exist and would throw. The touch layer (ui/touch.ts) mounts its own
   // camera input instead.
@@ -168,24 +182,88 @@ let locked = false;
 // --- camera mode ----------------------------------------------------------
 // AUTO parks the camera behind the racer (the renderer swings it toward the
 // velocity heading every frame); DRAG hands the angle to the pointer via
-// `applyLookDelta`. The mode lives here rather than in the renderer because it
-// GATES look input: a drag that happens in AUTO must not accumulate a hidden
-// orbit to snap to on the next mode switch.
-export type CameraMode = 'follow' | 'drag';
+// `applyLookDelta`; LOBBY is the pre-match ballot view — the same drag rig but
+// pointed at the map centre, entered for the whole ready phase and driven
+// without pointer lock (the cursor must stay free for the map cards).
+//
+// The mode lives here rather than in the renderer because it GATES look
+// input: a drag that happens in AUTO must not accumulate a hidden orbit to
+// snap to on the next mode switch.
+export type CameraMode = 'follow' | 'drag' | 'lobby';
 let cameraMode: CameraMode = 'follow';
+// The player's last follow/drag choice, so LOBBY can hand the angle back to
+// them at GO instead of to whatever mode was mid-lobby. LOBBY is entered and
+// left by the frame loop (main.ts), never toggled by the player.
+let userMode: CameraMode = 'follow';
 
 /** Current camera mode — the renderer reads this every frame. */
 export function getCameraMode(): CameraMode {
   return cameraMode;
 }
 
+/** Enter/leave the lobby view, remembering (but not disturbing) the player's choice. */
+export function setCameraMode(mode: CameraMode): void {
+  cameraMode = mode;
+  if (mode !== 'lobby') userMode = mode;
+}
+
 /** Flip follow <-> drag and report the new mode, for buttons and logs. */
 export function toggleCameraMode(): CameraMode {
-  cameraMode = cameraMode === 'follow' ? 'drag' : 'follow';
+  userMode = userMode === 'follow' ? 'drag' : 'follow';
+  // In the lobby the flip only re-arms the stored choice; the ballot view
+  // stays until the countdown hands the camera back.
+  if (cameraMode !== 'lobby') cameraMode = userMode;
   console.info(
     `camera: ${cameraMode === 'follow' ? 'AUTO — follows the racer' : 'DRAG — pointer orbits'}`,
   );
   return cameraMode;
+}
+
+/**
+ * Wheel zoom for the lobby view. Exported: LOBBY only, so DRAG racing keeps
+ * the fixed chase distance it always had. The renderer multiplies its orbit
+ * offset by `lookZoom()` every frame.
+ */
+let zoom = 1;
+const ZOOM_MIN = 0.55;
+const ZOOM_MAX = 2.4;
+const ZOOM_STEP = 0.2;
+export function lookZoom(): number {
+  return zoom;
+}
+export function resetLookZoom(): void {
+  zoom = 1;
+}
+
+// --- lobby drag -------------------------------------------------------------
+// The lobby has no pointer lock (the ballot needs the cursor), so the orbit
+// drag is tracked by client coordinates while the button is held. Deliberately
+// separate from onPointerMove, which stays lock-gated for the match.
+let lobbyDragging = false;
+let lastDragX = 0;
+let lastDragY = 0;
+function onLobbyDragStart(event: Event): void {
+  if (cameraMode !== 'lobby') return;
+  const e = event as MouseEvent;
+  lastDragX = e.clientX;
+  lastDragY = e.clientY;
+  lobbyDragging = true;
+}
+function onLobbyDragMove(event: Event): void {
+  if (!lobbyDragging) return;
+  const e = event as MouseEvent;
+  applyLookDelta(e.clientX - lastDragX, e.clientY - lastDragY);
+  lastDragX = e.clientX;
+  lastDragY = e.clientY;
+}
+function onLobbyDragEnd(): void {
+  lobbyDragging = false;
+}
+function onLobbyWheel(event: Event): void {
+  if (cameraMode !== 'lobby') return;
+  event.preventDefault();
+  const e = event as WheelEvent;
+  zoom = clamp(zoom + Math.sign(e.deltaY) * ZOOM_STEP, ZOOM_MIN, ZOOM_MAX);
 }
 
 function onPointerMove(event: Event): void {
@@ -278,9 +356,10 @@ export function queueTouchJump(): void {
  */
 export function applyLookDelta(dx: number, dy: number): void {
   // AUTO mode owns its angle; a drag would only accumulate a hidden view to
-  // snap to on the next mode switch. The mouse's onPointerMove and the touch
-  // layer both land here, so the gate covers camera drags from every pointer.
-  if (cameraMode !== 'drag') return;
+  // snap to on the next mode switch. The mouse's onPointerMove, the touch
+  // layer and the lobby drag all land here, so the gate covers camera drags
+  // from every pointer.
+  if (cameraMode === 'follow') return;
   yaw -= dx * CAMERA.yawSensitivity;
   pitch = clamp(
     pitch - dy * CAMERA.pitchSensitivity,
