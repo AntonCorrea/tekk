@@ -52,6 +52,7 @@ import {
 import { createPhysicsWorld, initPhysics } from '../src/physics/world.ts';
 import { DEFAULT_COURSE_PATH, loadCourse } from './course.ts';
 import { catalogEntry, loadCatalog, type CatalogEntry } from './catalog.ts';
+import { popcount, recordMatch, ZERO_WALLET } from './matchRecord.ts';
 import {
   advancePhase,
   chooseStealer,
@@ -971,6 +972,26 @@ export class RaceRoom extends Room<RaceRoomOptions> {
       log(`match over -- ${winner.name} wins with ${(winner.holdMs / 1000).toFixed(2)}s`);
     } else {
       log(`match over -- ${winner.name} wins in ${(winner.finishMs / 1000).toFixed(2)}s`);
+    }
+
+    // On-chain record (Stage 1): one tx per finished match. Gated by
+    // MATCH_RECORD_ENABLED + MONAD_RPC_URL + MATCH_SIGNER_KEY +
+    // MATCH_RECORD_ADDRESS in tekk2/.env; without them this is a silent
+    // no-op, so local dev and the harness never touch the chain. Wallets are
+    // zeroed until Stage 3 (Privy) attaches real addresses.
+    const racers = [...this.state.players.values()];
+    if (racers.length > 0) {
+      recordMatch({
+        courseId: this.course.id,
+        mode: this.mode,
+        winner: null,
+        players: racers.map((p) => ({
+          wallet: ZERO_WALLET,
+          holdMs: p.holdMs,
+          finishMs: p.finishMs,
+          coresFound: popcount(p.coreMask),
+        })),
+      });
     }
   }
 

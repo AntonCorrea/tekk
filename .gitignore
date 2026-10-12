@@ -23,3 +23,8 @@ dist-server
 *.njsproj
 *.sln
 *.sw?
+
+# Secrets -- never commit
+.env
+.env.*
+!.env.example

@@ -1,0 +1,21 @@
+{
+  "name": "@tekk/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TEKK MatchRecord -- append-only on-chain match log for Monad",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "deploy:testnet": "tsx scripts/deploy.ts"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
+    "@types/node": "^22.10.7",
+    "hardhat": "^3.19.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "viem": "^2.57.4"
+  }
+}
