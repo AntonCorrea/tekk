@@ -9,6 +9,7 @@
     "size": [13, 4, 6]
   },
   "coreSpawn": [0, 14.9, -276],
+  "mode": "reach",
   "atmosphere": {
     "background": "#050018",
     "fog": "#0a0128"

@@ -23,8 +23,9 @@ import type { Client } from '@colyseus/core';
 import { Room } from '@colyseus/core';
 import type { RigidBody, World } from '@dimforge/rapier3d-compat';
 
-import { CORE, FIXED_TIMESTEP, PICKUP } from '../src/constants.ts';
-import type { Course, Vec3 } from '../src/shared/course.ts';
+import { CORE, FIXED_TIMESTEP, HUNT, PICKUP } from '../src/constants.ts';
+import type { Course, GameMode, Vec3 } from '../src/shared/course.ts';
+import { courseMode, isPlayableCourse } from '../src/shared/course.ts';
 import { MoveInput, idleInput } from '../src/shared/input.ts';
 import type { MoveInputInstance } from '../src/shared/input.ts';
 import {
@@ -56,7 +57,10 @@ import {
   chooseStealer,
   choosePickup,
   chooseMapVote,
+  coresInReach,
   hasSkipMajority,
+  racersWithin,
+  rankByFinish,
   rankStandings,
   resolveTimings,
   type Challenger,
@@ -168,11 +172,29 @@ export class RaceRoom extends Room<RaceRoomOptions> {
   private course!: Course;
   /** The course's collider body, kept so a map swap can remove it. */
   private courseBody!: RigidBody;
-  private coreSpawn!: Vec3;
+  /**
+   * The game mode the running course declares, read off the loaded file (never
+   * off replicated state). Stored rather than consulted per tick because a map
+   * swap changes it and the rules branch on it every step.
+   */
+  private mode: GameMode = 'hold';
+  /** `hold`/`reach`: where the single Core sits when free. Undefined on `hunt`. */
+  private coreSpawn?: Vec3;
   private world!: World;
   private timings!: MatchTimings;
   /** Every map this room may be voted to. `path` never leaves the server. */
   private catalog: CatalogEntry[] = [];
+
+  /**
+   * `hunt` only: which cores each racer has collected, keyed by session id.
+   *
+   * Server truth for the found set; the replicated `PlayerState.coreMask`
+   * mirrors it as a bitmask. Per-racer on purpose — a hunt core is a
+   * checkpoint, not a contested pickup, so one racer finding one denies nobody.
+   * Cleared at the top of every match (`enterPlaying`) and dropped per session
+   * on leave.
+   */
+  private readonly huntFound = new Map<string, Set<number>>();
 
   /**
    * Per-session cosmetic ownership.
@@ -223,11 +245,15 @@ export class RaceRoom extends Room<RaceRoomOptions> {
   override async onCreate(options?: RaceCreateOptions): Promise<void> {
     this.course = loadCourse(options?.coursePath);
 
-    // Fail at creation, loudly, rather than run a match with no Core. The
-    // course format allows a missing coreSpawn so race courses still parse;
-    // this room cannot play one.
-    if (!this.course.coreSpawn) {
-      throw new Error(`course "${this.course.id}" has no coreSpawn; Core Rush cannot run on it`);
+    // Fail at creation, loudly, rather than run a match that cannot be played.
+    // Which field the mode needs is `isPlayableCourse`'s call, so the catalog
+    // (which filters on the same function) and this check can never disagree.
+    this.mode = courseMode(this.course);
+    if (!isPlayableCourse(this.course)) {
+      throw new Error(
+        `course "${this.course.id}" is not playable: mode "${this.mode}" needs ` +
+          (this.mode === 'hunt' ? 'a non-empty cores list' : 'a coreSpawn'),
+      );
     }
     this.coreSpawn = this.course.coreSpawn;
     this.timings = resolveTimings(options?.timings);
@@ -237,6 +263,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     this.courseBody = buildCourseColliders(this.world, this.course);
 
     this.setState(new GameState());
+    this.state.mode = this.mode;
 
     // The course definition. The client parses and validates it with the
     // same `parseCourse` the server used, then builds identical colliders
@@ -262,6 +289,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
       info.name = entry.name;
       info.solids = entry.solids;
       info.pads = entry.pads;
+      info.mode = entry.mode;
       this.state.catalog.push(info);
     }
 
@@ -469,6 +497,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     }
     this.state.players.delete(client.sessionId);
     this.cosmetics.delete(client.sessionId);
+    this.huntFound.delete(client.sessionId);
 
     // The last racer out resets the match. Nobody is left to finish it, and the
     // next joiner should not land in the middle of somebody else's clock.
@@ -480,6 +509,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
   override onDispose(): void {
     this.racers.clear();
     this.cosmetics.clear();
+    this.huntFound.clear();
   }
 
   // ------------------------------------------------------------ simulation
@@ -523,10 +553,15 @@ export class RaceRoom extends Room<RaceRoomOptions> {
 
     // --- the Core ---------------------------------------------------------
     // Only while playing, and against post-step positions: the step is what
-    // moved everyone, so that is where everyone is. Cosmetic pickup capture is
-    // the same shape — server-side, post-step, playing only.
+    // moved everyone, so that is where everyone is. Which rule set runs is the
+    // course's game mode: `hold` contests one Core, `reach` clocks a touch of a
+    // fixed one, `hunt` clocks collecting every checkpoint. All three are
+    // server-side and post-step, exactly like the cosmetic pickup capture that
+    // rides alongside them — the shared sim never sees any of it.
     if (this.state.phase === 'playing') {
-      this.runCoreRules(dtMs);
+      if (this.mode === 'hold') this.runCoreRules(dtMs);
+      else if (this.mode === 'reach') this.runReachRules(dtMs);
+      else this.runHuntRules(dtMs);
       this.runPickupRules();
     }
 
@@ -547,7 +582,22 @@ export class RaceRoom extends Room<RaceRoomOptions> {
       }
     }
 
-    const advance = advancePhase(this.clockState, this.racers.size > 0, allVoted, dtMs, this.timings);
+    // A racing match's early exit, the mirror of the lobby's full ballot: once
+    // every racer here has finished, `advancePhase` cuts to results rather than
+    // waiting out the clock. Only `reach`/`hunt` have a finish (`hold` plays
+    // the whole match), and an empty room never counts as "everyone done".
+    let allDone = false;
+    if (this.mode !== 'hold' && this.state.players.size > 0) {
+      allDone = true;
+      for (const player of this.state.players.values()) {
+        if (player.finishMs < 0) {
+          allDone = false;
+          break;
+        }
+      }
+    }
+
+    const advance = advancePhase(this.clockState, this.racers.size > 0, allVoted, dtMs, this.timings, allDone);
     this.clockState = advance.clock;
     if (advance.entered) {
       if (advance.entered === 'countdown') {
@@ -593,6 +643,10 @@ export class RaceRoom extends Room<RaceRoomOptions> {
    */
   private runCoreRules(dtMs: number): void {
     const s = this.state;
+    // Only ever reached on a `hold`/`reach` course, both of which the room
+    // refuses to run without a coreSpawn — but the field is optional now, so
+    // narrow it here rather than assert.
+    if (!this.coreSpawn) return;
 
     // Falling out costs the Core. `justRespawned` is set inside the shared
     // step, so this is the tick the carrier reappeared at spawn.
@@ -632,6 +686,71 @@ export class RaceRoom extends Room<RaceRoomOptions> {
         holder.lastHeldAtMs = (this.clockState.ticks + 1) * dtMs;
       }
     }
+  }
+
+  /**
+   * One tick of Reach rules: the Core sits at `coreSpawn` and never moves, and
+   * the first racer to touch it finishes.
+   *
+   * Every unfinished racer within `CORE.pickupRadius` of the Core is stamped on
+   * the same tick — a genuine tie — and `rankByFinish` breaks that tie by
+   * sessionId, so the result never depends on Map iteration order. A racer
+   * finishes once: revisiting the Core does nothing, which is why the loop
+   * skips anyone already stamped.
+   */
+  private runReachRules(dtMs: number): void {
+    if (!this.coreSpawn) return;
+    const touching = racersWithin(arrayPoint(this.coreSpawn), this.racerPoints(), CORE.pickupRadius);
+
+    for (const sessionId of touching) {
+      const state = this.state.players.get(sessionId);
+      if (!state || state.finishMs >= 0) continue;
+      state.finishMs = (this.clockState.ticks + 1) * dtMs;
+      log(`${state.name} reached the Core in ${(state.finishMs / 1000).toFixed(2)}s`);
+    }
+  }
+
+  /**
+   * One tick of Hunt rules: each racer collects any checkpoint Core they are
+   * standing on, and the tick they collect their last one is their finish.
+   *
+   * Cores are per-racer checkpoints — nobody can deny anybody — so a racer's
+   * found set is theirs alone and a Core another racer took is still live for
+   * everyone else. One tick can collect several at once if the layout stacks
+   * them, which is fine: the finish is `found.size === cores.length`, whenever
+   * that happens. The replicated `coreMask` mirrors the set so the client can
+   * dim the cores this racer has already found.
+   */
+  private runHuntRules(dtMs: number): void {
+    const cores = this.course.cores;
+    if (!cores || cores.length === 0) return;
+
+    for (const [sessionId, sim] of this.racers) {
+      const state = this.state.players.get(sessionId);
+      if (!state || state.finishMs >= 0) continue;
+
+      const found = this.huntFoundFor(sessionId);
+      if (found.size >= cores.length) continue;
+
+      const hits = coresInReach(cores, sim.body.translation(), found, HUNT.captureRadius);
+      if (hits.length === 0) continue;
+      for (const i of hits) found.add(i);
+
+      state.coreMask = maskOf(found);
+      if (found.size >= cores.length) {
+        state.finishMs = (this.clockState.ticks + 1) * dtMs;
+        log(`${state.name} found all ${cores.length} cores in ${(state.finishMs / 1000).toFixed(2)}s`);
+      }
+    }
+  }
+
+  private huntFoundFor(sessionId: string): Set<number> {
+    let found = this.huntFound.get(sessionId);
+    if (!found) {
+      found = new Set<number>();
+      this.huntFound.set(sessionId, found);
+    }
+    return found;
   }
 
   private racerPoints(): RacerPoint[] {
@@ -683,10 +802,16 @@ export class RaceRoom extends Room<RaceRoomOptions> {
       this.state.coreX = p.x;
       this.state.coreY = p.y + CORE.carryHeight;
       this.state.coreZ = p.z;
-    } else {
+    } else if (this.coreSpawn) {
       this.state.coreX = this.coreSpawn[0];
       this.state.coreY = this.coreSpawn[1];
       this.state.coreZ = this.coreSpawn[2];
+    } else {
+      // `hunt` has no single Core; park the replicated point at the origin so a
+      // client that draws before reading the mode shows nothing stray.
+      this.state.coreX = 0;
+      this.state.coreY = 0;
+      this.state.coreZ = 0;
     }
   }
 
@@ -799,21 +924,24 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     }
   }
 
-  /** Everyone back to spawn on zero, Core live on its dais. */
+  /** Everyone back to spawn on zero, Core live (one Core, or the hunt set). */
   private enterPlaying(): void {
     this.respawnAll();
+    this.huntFound.clear();
     for (const state of this.state.players.values()) clearScore(state);
     this.freeCore();
     this.state.winnerId = '';
     this.state.phase = 'playing';
-    log('match started');
+    log(this.mode === 'hold' ? 'match started' : `match started -- mode ${this.mode}`);
   }
 
   /**
-   * Time up. Ranks are final; the Core goes free.
+   * Time up (or everyone finished). Ranks are final; the Core goes free.
    *
-   * Freeing a carried Core here counts as a change of hands, like any drop, so
-   * a client watching `coreTransfers` sees the Core leave the carrier.
+   * The score is mode-shaped: `hold` ranks by banked hold time, while `reach`
+   * and `hunt` rank by finish time (`rankByFinish`). Freeing a carried Core
+   * here counts as a change of hands, like any drop, so a client watching
+   * `coreTransfers` sees the Core leave the carrier.
    */
   private enterResults(): void {
     this.dropCore();
@@ -822,8 +950,9 @@ export class RaceRoom extends Room<RaceRoomOptions> {
       id,
       holdMs: p.holdMs,
       lastHeldAtMs: p.lastHeldAtMs,
+      finishMs: p.finishMs,
     }));
-    const standings = rankStandings(scores);
+    const standings = this.mode === 'hold' ? rankStandings(scores) : rankByFinish(scores);
     standings.order.forEach((id, i) => {
       const p = this.state.players.get(id);
       if (p) p.rank = i + 1;
@@ -832,7 +961,17 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     this.state.phase = 'results';
 
     const winner = this.state.players.get(standings.winnerId);
-    log(winner ? `match over -- ${winner.name} wins with ${(winner.holdMs / 1000).toFixed(2)}s` : 'match over -- nobody held the Core');
+    if (!winner) {
+      log(
+        this.mode === 'hold'
+          ? 'match over -- nobody held the Core'
+          : 'match over -- nobody finished',
+      );
+    } else if (this.mode === 'hold') {
+      log(`match over -- ${winner.name} wins with ${(winner.holdMs / 1000).toFixed(2)}s`);
+    } else {
+      log(`match over -- ${winner.name} wins in ${(winner.finishMs / 1000).toFixed(2)}s`);
+    }
   }
 
   /**
@@ -849,6 +988,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     this.respawnAll();
     // Scores and skip flags both die with the lobby reset: the flags are how
     // the previous match ended, not a standing request about the next one.
+    this.huntFound.clear();
     for (const state of this.state.players.values()) {
       clearScore(state);
       state.votedToSkip = false;
@@ -911,9 +1051,9 @@ export class RaceRoom extends Room<RaceRoomOptions> {
    * The Core is freed as part of the swap. Both swap points are match
    * boundaries where it belongs on its dais anyway, and its dais just moved.
    *
-   * Returns false — staying put — if the file went away or lost its
-   * `coreSpawn` between the catalog being read and this swap: a stale vote
-   * is not worth crashing a live room over.
+   * Returns false — staying put — if the file went away or is no longer
+   * playable between the catalog being read and this swap: a stale vote is not
+   * worth crashing a live room over.
    */
   private swapCourse(entry: CatalogEntry): boolean {
     let next: Course;
@@ -926,8 +1066,11 @@ export class RaceRoom extends Room<RaceRoomOptions> {
       );
       return false;
     }
-    if (!next.coreSpawn) {
-      log(`map "${entry.id}" has no coreSpawn; staying on "${this.course.id}"`);
+    if (!isPlayableCourse(next)) {
+      log(
+        `map "${entry.id}" is not playable (${courseMode(next)} needs its layout); ` +
+          `staying on "${this.course.id}"`,
+      );
       return false;
     }
 
@@ -935,6 +1078,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     this.world.removeRigidBody(this.courseBody);
 
     this.course = next;
+    this.mode = courseMode(next);
     this.coreSpawn = next.coreSpawn;
     this.courseBody = buildCourseColliders(this.world, next);
     for (const [sessionId] of this.racers) {
@@ -944,6 +1088,10 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     // The rebuild signal: the client re-parses this string, swaps its own
     // colliders and body, and rebuilds the course visuals to match.
     this.state.courseJson = JSON.stringify(next);
+    // The mode travels with the new course: a hunt map's per-racer found sets
+    // mean nothing on the next one, and the HUD reads its labels off this.
+    this.state.mode = this.mode;
+    this.huntFound.clear();
     // A new map brings fresh pickup balls: taken stays per map, so a swap is
     // the only thing that refreshes them.
     this.refreshPickups();
@@ -952,7 +1100,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     // surface and publishes the cut, so every client sees the truth at once.
     this.respawnAll();
 
-    log(`map swapped to "${next.id}" -- ${next.solids.length} solids, ${next.pads.length} pads`);
+    log(`map swapped to "${next.id}" (${this.mode}) -- ${next.solids.length} solids, ${next.pads.length} pads`);
     return true;
   }
 }
@@ -988,6 +1136,15 @@ function clearScore(state: PlayerStateInstance): void {
   state.holdMs = 0;
   state.lastHeldAtMs = -1;
   state.rank = 0;
+  state.finishMs = -1;
+  state.coreMask = 0;
+}
+
+/** Pack a set of core indices into the replicated bitmask. */
+function maskOf(indices: Iterable<number>): number {
+  let mask = 0;
+  for (const i of indices) mask |= 1 << i;
+  return mask;
 }
 
 function arrayPoint(v: Vec3): { x: number; y: number; z: number } {

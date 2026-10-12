@@ -32,7 +32,7 @@ the server did. That only holds if both sides simulate identically, which is a
 strong claim. So it is tested:
 
 ```
-npm run harness     # 136 checks
+npm run harness     # 160 checks
 ```
 
 Three tiers, in increasing order of what they prove:
@@ -47,14 +47,15 @@ Three tiers, in increasing order of what they prove:
    phases, Core pickup and steal, results, reset.
 
 Alongside those, the pure rules in `server/rules.ts` (pickup, steal, ranking,
-clock), the boost and jump pads, and the lobby map vote are tested directly.
-The springboard bounce has its own suite: the kick fires into the wall when the
-stick pushes in and off it when pulled away, the approach-angle gate turns
-shallow skims aside, and a held ground jump never bounces — a negative control,
-like the pad suite's.
+clock, and the racing modes' reach/hunt capture and finish ranking), the course
+format's mode/cores contract, the boost and jump pads, and the lobby map vote
+are tested directly. The springboard bounce has its own suite: the kick fires
+into the wall when the stick pushes in and off it when pulled away, the
+approach-angle gate turns shallow skims aside, and a held ground jump never
+bounces — a negative control, like the pad suite's.
 
 One check is skipped while the wall-clip feature sleeps (`WALL.enabled =
-false`), so a green run reports 133 passed / 1 skipped.
+false`), so a green run reports 160 passed / 1 skipped.
 
 All three tiers run against real Rapier WASM, not mocks.
 
@@ -121,6 +122,26 @@ speed toggle, so `Shift` belongs to the dash.
 | `playing` | 120 s |
 | `results` | 10 s, then back to `ready` |
 
+### Game modes
+
+A course declares its `mode`, and the mode decides how a match is won. The
+default is Core Rush (`hold`); the other two are time trials.
+
+| Mode | Win condition |
+|---|---|
+| `hold` | **Core Rush.** Bank the most total hold time on one contested Core. |
+| `reach` | **Race to the Core.** The Core sits at `coreSpawn` and never moves. First racer to touch it wins; fastest time first. |
+| `hunt` | **Core Hunt.** Find every Core hidden in the map. Fastest to collect them all wins. |
+
+In the two time trials the clock counts **up**. Each racer's finish is stamped
+server-side the moment they reach the Core (or take the last hidden one), and
+results rank by fastest time — a racer still out when the clock runs out shows
+**DNF**. The match ends early the moment everyone still connected has finished,
+or at the usual 120 s otherwise. Your best time per course is kept in the
+browser; there is no server scoreboard yet (see `src/net/account.ts`).
+
+### Core Rush rules (`hold`)
+
 - **Pickup** — the Core sits at the course's `coreSpawn`. Whoever is within
   1.2 m of it takes it, no dash required.
 - **Carrying** — the carrier runs at 90% of normal speed and cannot dash.
@@ -145,7 +166,7 @@ speed toggle, so `Shift` belongs to the dash.
 ```bash
 npm run typecheck    # tsc --noEmit
 npm run smoke        # 15 checks — routing, CORS, protocol
-npm run harness      # 136 checks — determinism, rollback, rules, pads, bounce, wire, map vote
+npm run harness      # 160 checks — determinism, rollback, rules, pads, bounce, wire, map vote, modes
 ```
 
 **Run the harness more than once.** An earlier version gave its end-to-end
@@ -205,21 +226,29 @@ always was.
 
 ## Course
 
-Three courses ship in `src/courses/`. The server loads and validates the one
+Five courses ship in `src/courses/`. The server loads and validates the one
 it is pointed at at boot, so a typo in the JSON fails loudly at startup rather
 than producing a collider in the wrong place.
 
-| File | Solids | |
-|---|---|---|
-| `takk-newyork.json` | 52 | **The default.** Manhattan's street grid over the void, Times Square with the Core, Central Park, four skyscrapers to run around, rooftops reached by pad and ramp, and the Brooklyn Bridge's two opposed boost lanes to Brooklyn. |
-| `takk-arena.json` | 16 | Compact Core Rush ring, one screen wide. |
-| `tekk-01.json` | 8 | The original race course. Kept for reference; the room runs Core Rush. |
+| File | Mode | Solids | |
+|---|---|---|---|
+| `takk-newyork.json` | `hold` | 52 | **The default.** Manhattan's street grid over the void, Times Square with the Core, Central Park, four skyscrapers to run around, rooftops reached by pad and ramp, and the Brooklyn Bridge's two opposed boost lanes to Brooklyn. |
+| `takk-arena.json` | `hold` | 16 | Compact Core Rush ring, one screen wide. |
+| `takk-climb.json` | `reach` | 75 | Neon Ascent: a long climb to a Core that never moves. Race to the summit. |
+| `takk-test.json` | `hunt` | 11 | Test Lab: five hidden checkpoint Cores to find. |
+| `tekk-01.json` | — | 8 | The original race course. Kept for reference; the room never offers it (no `coreSpawn`, no `cores`). |
+
+A course's mode is cross-checked against the layout it needs: a `reach` (or an
+explicit `hold`) course must carry `coreSpawn`, a `hunt` course must carry a
+non-empty `cores` list, and the two are mutually exclusive. A course with no
+`mode` at all is `hold`, so every map written before modes existed keeps its
+meaning.
 
 A course may carry an `atmosphere` block — background colour, fog colour and
 fog density. Declaring one means the course owns its look, so the client
 drops its generic ground grid and far-field skyline; the course's own
-architecture supplies them instead. Only New York does; the other two keep
-the towers.
+architecture supplies them instead. New York and Neon Ascent do; the others
+keep the towers.
 
 The default is a single constant, `DEFAULT_COURSE_PATH` in `server/course.ts`.
 A `COURSE` environment variable boots a different map without touching code

@@ -24,7 +24,7 @@ import { buildCourse } from './course/build.ts';
 import { createPhysicsWorld, initPhysics } from './physics/world.ts';
 import { connectSession } from './net/session.ts';
 import { createRacerVisuals } from './net/remotes.ts';
-import { loadAccount, grantOwned, saveAccount } from './net/account.ts';
+import { loadAccount, grantOwned, recordPersonalBest, saveAccount } from './net/account.ts';
 import { createHud, type ConnectionStatus } from './ui/hud.ts';
 import { promptLogin } from './ui/login.ts';
 import {
@@ -38,11 +38,22 @@ import {
   toggleCameraMode,
 } from './input.ts';
 import { initTouchControls } from './touch.ts';
-import { createCoreVisual, type CoreVisualState } from './render/core.ts';
+import { createCoreVisual, createCoreMarkers, type CoreVisualState } from './render/core.ts';
 import type { LocalPose } from './render/scene.ts';
 import { CAMERA, CORE, FIXED_TIMESTEP } from './constants.ts';
 import type { Course } from './shared/course.ts';
+import { courseMode } from './shared/course.ts';
 import { DEFAULT_BODY_COLOR, DEFAULT_GEAR, DEFAULT_HAT, DEFAULT_TRAIL, itemKind, itemName } from './shared/cosmetics.ts';
+
+/** Shared empty core list, so the per-frame marker sync allocates nothing. */
+const NO_CORES: readonly [number, number, number][] = [];
+
+/** M:SS.t for a finish time, matching the HUD's race clock. */
+function formatRaceTime(ms: number): string {
+  const safe = Math.max(0, ms);
+  const total = Math.floor(safe / 1000);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}.${Math.floor((safe % 1000) / 100)}`;
+}
 
 /**
  * The map's bounding-box centre, in world units.
@@ -268,6 +279,9 @@ async function boot(): Promise<void> {
     ownedHats: () => account.ownedHats,
     onEquipGear: equipGear,
     ownedGears: () => account.ownedGears,
+    // The top racing time lives in the off-chain account, like the wardrobe,
+    // so the HUD asks for it rather than reading it off the wire.
+    personalBest: (courseId) => account.personalBests[courseId],
     // Renaming IS identity here, off-chain: the local name travels at join,
     // the server echoes a rename so the whole room sees it, and the store
     // keeps the last name the server accepted — a reload comes back as
@@ -281,12 +295,13 @@ async function boot(): Promise<void> {
     },
   });
   const coreVisual = createCoreVisual(stage.scene);
+  const coreMarkers = createCoreMarkers(stage.scene);
 
   // Reused every frame: the loop below must not allocate.
   const localPose: LocalPose = {
     x: 0, y: 0, z: 0, vx: 0, vz: 0, speed: 0, grounded: false, carrying: false, dashing: false, teleported: false, trailId: '', bodyColorId: '', hatId: '', gearId: '',
   };
-  const coreState: CoreVisualState = { x: 0, y: 0, z: 0, carried: false, immune: false };
+  const coreState: CoreVisualState = { x: 0, y: 0, z: 0, carried: false, immune: false, hidden: false };
 
   // Seeded from the state we joined into, so a Core that has already changed
   // hands twenty times does not fire a wave the moment you arrive.
@@ -459,6 +474,7 @@ async function boot(): Promise<void> {
     visuals.orbit(look.yaw, look.pitch);
 
     const state = session.room.state;
+    const mode = courseMode(course);
     const carrierId = state.carrierId;
     const selfCarries = carrierId === session.sessionId;
 
@@ -594,7 +610,17 @@ async function boot(): Promise<void> {
     }
     coreState.carried = selfCarries || carrier !== undefined;
     coreState.immune = state.immuneRemainingMs > 0;
+    // `hunt` draws no single Core; its checkpoint cores are the targets.
+    coreState.hidden = mode === 'hunt';
     coreVisual.update(coreState, now / 1000, delta);
+
+    // The hunt checkpoint cores, from the course and the local racer's own
+    // found-mask. On any other mode the pool is hidden.
+    if (mode === 'hunt') {
+      coreMarkers.sync(course.cores ?? NO_CORES, session.self()?.coreMask ?? 0, now / 1000);
+    } else {
+      coreMarkers.sync(NO_CORES, 0, now / 1000);
+    }
 
     // Once per hand-off. `coreTransfers` rather than `carrierId`, because the
     // same racer re-taking a dropped Core is still a transfer.
@@ -645,6 +671,16 @@ async function boot(): Promise<void> {
     // lobby window; while the ballot is open the camera is orbit-dragged
     // instead of captured, and the countdown hands it back at GO.
     if (state.phase !== lastPhase) {
+      // A racing match that just ended: bank the local finish as a personal
+      // best, if it beat the stored one. The results are final by the time the
+      // phase flips (the server ranked everyone inside `enterResults`), so a
+      // finish time read here is the one that counts.
+      if (state.phase === 'results' && mode !== 'hold') {
+        const me = session.self();
+        if (me && me.finishMs >= 0 && recordPersonalBest(account, course.id, me.finishMs)) {
+          hud.toast(`new best ${formatRaceTime(me.finishMs)}`);
+        }
+      }
       if ((state.phase === 'ready' || state.phase === 'results') && document.pointerLockElement) {
         document.exitPointerLock();
       }
@@ -730,6 +766,7 @@ async function boot(): Promise<void> {
   globalThis.addEventListener('beforeunload', () => {
     loop.stop();
     coreVisual.dispose();
+    coreMarkers.dispose();
     techno.dispose();
   });
 }

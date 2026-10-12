@@ -18,6 +18,7 @@
 
 import { MATCH } from '../src/constants.ts';
 import type { MatchPhase } from '../src/shared/state.ts';
+import type { Vec3 } from '../src/shared/course.ts';
 
 /** A body centre, as the room reads it off Rapier after the step. */
 export interface Point {
@@ -96,6 +97,54 @@ export function chooseStealer(
   return nearestWithin(carrier, eligible, stealRadius);
 }
 
+/**
+ * Every racer whose centre is within `radius` of `point`, in the order given.
+ *
+ * The `reach` finish test: touching the Core ends your run, and everyone who
+ * touches it on the same tick ties — which is why this returns the whole set
+ * rather than the nearest one. `rankByFinish` breaks the tie by sessionId, so
+ * the room may stamp them in any order.
+ */
+export function racersWithin(point: Point, racers: readonly RacerPoint[], radius: number): string[] {
+  const limit = radius * radius;
+  const hits: string[] = [];
+  for (const racer of racers) {
+    const dx = racer.x - point.x;
+    const dy = racer.y - point.y;
+    const dz = racer.z - point.z;
+    if (dx * dx + dy * dy + dz * dz <= limit) hits.push(racer.id);
+  }
+  return hits;
+}
+
+/**
+ * Which of `cores` a body at `point` is standing on right now, by index, given
+ * the ones it has already found.
+ *
+ * A hunt core is a per-racer checkpoint, so the only decision is "what is new":
+ * a core already in `found` is skipped, and one touch can collect several if a
+ * layout stacks them. Indices rather than positions, because the replicated
+ * `coreMask` the client reads is defined by index.
+ */
+export function coresInReach(
+  cores: readonly Vec3[],
+  point: Point,
+  found: ReadonlySet<number>,
+  radius: number,
+): number[] {
+  const limit = radius * radius;
+  const hits: number[] = [];
+  for (let i = 0; i < cores.length; i++) {
+    if (found.has(i)) continue;
+    const core = cores[i]!;
+    const dx = point.x - core[0];
+    const dy = point.y - core[1];
+    const dz = point.z - core[2];
+    if (dx * dx + dy * dy + dz * dz <= limit) hits.push(i);
+  }
+  return hits;
+}
+
 // ----------------------------------------------------------------- standings
 
 export interface Score {
@@ -132,6 +181,37 @@ export function rankStandings(scores: readonly Score[]): Standings {
   return {
     order: sorted.map((s) => s.id),
     winnerId: first !== undefined && first.holdMs > 0 ? first.id : '',
+  };
+}
+
+/** A racer's finish time for a racing mode, in ms since `playing`, or -1. */
+export interface FinishScore {
+  id: string;
+  finishMs: number;
+}
+
+/**
+ * Final standings for a racing mode (`reach`/`hunt`): fastest finish first.
+ *
+ * A finisher (`finishMs >= 0`) always beats an unfinisher, so a racer who ran
+ * out the clock ranks below anyone who actually finished. Unfinishers sort
+ * last among themselves, and a tie on the same finish time falls to the lowest
+ * sessionId -- arbitrary, but total, so the order never depends on Map
+ * iteration order. The winner is whoever finished fastest, or '' when nobody
+ * did (mirroring `rankStandings`: no finisher is not a result).
+ */
+export function rankByFinish(scores: readonly FinishScore[]): Standings {
+  const sorted = [...scores].sort((a, b) => {
+    const aFin = a.finishMs >= 0;
+    const bFin = b.finishMs >= 0;
+    if (aFin !== bFin) return aFin ? -1 : 1;
+    if (aFin && a.finishMs !== b.finishMs) return a.finishMs - b.finishMs;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  const first = sorted[0];
+  return {
+    order: sorted.map((s) => s.id),
+    winnerId: first !== undefined && first.finishMs >= 0 ? first.id : '',
   };
 }
 
@@ -300,6 +380,11 @@ export interface PhaseAdvance {
  * the countdown lets the match through. Every other phase leaves when its
  * length is used up. At most one transition per tick, and a phase entered
  * this tick starts at 0 ticks.
+ *
+ * `allDone` is `playing`'s early exit, the mirror of the lobby's `allVoted`:
+ * a racing mode (`reach`/`hunt`) ends the moment every connected racer has
+ * finished, rather than waiting out `durationMs`. It is ignored in every other
+ * phase, and defaults to false so the classic `hold` call sites are unchanged.
  */
 export function advancePhase(
   clock: PhaseClock,
@@ -307,6 +392,7 @@ export function advancePhase(
   allVoted: boolean,
   dtMs: number,
   timings: MatchTimings,
+  allDone = false,
 ): PhaseAdvance {
   if (clock.phase === 'ready') {
     if (!occupied) return { clock, entered: null, remainingMs: timings.lobbyMs };
@@ -323,6 +409,11 @@ export function advancePhase(
       remainingMs: timings.lobbyMs - ticks * dtMs,
     };
   }
+
+  // A racing match ends the tick everyone has finished -- the early exit the
+  // `hold` mode does not have, because there is no "finished" there. Checked
+  // before the length walk so the last finisher's tick still counts.
+  if (clock.phase === 'playing' && allDone) return enter('results', timings);
 
   const ticks = clock.ticks + 1;
   const length = phaseLengthMs(clock.phase, timings);

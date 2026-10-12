@@ -16,13 +16,20 @@
 import { DASH, MATCH } from '../constants.ts';
 import type { GameStateInstance, PlayerStateInstance } from '../shared/state.ts';
 import type { SimBody } from '../shared/sim.ts';
+import type { GameMode } from '../shared/course.ts';
 import { TRAILS, BODY_COLORS, HATS, GEARS } from '../shared/cosmetics.ts';
 
 /** The slice of the predicted sim the HUD reads. */
 export type HudSim = Pick<SimBody, 'dashTicks' | 'dashCooldownTicks' | 'carrying'>;
 
-/** The slice of the course the HUD shows: the name, and the id cards mark as current. */
-export type HudCourse = { id: string; name: string };
+/**
+ * The slice of the course the HUD shows: the name, the id cards mark as
+ * current, and — for the racing modes — the mode and how many cores a hunt map
+ * hides. Typed from the parsed `Course` so the caller can pass it straight
+ * through; `mode` and `cores` are optional because a `hold` course declares
+ * neither.
+ */
+export type HudCourse = { id: string; name: string; mode?: string; cores?: readonly unknown[] };
 
 export interface Hud {
   /** Per-frame readout of replicated state. */
@@ -116,10 +123,25 @@ export interface HudOptions {
    * the commit becoming a request.
    */
   onRename?(name: string): void;
+
+  /**
+   * The local account's best finish time (ms) for a course, if it has one.
+   * Off-chain state (net/account.ts), so like the wardrobe the HUD asks the
+   * caller rather than reading it off the wire. Unused by `hold`, whose score
+   * is banked hold time.
+   */
+  personalBest?(courseId: string): number | undefined;
 }
 
 /** `gain` is good for you, `loss` is bad for you, `info` is someone else's moment. */
 export type AnnounceTone = 'gain' | 'loss' | 'info';
+
+/** Display names for the three modes, shared by the HUD and the map cards. */
+const MODE_NAMES: Record<GameMode, string> = {
+  hold: 'Core Rush',
+  reach: 'Race to the Core',
+  hunt: 'Core Hunt',
+};
 
 /** How long a callout stays up. Matches the CSS animation in style.css. */
 const ANNOUNCE_MS = 1100;
@@ -340,8 +362,19 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
   let flashUntil = 0;
   let lastCourse = '';
   let lastConnection = '';
+  // The mode of the running course, read off `course.mode` each update (a map
+  // swap can change it) so the readouts below branch without re-parsing.
+  let mode: GameMode = 'hold';
+  let coreCount = 0;
   // Whole seconds of your hold time last frame, for the per-second pop.
   let lastHoldSecond = -1;
+  /**
+   * The match length captured the moment play started, so a racing mode can
+   * show a RISING clock as `playDurationMs - phaseRemainingMs`. Taken from the
+   * first `playing` sample rather than a constant, so a room created with
+   * custom timings (the harness) still reads from zero.
+   */
+  let playDurationMs = 0;
   // Last name sent as a rename, so blur/Enter never re-send the same value;
   // re-seeded to the echoed server name each lobby render.
   let lastSentName = '';
@@ -368,8 +401,16 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
         } else {
           openPanel = null;
         }
+        // Play has started: capture the length so a racing clock reads from
+        // zero instead of assuming the default duration.
+        if (phase === 'playing') playDurationMs = state.phaseRemainingMs;
       }
       lastPhase = phase;
+
+      // The mode is a property of the course, not of replicated state, so it is
+      // read here (and re-read after a swap) rather than looked up per readout.
+      mode = modeOf(course.mode);
+      coreCount = course.cores?.length ?? 0;
 
       if (course.name !== lastCourse) {
         lastCourse = course.name;
@@ -382,47 +423,91 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
       }
 
       const playing = phase === 'playing';
+      const racing = mode !== 'hold';
 
       // --- match clock ---------------------------------------------------
       // Playing shows the real match clock; ready shows the lobby window
       // counting down to the countdown; countdown and results fill the slot
-      // so it never looks broken between matches.
-      const clockMs = playing
-        ? state.phaseRemainingMs
-        : phase === 'ready'
+      // so it never looks broken between matches. A racing mode counts UP
+      // instead: the score is a time, so the clock is the score climbing.
+      if (racing && playing) {
+        const elapsed = Math.max(0, playDurationMs - state.phaseRemainingMs);
+        timer.html(`<span class="is-race">${formatHold(elapsed, true)}</span>`);
+      } else {
+        const clockMs = playing
           ? state.phaseRemainingMs
-          : phase === 'results'
-            ? 0
-            : MATCH.durationMs;
-      timer.html(
-        `<span class="${playing && clockMs <= 10_000 ? 'is-low' : ''}">${formatClock(clockMs)}</span>`,
-      );
+          : phase === 'ready'
+            ? state.phaseRemainingMs
+            : phase === 'results'
+              ? 0
+              : MATCH.durationMs;
+        timer.html(
+          `<span class="${playing && clockMs <= 10_000 ? 'is-low' : ''}">${formatClock(clockMs)}</span>`,
+        );
+      }
 
-      // --- status line + own hold time ----------------------------------
+      // --- status line + own score --------------------------------------
+      // The status line is the mode's objective; the second slot is your own
+      // score in it — hold time, a finish time, or your core count.
       const carrierId = state.carrierId;
+      const selfFinish = self?.finishMs ?? -1;
       status.hidden(!playing);
       hold.hidden(!playing);
       if (playing) {
-        const carrier = carrierId === '' ? undefined : state.players.get(carrierId);
-        if (carrierId === selfId) {
-          status.html(`<span class="is-you">YOU HAVE THE CORE — RUN</span>`);
-        } else if (carrier) {
-          status.html(`<span class="is-them">${escapeHtml(carrier.name)} HAS THE CORE</span>`);
-        } else {
-          status.html(`<span class="is-free">THE CORE IS FREE</span>`);
-        }
-        hold.html(
-          `<span class="hold-label">YOUR HOLD</span><span class="hold-time">${formatHold(self?.holdMs ?? 0, true)}</span>`,
-        );
-
-        // Every whole second you bank pops the counter: the score visibly
-        // climbing is the reward loop of the whole game.
-        const holdSecond = Math.floor((self?.holdMs ?? 0) / 1000);
-        if (holdSecond !== lastHoldSecond) {
-          if (holdSecond > lastHoldSecond && lastHoldSecond >= 0 && carrierId === selfId) {
-            restartAnimation(hold.el, 'is-tick');
+        if (mode === 'reach') {
+          if (selfFinish >= 0) {
+            status.html(`<span class="is-you">YOU FINISHED — ${formatHold(selfFinish, true)}</span>`);
+          } else {
+            const finishers = countFinishers(state);
+            status.html(
+              `<span class="is-free">${finishers > 0 ? `${finishers} FINISHED · ` : ''}REACH THE CORE</span>`,
+            );
           }
-          lastHoldSecond = holdSecond;
+        } else if (mode === 'hunt') {
+          if (selfFinish >= 0) {
+            status.html(`<span class="is-you">ALL CORES — ${formatHold(selfFinish, true)}</span>`);
+          } else {
+            status.html(`<span class="is-free">CORES ${popcount(self?.coreMask ?? 0)}/${coreCount}</span>`);
+          }
+        } else {
+          const carrier = carrierId === '' ? undefined : state.players.get(carrierId);
+          if (carrierId === selfId) {
+            status.html(`<span class="is-you">YOU HAVE THE CORE — RUN</span>`);
+          } else if (carrier) {
+            status.html(`<span class="is-them">${escapeHtml(carrier.name)} HAS THE CORE</span>`);
+          } else {
+            status.html(`<span class="is-free">THE CORE IS FREE</span>`);
+          }
+        }
+
+        if (racing) {
+          // The objective slot becomes the account's personal best on this
+          // course, or your own finish the moment you cross. The PB is
+          // off-chain, so it is asked for rather than read off the wire.
+          if (selfFinish >= 0) {
+            hold.html(
+              `<span class="hold-label">YOUR TIME</span><span class="hold-time">${formatHold(selfFinish, true)}</span>`,
+            );
+          } else {
+            const best = options.personalBest?.(course.id);
+            hold.html(
+              `<span class="hold-label">YOUR BEST</span><span class="hold-time">${best === undefined ? '--:--' : formatHold(best, true)}</span>`,
+            );
+          }
+        } else {
+          hold.html(
+            `<span class="hold-label">YOUR HOLD</span><span class="hold-time">${formatHold(self?.holdMs ?? 0, true)}</span>`,
+          );
+
+          // Every whole second you bank pops the counter: the score visibly
+          // climbing is the reward loop of the whole game.
+          const holdSecond = Math.floor((self?.holdMs ?? 0) / 1000);
+          if (holdSecond !== lastHoldSecond) {
+            if (holdSecond > lastHoldSecond && lastHoldSecond >= 0 && carrierId === selfId) {
+              restartAnimation(hold.el, 'is-tick');
+            }
+            lastHoldSecond = holdSecond;
+          }
         }
       }
 
@@ -434,7 +519,7 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
         `${self?.grounded ? 'grounded' : 'airborne'}  speed ${(self?.speed ?? 0).toFixed(1)}`,
       );
 
-      renderBanner(banner, state, selfId, performance.now() < flashUntil);
+      renderBanner(banner, state, selfId, performance.now() < flashUntil, mode);
 
       // --- the lobby --------------------------------------------------------
       // Two separate panels — customize avatar (name, trail) and the map
@@ -474,7 +559,7 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
       }
 
       board.hidden(!playing);
-      if (playing) board.html(boardMarkup(state, selfId));
+      if (playing) board.html(boardMarkup(state, selfId, mode, coreCount));
     },
 
     announce(text, tone) {
@@ -571,14 +656,17 @@ function dashMarkup(sim: HudSim): string {
  * The centred callout, by phase.
  *
  * ready: what to do. countdown: the number. just-started: a flash. playing:
- * nothing, out of the way. results: who won and the full standings.
+ * nothing, out of the way. results: who won and the full standings — by banked
+ * hold time in `hold`, by fastest finish (DNF for the rest) in the racing modes.
  */
 function renderBanner(
   banner: Slot,
   state: GameStateInstance,
   selfId: string,
   flashing: boolean,
+  mode: GameMode,
 ): void {
+  const racing = mode !== 'hold';
   switch (state.phase) {
     case 'ready':
       banner.hidden(false);
@@ -598,7 +686,7 @@ function renderBanner(
     case 'playing':
       if (flashing) {
         banner.hidden(false);
-        banner.html(`<div class="banner-go">TAKE IT</div>`);
+        banner.html(`<div class="banner-go">${racing ? 'GO' : 'TAKE IT'}</div>`);
       } else {
         banner.hidden(true);
       }
@@ -606,16 +694,27 @@ function renderBanner(
 
     case 'results': {
       const winner = state.winnerId === '' ? undefined : state.players.get(state.winnerId);
-      const title = winner ? `${escapeHtml(winner.name)} HODLED IT` : 'NO WINNER';
+      const title = racing
+        ? winner
+          ? `${escapeHtml(winner.name)} WINS`
+          : 'NO FINISHERS'
+        : winner
+          ? `${escapeHtml(winner.name)} HODLED IT`
+          : 'NO WINNER';
       const next = Math.max(0, Math.ceil(state.phaseRemainingMs / 1000));
-      const list = sortedPlayers(state, true)
+      const list = sortedPlayers(state, mode, true)
         .map(({ player, id }, i) => {
           const cls = `result-row${id === selfId ? ' is-self' : ''}${id === state.winnerId ? ' is-winner' : ''}`;
           const place = player.rank > 0 ? player.rank : i + 1;
+          const score = racing
+            ? player.finishMs >= 0
+              ? formatHold(player.finishMs, true)
+              : 'DNF'
+            : formatHold(player.holdMs, true);
           return (
             `<div class="${cls}"><span class="result-rank">${place}</span>` +
             `<span class="result-name">${escapeHtml(player.name)}</span>` +
-            `<span class="result-time">${formatHold(player.holdMs, true)}</span></div>`
+            `<span class="result-time">${score}</span></div>`
           );
         })
         .join('');
@@ -669,7 +768,7 @@ function voteCardsMarkup(state: GameStateInstance, course: HudCourse, selfId: st
       return (
         `<button type="button" class="${cls}" data-course="${escapeHtml(info.id)}">` +
         `<span class="map-name">${escapeHtml(info.name)}</span>` +
-        `<span class="map-stats">${info.solids} solids · ${info.pads} pads</span>` +
+        `<span class="map-stats">${MODE_NAMES[modeOf(info.mode)]} · ${info.solids} solids · ${info.pads} pads</span>` +
         votes +
         now +
         `</button>`
@@ -827,15 +926,24 @@ function gearCardsMarkup(
     })
     .join('');
 }
-function boardMarkup(state: GameStateInstance, selfId: string): string {
-  return sortedPlayers(state, false)
+function boardMarkup(state: GameStateInstance, selfId: string, mode: GameMode, coreCount: number): string {
+  return sortedPlayers(state, mode, false)
     .map(({ player, id }) => {
-      const cls = `board-row${id === selfId ? ' is-self' : ''}${id === state.carrierId ? ' is-carrier' : ''}`;
-      // Whole seconds on the board: tenths would change it ten times a second
-      // for every row, and the ordering is what matters here.
+      const carrierCls = mode === 'hold' && id === state.carrierId ? ' is-carrier' : '';
+      const cls = `board-row${id === selfId ? ' is-self' : ''}${carrierCls}`;
+      // Hold banks whole seconds; a racing mode shows the finish time once
+      // there is one, and otherwise hunt's found count or a dash for reach.
+      const time =
+        mode === 'hold'
+          ? formatHold(player.holdMs, false)
+          : player.finishMs >= 0
+            ? formatHold(player.finishMs, true)
+            : mode === 'hunt'
+              ? `${popcount(player.coreMask)}/${coreCount}`
+              : '·';
       return (
         `<div class="${cls}"><span class="board-name">${escapeHtml(player.name)}</span>` +
-        `<span class="board-time">${formatHold(player.holdMs, false)}</span></div>`
+        `<span class="board-time">${time}</span></div>`
       );
     })
     .join('');
@@ -847,19 +955,61 @@ interface Row {
 }
 
 /**
- * Players ordered by score. Results prefer the server's final `rank` (which
- * already applies the lastHeldAtMs tiebreak); live play falls back to holdMs
- * with the same tiebreak so the board does not shuffle ties arbitrarily.
+ * Players ordered by score, mode-aware.
+ *
+ * `hold` ranks by banked hold time with the `lastHeldAtMs` tiebreak; the racing
+ * modes rank by finish — finishers first, fastest first, then hunt's found
+ * count, then sessionId so the order is total. Results prefer the server's
+ * final `rank` (which already applied the same ordering) so the board and the
+ * banner agree exactly once the match is over.
  */
-function sortedPlayers(state: GameStateInstance, final: boolean): Row[] {
+function sortedPlayers(state: GameStateInstance, mode: GameMode, final: boolean): Row[] {
   const rows: Row[] = [];
   state.players.forEach((player, id) => rows.push({ player, id }));
   rows.sort((a, b) => {
     if (final && a.player.rank > 0 && b.player.rank > 0) return a.player.rank - b.player.rank;
-    if (b.player.holdMs !== a.player.holdMs) return b.player.holdMs - a.player.holdMs;
-    return b.player.lastHeldAtMs - a.player.lastHeldAtMs;
+    if (mode === 'hold') {
+      if (b.player.holdMs !== a.player.holdMs) return b.player.holdMs - a.player.holdMs;
+      return b.player.lastHeldAtMs - a.player.lastHeldAtMs;
+    }
+    const aFin = a.player.finishMs >= 0;
+    const bFin = b.player.finishMs >= 0;
+    if (aFin !== bFin) return aFin ? -1 : 1;
+    if (aFin && bFin && a.player.finishMs !== b.player.finishMs) {
+      return a.player.finishMs - b.player.finishMs;
+    }
+    if (mode === 'hunt') {
+      const foundDiff = popcount(b.player.coreMask) - popcount(a.player.coreMask);
+      if (foundDiff !== 0) return foundDiff;
+    }
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
   return rows;
+}
+
+/** Narrow a replicated/stored mode string to a `GameMode`, defaulting to hold. */
+function modeOf(value: string | undefined): GameMode {
+  return value === 'reach' || value === 'hunt' ? value : 'hold';
+}
+
+/** How many racers have finished a racing match. */
+function countFinishers(state: GameStateInstance): number {
+  let count = 0;
+  for (const player of state.players.values()) {
+    if (player.finishMs >= 0) count += 1;
+  }
+  return count;
+}
+
+/** Number of set bits — the count behind a hunt racer's `coreMask`. */
+function popcount(mask: number): number {
+  let bits = mask | 0;
+  let count = 0;
+  while (bits !== 0) {
+    bits &= bits - 1;
+    count += 1;
+  }
+  return count;
 }
 
 /** M:SS, rounding up so the clock reads 0:01 until it is truly over. */

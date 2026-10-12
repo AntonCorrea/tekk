@@ -60,6 +60,7 @@ import {
 
 import { NEON, POST } from './palette.ts';
 import { fxBeat } from './fx.ts';
+import type { Vec3 } from '../shared/course.ts';
 
 export interface CoreVisualState {
   /** World position of the Core's centre. */
@@ -70,6 +71,12 @@ export interface CoreVisualState {
   carried: boolean;
   /** True during the post-steal immunity window: a visible shimmer/flicker cue. */
   immune: boolean;
+  /**
+   * Hide the whole Core. Set on a `hunt` map, where there is no single Core to
+   * draw and the per-core markers (`createCoreMarkers`) are the objective
+   * instead. Optional so the `hold`/`reach` call sites are unchanged.
+   */
+  hidden?: boolean;
 }
 
 export interface CoreVisual {
@@ -77,6 +84,21 @@ export interface CoreVisual {
   update(state: CoreVisualState, now: number, delta: number): void;
   /** Fire the energy wave once, at the Core's current position (carrier changed). */
   burst(): void;
+  dispose(): void;
+}
+
+/**
+ * The set of static checkpoint Cores on a `hunt` map.
+ *
+ * Much cheaper than `CoreVisual`: no carry, no burst, no beam — just one small
+ * crystal and halo per course core, bobbing and turning so a hidden core reads
+ * as a thing to run at. Driven entirely by the course's `cores` and the local
+ * racer's replicated `coreMask`: a core this racer has already found dims, but
+ * stays drawn (the others can still see it while it is live on their screen).
+ */
+export interface CoreMarkers {
+  /** Point the pool at `cores`; dim the ones `coreMask` marks as found. */
+  sync(cores: readonly Vec3[], coreMask: number, now: number): void;
   dispose(): void;
 }
 
@@ -117,6 +139,15 @@ const BLEND_RATE = 5;
 
 /** Ground height the beam and ring sit on, a hair above the grid to avoid z-fighting. */
 const GROUND_Y = 0.04;
+
+/**
+ * `hunt` checkpoint cores. Smaller than the one Core on purpose: there are up
+ * to `MAX_HUNT_CORES` of them, and a map full of full-size Cores would flatten
+ * the one landmark the eye is looking for into wallpaper. A found one shrinks
+ * and dims to `MARKER_FOUND_SCALE`, staying drawn as a spent socket.
+ */
+const MARKER_SCALE = 0.72;
+const MARKER_FOUND_SCALE = 0.32;
 
 // --- shader helpers ----------------------------------------------------------
 
@@ -413,6 +444,26 @@ export function createCoreVisual(scene: THREE.Scene): CoreVisual {
   let hasPosition = false;
 
   function update(state: CoreVisualState, now: number, delta: number): void {
+    // `hunt` has no single Core: hide every layer, park the burst pool and
+    // forget the last position so a later `hold` map does not draw a stale
+    // Core for a frame. Smoothed blends are left as-is; they are re-seeded by
+    // the next visible update anyway.
+    if (state.hidden) {
+      body.visible = false;
+      halo.visible = false;
+      beam.visible = false;
+      ground.visible = false;
+      for (const slot of slots) {
+        slot.age = Infinity;
+        slot.ring.visible = false;
+        slot.shell.visible = false;
+      }
+      hasPosition = false;
+      return;
+    }
+    body.visible = true;
+    halo.visible = true;
+
     // Exponential smoothing: identical result at any framerate.
     const k = 1 - Math.exp(-BLEND_RATE * delta);
     free += ((state.carried ? 0 : 1) - free) * k;
@@ -506,4 +557,109 @@ export function createCoreVisual(scene: THREE.Scene): CoreVisual {
   }
 
   return { update, burst, dispose };
+}
+
+/**
+ * Build the `hunt` checkpoint-core layer.
+ *
+ * One shared crystal geometry, a material pair per marker so each can dim on
+ * its own when the local racer collects it. `sync` grows the pool lazily to
+ * the course's core count, so a map swap with more cores just builds more, and
+ * a swap with fewer hides the extras — no rebuild hook beyond calling sync.
+ */
+export function createCoreMarkers(scene: THREE.Scene): CoreMarkers {
+  const gain = POST.emissiveGain;
+  const geo = buildCrystalGeometry();
+  const white = color(NEON.white);
+  const pink = color(NEON.magenta);
+  const cyan = color(NEON.cyan);
+  const lightDir = normalize(vec3(0.4, 0.8, 0.45));
+  const facet = attribute('facet', 'float');
+  const facetColor = mix(mix(white, pink, step(0.34, facet)), cyan, step(0.68, facet));
+
+  interface Marker {
+    group: THREE.Group;
+    halo: THREE.Sprite;
+    crystalMat: THREE.MeshBasicNodeMaterial;
+    haloMat: THREE.SpriteNodeMaterial;
+    uTime: FloatUniform;
+    uFound: FloatUniform;
+  }
+
+  const markers: Marker[] = [];
+
+  function make(): Marker {
+    const uTime = uniform(0) as FloatUniform;
+    const uFound = uniform(0) as FloatUniform;
+    // One node drives both layers: 1 while live, 0.16 once collected.
+    const dim = mix(float(1), float(0.16), uFound);
+
+    const facing = saturate(dot(normalize(normalWorld), lightDir));
+    const shade = add(0.55, mul(0.45, facing));
+    const sparkle = add(0.85, mul(0.15, sin(add(mul(uTime, 2.2), mul(facet, 40)))));
+    const crystalMat = new THREE.MeshBasicNodeMaterial();
+    crystalMat.side = THREE.DoubleSide;
+    crystalMat.colorNode = vec4(
+      mul(facetColor, mul(mul(dim, mul(shade, sparkle)), gain * 0.95)),
+      1,
+    );
+    applyCommon(crystalMat);
+
+    const haloR = mul(length(sub(uv(), vec2(0.5, 0.5))), 2);
+    const haloFalloff = pow(oneMinus(saturate(haloR)), 3);
+    const haloMat = new THREE.SpriteNodeMaterial();
+    haloMat.colorNode = vec4(
+      mul(mix(cyan, white, 0.25), mul(mul(haloFalloff, dim), gain * 0.5)),
+      1,
+    );
+    applyCommon(haloMat);
+
+    const crystal = new THREE.Mesh(geo, crystalMat);
+    crystal.frustumCulled = false;
+    const halo = new THREE.Sprite(haloMat);
+    halo.frustumCulled = false;
+    const group = new THREE.Group();
+    group.add(crystal, halo);
+    scene.add(group);
+    return { group, halo, crystalMat, haloMat, uTime, uFound };
+  }
+
+  function sync(cores: readonly Vec3[], coreMask: number, now: number): void {
+    while (markers.length < cores.length) markers.push(make());
+    for (let i = 0; i < markers.length; i++) {
+      const marker = markers[i]!;
+      const core = cores[i];
+      if (!core) {
+        marker.group.visible = false;
+        continue;
+      }
+      const found = ((coreMask >>> i) & 1) === 1;
+      marker.group.visible = true;
+      marker.uTime.value = now;
+      marker.uFound.value = found ? 1 : 0;
+      const bob = Math.sin(now * 1.6 + i * 1.7) * 0.12;
+      marker.group.position.set(core[0], core[1] + bob, core[2]);
+      marker.group.rotation.set(
+        0.15 * Math.sin(now * 0.7 + i),
+        now * 0.9 + i,
+        0.1 * Math.cos(now * 0.6 + i),
+      );
+      // A found core collapses to a spent socket; a live one breathes.
+      const breathe = found ? 1 : 1 + 0.05 * Math.sin(now * 4 + i);
+      marker.group.scale.setScalar((found ? MARKER_FOUND_SCALE : MARKER_SCALE) * breathe);
+      marker.halo.scale.setScalar(found ? 0.6 : 1.6);
+    }
+  }
+
+  function dispose(): void {
+    for (const marker of markers) {
+      scene.remove(marker.group);
+      marker.crystalMat.dispose();
+      marker.haloMat.dispose();
+    }
+    markers.length = 0;
+    geo.dispose();
+  }
+
+  return { sync, dispose };
 }

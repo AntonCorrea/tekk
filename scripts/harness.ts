@@ -10,10 +10,14 @@
  *      unacknowledged inputs must land exactly where the server did. This is
  *      the claim that makes rollback invisible.
  *   C. Rules. The Core Rush decisions (pickup, steal, ranking, match clock)
- *      as pure functions, every tie-break pinned without a network.
+ *      as pure functions, every tie-break pinned without a network. Also the
+ *      racing modes: the reach catch and hunt capture tests, finish ranking,
+ *      the early match exit, and the course format's mode/cores contract.
  *   D. Wire. A real Colyseus server and two real SDK clients, in one process:
  *      schema encode/decode, input transport, sanitize, the phase flow, a
  *      pickup up the dais, a dash steal, a drop on leave, results and reset.
+ *   E. Lobby. The map ballot over the wire: cards, votes, swaps, skip.
+ *   F. Modes. A hunt room's mode, cores and mode-labelled catalog on the wire.
  *
  * Run it more than once. An earlier version of the wire suite gave its
  * end-to-end autopilot a flat 15s wall-clock budget, which made the whole
@@ -39,20 +43,24 @@ import {
 import { MoveInput } from '../src/shared/input.ts';
 import type { MoveInputData } from '../src/shared/input.ts';
 import { PlayerState, type MatchPhase } from '../src/shared/state.ts';
-import { BOOST, CORE, DASH, FIXED_TIMESTEP, GRAVITY, MATCH, MOVE, PLAYER, WALL } from '../src/constants.ts';
+import { BOOST, CORE, DASH, FIXED_TIMESTEP, GRAVITY, HUNT, MATCH, MOVE, PLAYER, WALL } from '../src/constants.ts';
 import {
   advancePhase,
   chooseStealer,
   choosePickup,
   chooseMapVote,
+  coresInReach,
   DEFAULT_TIMINGS,
   hasSkipMajority,
+  racersWithin,
+  rankByFinish,
   rankStandings,
   resolveTimings,
   type Challenger,
   type PhaseClock,
   type RacerPoint,
 } from '../server/rules.ts';
+import { parseCourse, courseMode, isPlayableCourse, type Vec3 } from '../src/shared/course.ts';
 
 type Course = ReturnType<typeof loadCourse>;
 
@@ -845,6 +853,104 @@ function testRules(course: Course) {
         !flags[DASH.durationTicks]!.flew,
       `${flew} flagged steps; last dash step published dashTicks=${last.ticksAfter}`);
   }
+
+  // --- racing rules: reach / hunt / finish ranking -------------------------
+  // The decisions the two time-trial modes rest on, as pure functions: which
+  // racers a fixed Core catches (reach), which checkpoints a body newly stands
+  // on (hunt), how finish times rank, and that a racing match ends early.
+  {
+    const at = (id: string, x: number, y = 0, z = 0): RacerPoint => ({ id, x, y, z });
+    const origin = { x: 0, y: 0, z: 0 };
+
+    const caught = racersWithin(origin, [at('a', 0.5), at('b', 3), at('c', 1)], CORE.pickupRadius);
+    check('reach: every racer inside the radius is caught together',
+      caught.length === 2 && caught.includes('a') && caught.includes('c'),
+      `caught=[${caught.join(',')}]`);
+    check('reach: the radius is inclusive and three-dimensional',
+      racersWithin(origin, [at('a', CORE.pickupRadius)], CORE.pickupRadius).length === 1 &&
+        racersWithin(origin, [at('a', 0, CORE.pickupRadius + 0.01)], CORE.pickupRadius).length === 0);
+
+    const cores: Vec3[] = [[0, 0, 0], [10, 0, 0], [0, 0, 10]];
+    check('hunt: a body collects the core it stands on, by index',
+      coresInReach(cores, origin, new Set(), HUNT.captureRadius).join(',') === '0');
+    check('hunt: a core already found is not collected again',
+      coresInReach(cores, origin, new Set([0]), HUNT.captureRadius).length === 0);
+    check('hunt: stacked cores collect on the same tick',
+      coresInReach([[0, 0, 0], [1, 0, 0]], origin, new Set(), HUNT.captureRadius).sort().join(',') === '0,1');
+    check('hunt: a core out of reach stays uncollected',
+      coresInReach(cores, { x: 5, y: 0, z: 0 }, new Set(), HUNT.captureRadius).length === 0);
+
+    const rank = rankByFinish([
+      { id: 'a', finishMs: 5000 },
+      { id: 'b', finishMs: 3000 },
+      { id: 'c', finishMs: -1 },
+      { id: 'd', finishMs: -1 },
+    ]);
+    check('finish: fastest first, non-finishers last',
+      rank.winnerId === 'b' && rank.order.join(',') === 'b,a,c,d',
+      `winner=${rank.winnerId} order=[${rank.order.join(',')}]`);
+    check('finish: an exact tie on the same time breaks on sessionId',
+      rankByFinish([{ id: 'z', finishMs: 1000 }, { id: 'a', finishMs: 1000 }]).winnerId === 'a');
+    check('finish: nobody finishing means no winner',
+      rankByFinish([{ id: 'a', finishMs: -1 }, { id: 'b', finishMs: -1 }]).winnerId === '');
+
+    const playing: PhaseClock = { phase: 'playing', ticks: 500 };
+    const done = advancePhase(playing, true, false, FIXED_TIMESTEP * 1000, DEFAULT_TIMINGS, true);
+    check('clock: allDone cuts a racing match straight to results',
+      done.entered === 'results' && done.clock.phase === 'results');
+    const notDone = advancePhase(playing, true, false, FIXED_TIMESTEP * 1000, DEFAULT_TIMINGS, false);
+    check('clock: allDone=false leaves a match running (hold unaffected)',
+      notDone.entered === null && notDone.clock.phase === 'playing');
+    const inLobby: PhaseClock = { phase: 'ready', ticks: 0 };
+    check('clock: allDone is ignored outside playing',
+      advancePhase(inLobby, true, false, FIXED_TIMESTEP * 1000, DEFAULT_TIMINGS, true).clock.phase === 'ready');
+  }
+
+  // --- the course format: mode + cores -------------------------------------
+  // The format's own contract: which mode needs which layout, and that a
+  // course cannot advertise a mode it has no field to play.
+  {
+    const base = {
+      id: 'modes',
+      name: 'Modes',
+      spawn: [0, 1, 0],
+      killY: -10,
+      solids: [{ id: 'floor', kind: 'box', position: [0, -1, 0], size: [10, 2, 10] }],
+    };
+    const parse = (extra: Record<string, unknown>) => parseCourse({ ...base, ...extra }, 'test');
+    const tries = (extra: Record<string, unknown>): boolean => {
+      try {
+        parse(extra);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    check('course: an unmarked course is hold and needs only a coreSpawn',
+      courseMode(parse({ coreSpawn: [0, 1, 0] })) === 'hold');
+    check('course: hunt without cores is a parse error', !tries({ mode: 'hunt' }));
+    check('course: reach without a coreSpawn is a parse error', !tries({ mode: 'reach' }));
+    check('course: cores on a non-hunt course are a parse error',
+      !tries({ coreSpawn: [0, 1, 0], cores: [[1, 1, 1]] }));
+    const hunt = parse({ mode: 'hunt', cores: [[1, 1, 1], [2, 1, 2]] });
+    check('course: a hunt course parses its cores',
+      courseMode(hunt) === 'hunt' && hunt.cores?.length === 2);
+    check('course: playability follows the mode, not the file name',
+      isPlayableCourse(hunt) &&
+        isPlayableCourse(parse({ coreSpawn: [0, 1, 0] })) &&
+        !isPlayableCourse(parse({})));
+
+    // The two shipped mode maps parse and are playable as declared.
+    const dir = dirname(DEFAULT_COURSE_PATH);
+    const huntMap = loadCourse(join(dir, 'takk-test.json'));
+    check('course: the shipped hunt map is playable and hides cores',
+      courseMode(huntMap) === 'hunt' && isPlayableCourse(huntMap) && (huntMap.cores?.length ?? 0) >= 3,
+      `${huntMap.cores?.length ?? 0} cores`);
+    const reachMap = loadCourse(join(dir, 'takk-climb.json'));
+    check('course: the shipped reach map is playable',
+      courseMode(reachMap) === 'reach' && isPlayableCourse(reachMap));
+  }
 }
 
 // ==================================================================== D: wire
@@ -1308,7 +1414,7 @@ async function testMapVote(): Promise<void> {
     cards.every((card) => card.name.length > 0 && card.solids > 0 && card.pads >= 0),
     cards.map((card) => `${card.id}:${card.solids}s/${card.pads}p`).join(' '));
   const laneId = loadCourse(join(dirname(DEFAULT_COURSE_PATH), 'tekk-01.json')).id;
-  check('the catalog lists only Core Rush courses (no coreSpawn, no ballot)',
+  check('the catalog lists only playable courses (no coreSpawn/cores, no ballot)',
     !ids.includes(laneId), `${laneId} ${ids.includes(laneId) ? 'present' : 'absent'}`);
 
   const startId = currentId();
@@ -1524,6 +1630,56 @@ async function testMapVote(): Promise<void> {
 
   await roomA.leave();
   await roomB.leave();
+  await gameServer.gracefullyShutdown(false);
+}
+
+/**
+ * The game mode over the wire: a real hunt room ships its mode, its cores and
+ * the mode-labelled catalog, and a fresh racer starts unfinished with no cores
+ * found. Pins the replication half of the feature -- the schema fields and the
+ * catalog `mode` -- which the pure-rule tests cannot see.
+ */
+async function testModeWire(): Promise<void> {
+  console.log('\n=== F. game modes over the wire ===');
+
+  const { createGameServer } = await import('../server/index.ts');
+  const PORT = 26_500 + Math.floor(Math.random() * 400);
+  // Pinned to the hunt map, so the room's mode comes from a real course file.
+  const { gameServer } = createGameServer({
+    matchTimings: VOTE_TIMINGS,
+    coursePath: join(dirname(DEFAULT_COURSE_PATH), 'takk-test.json'),
+  });
+  await gameServer.listen(PORT, '127.0.0.1');
+  check('mode suite: server boots and listens', true, `port ${PORT}`);
+
+  const client = new Client(`ws://localhost:${PORT}`);
+  const room = await client.joinOrCreate('race', { name: 'ModeMarten' });
+  const s = room.state;
+  const me = () => s.players.get(room.sessionId);
+
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline && ((s.courseJson ?? '') === '' || s.catalog.length === 0)) {
+    await sleep(16);
+  }
+
+  check('a hunt room ships its mode on the wire', s.mode === 'hunt', `mode=${s.mode}`);
+
+  const received = parseCourse(JSON.parse(s.courseJson), 'server');
+  check('a hunt room ships its cores to the client',
+    received.id === 'takk-test' && courseMode(received) === 'hunt' && (received.cores?.length ?? 0) >= 1,
+    `id=${received.id} cores=${received.cores?.length ?? 0}`);
+
+  const byId = new Map<string, string>();
+  s.catalog.forEach((entry: { id: string; mode: string }) => byId.set(entry.id, entry.mode));
+  check('the catalog names each map\'s mode',
+    byId.get('takk-test') === 'hunt' && byId.get('takk-climb') === 'reach',
+    `test=${byId.get('takk-test')} climb=${byId.get('takk-climb')}`);
+
+  check('a hunt racer starts unfinished with no cores found',
+    me() !== undefined && me()!.finishMs === -1 && me()!.coreMask === 0,
+    `finishMs=${me()?.finishMs} coreMask=${me()?.coreMask}`);
+
+  await room.leave();
   await gameServer.gracefullyShutdown(false);
 }
 
@@ -2239,6 +2395,13 @@ async function main(): Promise<void> {
     await testMapVote();
   } catch (err) {
     check('map vote suite ran to completion', false, `crashed: ${String(err).slice(0, 160)}`);
+  }
+  try {
+    // Its own server again, pinned to the hunt map: the point is the mode a
+    // real room derives from a real course file.
+    await testModeWire();
+  } catch (err) {
+    check('mode suite ran to completion', false, `crashed: ${String(err).slice(0, 160)}`);
   }
 
   // A skipped check is unverified, not passing. Say so in the tally rather than

@@ -157,6 +157,13 @@ body {
   text-shadow: 0 0 14px #f086b866;
 }
 
+/* A racing mode counts UP: the same clock, in cyan, reading as a stopwatch
+   rather than a countdown. No `is-low` state — there is nothing to run out of. */
+.hud-timer .is-race {
+  color: var(--neon-cyan);
+  text-shadow: 0 0 14px #4eabe866;
+}
+
 /* ---------------------------------------------------------------- state */
 
 .hud-readout {

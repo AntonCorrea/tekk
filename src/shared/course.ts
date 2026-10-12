@@ -10,6 +10,11 @@
  * `rotation` (ramps), `pads` (boost and jump, in the shared sim), `decor`
  * (visual only, never simulated) and `pickups` (cosmetic balls, captured
  * server-side) were each added together with the code that honours them.
+ *
+ * `mode` selects the win condition -- `hold` (classic Core Rush), `reach`
+ * (race to the fixed `coreSpawn`) or `hunt` (collect every position in
+ * `cores`) -- and each value is validated against the field it needs, so a
+ * course can never advertise a mode it cannot play.
  */
 
 export type Vec3 = [number, number, number];
@@ -185,6 +190,54 @@ export interface CourseAtmosphere {
   fogDensity?: number;
 }
 
+/**
+ * Game mode, declared by the course.
+ *
+ *   hold  -- Core Rush. Grab the Core, keep it, bank the most hold time. The
+ *            mode every course had before modes existed, and the default when
+ *            a file declares none.
+ *   reach -- Race to the Core. The Core sits at `coreSpawn` and never moves;
+ *            the first racer to touch it finishes, and the finish time is the
+ *            score (fastest wins).
+ *   hunt  -- Core Hunt. `cores` lists hidden checkpoint Cores; each racer
+ *            collects every one for themselves (nobody can deny anybody), and
+ *            finishing is touching the last of them. Fastest wins.
+ *
+ * The mode decides which fields a course must carry, so it is validated
+ * alongside them (`parseCourse`) rather than left to each consumer.
+ */
+export type GameMode = 'hold' | 'reach' | 'hunt';
+
+/** Every mode, in declaration order. The guard and the parser both read it. */
+export const GAME_MODES: readonly GameMode[] = ['hold', 'reach', 'hunt'];
+
+/** The mode a course runs, defaulting a mode-less file to classic Core Rush. */
+export function isGameMode(value: unknown): value is GameMode {
+  return value === 'hold' || value === 'reach' || value === 'hunt';
+}
+
+/** The mode a parsed course runs. Absent means `hold`. */
+export function courseMode(course: Course): GameMode {
+  return course.mode ?? 'hold';
+}
+
+/**
+ * Whether the engine can run a match on this course.
+ *
+ * Mode-aware on purpose: the catalog filters on this, and the room rejects a
+ * course it fails, so a course is advertised exactly when it is playable.
+ * `hold`/`reach` need a Core to run at; `hunt` needs its `cores` list and has
+ * no use for `coreSpawn` (a hunt course may still carry one — a hold match on
+ * the same layout would need it — which is why this is a check, not a shape).
+ */
+export function isPlayableCourse(course: Course): boolean {
+  if (courseMode(course) === 'hunt') return (course.cores?.length ?? 0) > 0;
+  return course.coreSpawn !== undefined;
+}
+
+/** Upper bound on `cores`, so the replicated find-bitmask stays a 32-bit int. */
+export const MAX_HUNT_CORES = 24;
+
 export interface Course {
   id: string;
   name: string;
@@ -199,9 +252,23 @@ export interface Course {
   goal?: CourseGoal;
   /**
    * Where the Core appears at match start and returns to when its carrier
-   * falls out. Optional so race courses stay valid.
+   * falls out. Optional so race courses stay valid. On a `reach` course the
+   * Core sits here for the whole match and never moves.
    */
   coreSpawn?: Vec3;
+  /**
+   * The game mode this map runs. Absent means `hold` (classic Core Rush), so
+   * every course written before modes existed keeps its meaning.
+   */
+  mode?: GameMode;
+  /**
+   * `hunt` only: the hidden checkpoint Cores, as body-centre positions. Each
+   * racer collects every one for themselves; touching the last of them is the
+   * finish. Present-but-empty is a parse error on a hunt course, and present
+   * on any other mode is too (a list nothing reads would be a promise the
+   * format cannot keep).
+   */
+  cores?: Vec3[];
   solids: CourseSolid[];
   /** Gameplay trigger pads. Empty when absent. */
   pads: CoursePad[];
@@ -282,6 +349,41 @@ export function parseCourse(raw: unknown, source: string): Course {
     if (coreSpawn[1] <= killY) {
       fail(source, 'coreSpawn', `coreSpawn Y (${coreSpawn[1]}) must be above killY (${killY})`);
     }
+  }
+
+  // The game mode, and the mode-shaped field it needs. Absent mode means
+  // `hold`, so a file written before modes existed stays valid; a mode that is
+  // present but wrong fails loudly rather than silently running Core Rush.
+  let mode: GameMode | undefined;
+  if (root.mode !== undefined) {
+    if (!isGameMode(root.mode)) {
+      fail(source, 'mode', `expected one of ${GAME_MODES.join(', ')}, got ${JSON.stringify(root.mode)}`);
+    }
+    mode = root.mode;
+  }
+
+  // `cores` belongs to `hunt` and nowhere else: on another mode nothing would
+  // read it, and a list nothing reads is a promise the format cannot keep.
+  let cores: Vec3[] | undefined;
+  if (root.cores !== undefined) {
+    const list = optionalArray(root.cores, source, 'cores');
+    if (mode !== 'hunt') {
+      fail(source, 'cores', 'cores are only valid on a "hunt" course');
+    }
+    if (list.length === 0) {
+      fail(source, 'cores', 'a "hunt" course needs at least one core');
+    }
+    if (list.length > MAX_HUNT_CORES) {
+      fail(source, 'cores', `at most ${MAX_HUNT_CORES} cores, got ${list.length}`);
+    }
+    cores = list.map((entry, index) => asVec3(entry, source, `cores[${index}]`));
+  }
+
+  // The mode decides which of the two Core layouts the course must carry.
+  if (mode === 'hunt') {
+    if (!cores) fail(source, 'cores', 'a "hunt" course needs a non-empty "cores" array');
+  } else if (mode !== undefined && !coreSpawn) {
+    fail(source, 'coreSpawn', `a "${mode}" course needs a coreSpawn`);
   }
 
   if (!Array.isArray(root.solids) || root.solids.length === 0) {
@@ -459,6 +561,8 @@ export function parseCourse(raw: unknown, source: string): Course {
   }
   if (goal) course.goal = goal;
   if (coreSpawn) course.coreSpawn = coreSpawn;
+  if (mode) course.mode = mode;
+  if (cores) course.cores = cores;
   return course;
 }
 

@@ -104,6 +104,14 @@ export interface Account extends CosmeticIdentity {
   ownedBodyColors: string[];
   ownedHats: string[];
   ownedGears: string[];
+
+  /**
+   * The account's best finish time, in ms, per course id — the "top racing
+   * time" for the `reach`/`hunt` modes. Only the fastest time is kept, and only
+   * for the local account: there is no server board (and no database) in the
+   * prototype, so this is the same off-chain stand-in as the wardrobe.
+   */
+  personalBests: Record<string, number>;
 }
 
 /** A stable local handle. Not a secret and not security — just a recognisable id. */
@@ -170,6 +178,7 @@ export function loadAccount(): Account {
       equippedHat,
       ownedGears,
       equippedGear,
+      personalBests: normaliseBests(stored.personalBests),
     };
   }
 
@@ -185,6 +194,7 @@ export function loadAccount(): Account {
     equippedHat: DEFAULT_EQUIPPED_HAT,
     ownedGears: [...STARTER_GEARS],
     equippedGear: DEFAULT_EQUIPPED_GEAR,
+    personalBests: {},
   };
   saveAccount(fresh);
   return fresh;
@@ -232,6 +242,32 @@ export function grantOwned(account: Account, itemId: string): boolean {
   // A stock default or an unknown id never reaches here (the course parser and
   // the server both reject them), so falling through means "already owned".
   return false;
+}
+
+/**
+ * Record a finish time for a course if it beats the account's best and persist
+ * it. Returns true only when it is a NEW best — the signal the caller uses to
+ * toast "new best". A time that ties the best is not an improvement, matching
+ * how the server ranks equal times by sessionId rather than reordering.
+ */
+export function recordPersonalBest(account: Account, courseId: string, ms: number): boolean {
+  if (!Number.isFinite(ms) || ms < 0) return false;
+  const previous = account.personalBests[courseId];
+  if (previous !== undefined && ms >= previous) return false;
+  account.personalBests = { ...account.personalBests, [courseId]: ms };
+  saveAccount(account);
+  return true;
+}
+
+/** Keep only finite, non-negative times keyed by a non-empty course id. */
+function normaliseBests(raw: unknown): Record<string, number> {
+  if (typeof raw !== 'object' || raw === null) return {};
+  const out: Record<string, number> = {};
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (id.length === 0) continue;
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) out[id] = value;
+  }
+  return out;
 }
 
 function readStore(): Partial<Account> | null {

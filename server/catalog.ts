@@ -3,7 +3,8 @@
  *
  * The set of maps a room may be voted to. Scanned from the directory the
  * default course lives in, parsed with the same `loadCourse` the room itself
- * uses, and filtered to courses Core Rush can actually play (a `coreSpawn`).
+ * uses, and filtered to courses the engine can actually play — which is
+ * `isPlayableCourse`, so the filter and the room's own creation check agree.
  *
  * The catalog is the allow-list a vote is checked against. Clients only ever
  * send course *ids*; which file an id resolves to is decided here, on this
@@ -20,7 +21,8 @@ import { readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { DEFAULT_COURSE_PATH, loadCourse } from './course.ts';
-import type { Course } from '../src/shared/course.ts';
+import type { Course, GameMode } from '../src/shared/course.ts';
+import { courseMode, isPlayableCourse } from '../src/shared/course.ts';
 
 /** A votable map. `path` is server-local and is never sent to a client. */
 export interface CatalogEntry {
@@ -31,6 +33,8 @@ export interface CatalogEntry {
   /** Shape of the card: `solids` / `pads` are the two counts it shows. */
   solids: number;
   pads: number;
+  /** The mode the map runs, so the card can name it ("Race to the Core"). */
+  mode: GameMode;
   /** Absolute path on this server's disk. */
   path: string;
 }
@@ -42,6 +46,7 @@ export function catalogEntry(course: Course, path: string): CatalogEntry {
     name: course.name,
     solids: course.solids.length,
     pads: course.pads.length,
+    mode: courseMode(course),
     path,
   };
 }
@@ -50,7 +55,7 @@ export function catalogEntry(course: Course, path: string): CatalogEntry {
  * Every playable course next to the default one, sorted by id.
  *
  * Sorted and deduped by id so every room advertises the same list in the same
- * order regardless of filesystem readdir order. Unreadable and goal-mode
+ * order regardless of filesystem readdir order. Unreadable and unplayable
  * files are simply absent from the list; the catalog is UI data, and a UI
  * list is not a reason for a boot failure.
  */
@@ -80,9 +85,10 @@ export function loadCatalog(): CatalogEntry[] {
       continue;
     }
 
-    // Core Rush has no Core to carry on a goal course; the room would reject
-    // it anyway, so advertising it would be a vote that silently never lands.
-    if (!course.coreSpawn) continue;
+    // The room would reject a course it cannot play anyway, so advertising it
+    // would be a vote that silently never lands. `isPlayableCourse` is the same
+    // check `onCreate`/`swapCourse` make, so the two can never disagree.
+    if (!isPlayableCourse(course)) continue;
 
     if (seen.has(course.id)) {
       console.warn(`[catalog] skipping "${file}": duplicate id "${course.id}"`);

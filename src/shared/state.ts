@@ -93,6 +93,20 @@ export const PlayerState = schema(
     rank: t.number().default(0),
 
     /**
+     * `reach`/`hunt` only: the match clock (ms since `playing` began) at which
+     * this racer finished, or -1 if they have not. The score for both racing
+     * modes -- fastest wins. Unused (stays -1) in `hold`, where `holdMs` is the
+     * score instead.
+     */
+    finishMs: t.number().default(-1),
+    /**
+     * `hunt` only: a bitmask of which `cores` this racer has collected, bit `i`
+     * for `cores[i]`. Per-racer checkpoints, so nobody can deny anybody a core;
+     * every one of the course's cores set is the finish. 0 in every other mode.
+     */
+    coreMask: t.number().default(0),
+
+    /**
      * Course id this racer has voted for, or '' for no vote. In a lobby
      * window it is the ballot pick; while a match runs it doubles as the
      * change-map vote (see `votedToSkip`). A client may only ever name an
@@ -164,6 +178,12 @@ export const MapInfo = schema(
     name: t.string().default(''),
     solids: t.number().default(0),
     pads: t.number().default(0),
+    /**
+     * The course's game mode (`hold`/`reach`/`hunt`), so the ballot card can
+     * name it. Display only: the server reads the mode off the course file it
+     * loaded, never from here.
+     */
+    mode: t.string().default('hold'),
   },
   'MapInfo',
 );
@@ -218,6 +238,12 @@ export type MatchPhase = 'ready' | 'countdown' | 'playing' | 'results';
 export const GameState = schema(
   {
     phase: t.string().default('ready'),
+    /**
+     * The game mode the running course declares (`hold`/`reach`/`hunt`). Sent
+     * so the HUD can label the race; the server keeps its own copy and never
+     * reads this field back.
+     */
+    mode: t.string().default('hold'),
     /**
      * Time left in the current phase, in ms, written by the server every tick.
      * Countdown, match clock and results hold all read from this one field.

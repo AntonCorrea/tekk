@@ -110,6 +110,18 @@ export const CORE = {
 } as const;
 
 /**
+ * Core Hunt rules.
+ *
+ * A hunt Core is a per-racer checkpoint: a racer collects one whose centre is
+ * within `captureRadius` of their own body centre, and nobody can deny anybody
+ * a collector. The radius is a touch more generous than the cosmetic-pickup
+ * one, because a core is a landmark you run at rather than a ball you thread.
+ */
+export const HUNT = {
+  captureRadius: 1.1,
+} as const;
+
+/**
  * Cosmetic pickup balls.
  *
  * A racer captures a ball whose centre is within `captureRadius` of their own
