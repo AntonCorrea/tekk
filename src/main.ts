@@ -110,9 +110,17 @@ async function boot(): Promise<void> {
   // no HUD — it builds the stage, the course meshes and a frame loop itself.
   // The import is dynamic so none of the editor (nor the inlined course files
   // it opens) ships in the chunk a player who never asks for it downloads.
-  if (new URLSearchParams(globalThis.location.search).has('editor')) {
+  const params = new URLSearchParams(globalThis.location.search);
+  if (params.has('editor')) {
     const { bootEditor } = await import('./editor/editor.ts');
     await bootEditor(container);
+    return;
+  }
+  // Wardrobe showcase: a standalone fullscreen grid of spinning avatars,
+  // one per cosmetic in each category. No server, no HUD, no input.
+  if (params.has('showcase')) {
+    const { bootShowcase } = await import('./ui/showcase.ts');
+    await bootShowcase(container);
     return;
   }
 

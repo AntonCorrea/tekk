@@ -72,6 +72,8 @@ export interface Character {
   readonly tint: THREE.Color;
   /** Glow gain multiplier: 1 at rest, higher for the dash and carrier cues. */
   glow: number;
+  /** The root group holding the entire character — useful for showcase spins. */
+  readonly root: THREE.Object3D;
   /** Pose and animate. `delta` is the real frame delta in seconds. */
   update(state: CharacterState, delta: number): void;
   setVisible(visible: boolean): void;
@@ -341,6 +343,17 @@ export function createCharacter(
         hatBox(0.06, 0.12, 0.06, M, 0, 0.41, 0.16);
         hatBox(0.06, 0.12, 0.06, M, 0, 0.41, -0.16);
         break;
+      // helm: a full-face knight helm — a stepped steel shell that encases the
+      // whole head, a dark visor slit at eye level for the face, and a red
+      // crest (mohawk) running front-to-back over the crown.
+      case 'hat-helm':
+        hatBox(0.38, 0.20, 0.38, M, 0, 0.25, 0);          // crown: upper head
+        hatBox(0.34, 0.16, 0.34, M, 0, 0.07, 0);          // bevor: jaw and face
+        hatBox(0.30, 0.05, 0.06, jointMat, 0, 0.19, 0.18); // dark visor slit
+        hatBox(0.07, 0.10, 0.11, A, 0, 0.40, 0.11);       // crest: front
+        hatBox(0.07, 0.14, 0.12, A, 0, 0.42, 0);          // crest: peak
+        hatBox(0.07, 0.10, 0.11, A, 0, 0.40, -0.11);      // crest: back
+        break;
       // 'hat-stock' and anything the catalog does not know: no headgear.
       default:
         break;
@@ -352,11 +365,12 @@ export function createCharacter(
 
   // --- gear ------------------------------------------------------------------
   // Voxel body armour: a small shell of boxes over the chest, shoulders and
-  // (for the heavier ids) the hips — so a shirt, a vest and a full armour kit
-  // are the same three-material uniform graph with different box sets. Like
-  // hats, gear is its own object with fixed catalog colours and never follows
-  // the racer's tint, so it keeps its look while the body dims to carrier
-  // white or flares through a dash.
+  // (for the heavier ids) the hips, or a backpack on the back — so a shirt, a
+  // vest, a full armour kit and a couple of backpacks are the same
+  // three-material uniform graph with different box sets. Like hats, gear is
+  // its own object with fixed catalog colours and never follows the racer's
+  // tint, so it keeps its look while the body dims to carrier white or flares
+  // through a dash.
   const gearGroup = new THREE.Group();
   torso.add(gearGroup);
   let gearMeshes: THREE.Mesh[] = [];
@@ -445,17 +459,26 @@ export function createCharacter(
         gearBox(0.46, 0.18, 0.29, M, 0, 0.11, 0);
         gearBox(0.04, 0.34, 0.02, A, 0, 0.28, 0.20);
         break;
-      // tortoise shell: a green backpack built from stepped bands on the back,
-      // the dome shrinking upward with a dark top cap and hem like the shell's
-      // scutes, plus two thin straps crossing the shoulders to the shell.
+      // tortoise shell: a big green carapace on the back — a full sphere
+      // (widest at its equator, tapering to a crown above and a base below)
+      // with dark caps for the shell's scutes, plus two shoulder straps. The
+      // lower half is the upper half mirrored below the equator.
       case 'gear-mint':
-        gearBox(0.50, 0.11, 0.26, M, 0, 0.20, -0.21);
-        gearBox(0.44, 0.12, 0.23, M, 0, 0.30, -0.20);
-        gearBox(0.35, 0.12, 0.19, M, 0, 0.40, -0.18);
-        gearBox(0.24, 0.08, 0.14, A, 0, 0.46, -0.16);
-        gearBox(0.54, 0.04, 0.28, A, 0, 0.14, -0.21);
-        gearBox(0.04, 0.06, 0.22, A, 0.19, 0.42, 0.02);
-        gearBox(0.04, 0.06, 0.22, A, -0.19, 0.42, 0.02);
+        // upper half: widest at the equator, tapering up to the crown
+        gearBox(0.60, 0.06, 0.32, M, 0, 0.15, -0.20);
+        gearBox(0.57, 0.06, 0.30, M, 0, 0.21, -0.20);
+        gearBox(0.52, 0.06, 0.27, M, 0, 0.27, -0.19);
+        gearBox(0.43, 0.06, 0.23, M, 0, 0.33, -0.18);
+        gearBox(0.26, 0.06, 0.18, M, 0, 0.39, -0.17);
+        gearBox(0.16, 0.06, 0.14, A, 0, 0.44, -0.16); // dark crown cap
+        // lower half: the same bands mirrored below the equator
+        gearBox(0.57, 0.06, 0.30, M, 0, 0.09, -0.20);
+        gearBox(0.52, 0.06, 0.27, M, 0, 0.03, -0.19);
+        gearBox(0.43, 0.06, 0.23, M, 0, -0.03, -0.18);
+        gearBox(0.26, 0.06, 0.18, M, 0, -0.09, -0.17);
+        gearBox(0.16, 0.06, 0.14, A, 0, -0.14, -0.16); // dark base cap
+        gearBox(0.04, 0.06, 0.26, A, 0.20, 0.40, 0.02); // shoulder straps
+        gearBox(0.04, 0.06, 0.26, A, -0.20, 0.40, 0.02);
         break;
       // armour-full: the heaviest kit — a big chest, large pauldrons with
       // accent piping, a heavy belt and hip guards.
@@ -468,6 +491,15 @@ export function createCharacter(
         gearBox(0.48, 0.08, 0.26, A, 0, 0.14, 0);
         gearBox(0.22, 0.20, 0.24, M, 0.12, -0.07, 0);
         gearBox(0.22, 0.20, 0.24, M, -0.12, -0.07, 0);
+        break;
+      // propulsor: a grey thruster pack on the back — a plain box with two red
+      // exhaust nozzles hanging off its underside, aimed down.
+      case 'gear-propulsor':
+        gearBox(0.54, 0.34, 0.22, M, 0, 0.31, -0.20);    // grey body
+        gearBox(0.13, 0.12, 0.13, A, 0.15, 0.08, -0.20);  // left nozzle
+        gearBox(0.13, 0.12, 0.13, A, -0.15, 0.08, -0.20); // right nozzle
+        gearBox(0.17, 0.04, 0.17, A, 0.15, 0.02, -0.20);  // left nozzle lip
+        gearBox(0.17, 0.04, 0.17, A, -0.15, 0.02, -0.20); // right nozzle lip
         break;
       // 'gear-stock' and anything the catalog does not know: no body covering.
       default:
@@ -482,7 +514,6 @@ export function createCharacter(
 
   const arm = (side: 1 | -1): Limb => {
     const shoulder = pivot(torso, side * 0.27, TORSO_H - 0.05, 0);
-    box(0.13, 0.13, 0.13, jointMat, shoulder, 0, 0, 0);
     box(0.11, UPPER_ARM - 0.04, 0.11, bodyMat, shoulder, 0, -UPPER_ARM / 2 - 0.02, 0);
     const elbow = pivot(shoulder, 0, -UPPER_ARM, 0);
     box(0.09, 0.06, 0.09, jointMat, elbow, 0, 0, 0);
@@ -904,6 +935,8 @@ export function createCharacter(
         if (!visible) trail.mesh.visible = false;
       }
     },
+
+    root,
 
     setTrail(nextTrailId) {
       applyTrail(getTrail(nextTrailId));

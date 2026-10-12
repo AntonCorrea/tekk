@@ -120,6 +120,7 @@ export const HATS: Record<string, HatDef> = {
   'hat-top': { name: 'Top Hat', color: 0x1a1c26, accent: 0xc8d0e0 },
   'hat-cone': { name: 'Party Cone', color: 0xff4d6d, accent: 0x37e6a0 },
   'hat-crown': { name: 'Crown', color: 0xd4a017, accent: 0xffe066 },
+  'hat-helm': { name: 'Knight Helm', color: 0x9aa7b8, accent: 0xff3b30 },
 };
 
 /** The fallback for an unknown or absent id. */
@@ -145,13 +146,13 @@ export interface GearDef {
 /**
  * The body gear.
  *
- * One catalog wearing three silhouettes on purpose: the ids are a subtle
- * chest wrap (shirt), a vest shell, or a full armour kit — the same
- * three-material uniform graph renders every entry, so the silhouette is just
- * a set of boxes in `render/character.ts`. `gear-stock` is the empty entry,
- * so "no gear" is a real catalog id rather than an absent one. Every other
- * entry's colours are fixed (main + accent trim) and never follow the racer's
- * tint, exactly like hats.
+ * One catalog wearing a few silhouettes on purpose: the ids are a subtle
+ * chest wrap (shirt), a vest shell, a full armour kit, or a backpack worn on
+ * the back. The same three-material uniform graph renders every entry, so the
+ * silhouette is just a set of boxes in `render/character.ts`. `gear-stock` is
+ * the empty entry, so "no gear" is a real catalog id rather than an absent
+ * one. Every other entry's colours are fixed (main + accent trim) and never
+ * follow the racer's tint, exactly like hats.
  */
 export const GEARS: Record<string, GearDef> = {
   'gear-stock': { name: 'Stock', color: null, accent: null },
@@ -161,10 +162,12 @@ export const GEARS: Record<string, GearDef> = {
   'gear-royal': { name: 'Royal Vest', color: 0x1f4fd8, accent: 0xffffff },
   // vest + shoulders: chest shell with shoulder caps.
   'gear-crimson': { name: 'Crimson Shell', color: 0xff4d6d, accent: 0xffe066 },
-  // armour-lite: chest, shoulders and an accent belt.
+  // backpack: a green tortoise-shell sphere on the back with shoulder straps.
   'gear-mint': { name: 'Mint Guard', color: 0x37e6a0, accent: 0x1a1c26 },
   // armour-full: chest, pauldrons, thigh guards and a belt — the heaviest kit.
   'gear-plasma': { name: 'Plasma Armour', color: 0xb35bf7, accent: 0xb8ff2e },
+  // backpack: a grey propulsor pack with two red exhaust nozzles underneath.
+  'gear-propulsor': { name: 'Propulsor Pack', color: 0x878c96, accent: 0xff3b30 },
 };
 
 /** The fallback for an unknown or absent id. */
