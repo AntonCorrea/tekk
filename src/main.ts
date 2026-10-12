@@ -149,14 +149,14 @@ async function boot(): Promise<void> {
   // and saving it after an equip is how the choice survives a reload.
   const account = loadAccount();
 
-  // The login placeholder. Off-chain there is nothing to verify, so the card
-  // is a door in the flow rather than a credential check: pick a method (or
-  // continue as {name}) and the boot proceeds. The real build blocks here
-  // until a Privy session is authenticated and hands back a verified user
-  // object instead of a method string.
-  const loginMethod = await promptLogin(container, account.name);
-  if (loginMethod !== account.loginMethod) {
-    account.loginMethod = loginMethod;
+  // The login card. Without Privy configured this is the placeholder door it
+  // always was: pick a method (or continue as {name}) and the boot proceeds.
+  // With Privy, the card blocks until a real session exists and hands back a
+  // signed wallet proof alongside the method -- which then rides the join, so
+  // the record for this match credits an address the server verified.
+  const login = await promptLogin(container, account.name);
+  if (login.method !== account.loginMethod) {
+    account.loginMethod = login.method;
     saveAccount(account);
   }
 
@@ -174,6 +174,7 @@ async function boot(): Promise<void> {
       ownedGears: account.ownedGears,
       equippedGear: account.equippedGear,
     },
+    identity: login.proof,
   });
   // `let`, not destructured once: a map swap replaces both of these, and the
   // frame below re-reads them whenever `session.syncCourse()` fires. Holding
@@ -773,7 +774,9 @@ async function boot(): Promise<void> {
       `${session.room.state.players.size} racing · ` +
       `step ${(FIXED_TIMESTEP * 1000).toFixed(2)}ms · ` +
       `you are "${session.self()?.name ?? '—'}" · ` +
-      `sign-in "${account.loginMethod}" · ` +
+      `sign-in "${account.loginMethod}"` +
+      (login.wallet ? ` as ${login.wallet}` : ' (no wallet — record goes out zeroed)') +
+      ' · ' +
       'WASD move · Space jump · Shift dash · mouse look · C camera · M mute',
   );
 

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently -n server,client -c magenta,cyan \"npm:dev:server\" \"npm:dev:client\"",
     "dev:client": "vite",
-    "dev:server": "tsx watch server/index.ts",
+    "dev:server": "node --watch --import tsx server/index.ts",
     "server": "tsx server/index.ts",
     "start": "node dist-server/server/index.js",
     "typecheck": "tsc --noEmit",
@@ -30,7 +30,10 @@
     "@colyseus/sdk": "^0.18.5",
     "@colyseus/ws-transport": "^0.18.4",
     "@dimforge/rapier3d-compat": "^0.21.0",
+    "@privy-io/js-sdk-core": "^0.78.2",
+    "@privy-io/node": "^0.35.0",
+    "express": "^5.3.0",
     "three": "^0.186.1",
-    "viem": "^2.57.4"
+    "viem": "2.56.5"
   }
 }

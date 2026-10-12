@@ -15,9 +15,12 @@
  * Node's built-in `process.loadEnvFile`, so there is no dotenv dependency)
  * and never prints or persists a key.
  *
- * Stage 1 honesty: racers have no on-chain identities yet, so `winner` and
- * every player `wallet` go out as the zero address. Stage 3 (Privy) replaces
- * them with real embedded-wallet addresses without touching the contract.
+ * Identity (Stage 3): the caller supplies the wallets. `server/privy.ts`
+ * verifies a signed join statement, `server/room.ts` hands the address it
+ * recovers straight through, and a signed-in racer is recorded against its real
+ * embedded wallet. A guest seat still goes out as the zero address. This module
+ * does not care which it is, and the contract was never changed to tell them
+ * apart -- the zero address says it well enough.
  */
 import { loadEnvFile } from 'node:process';
 import {
@@ -37,7 +40,12 @@ try {
   // no .env present; rely on the shell environment
 }
 
-/** Zero address: the guest placeholder until Stage 3 attaches wallets. */
+/**
+ * Zero address: the wallet of a seat that proved nothing.
+ *
+ * A guest is not an error -- it is a racer who did not sign in, and the record
+ * says exactly that rather than naming an address the server cannot vouch for.
+ */
 export const ZERO_WALLET = '0x0000000000000000000000000000000000000000' as Hex;
 
 /** Course mode -> on-chain mode code (matches MatchRecord.sol constants). */

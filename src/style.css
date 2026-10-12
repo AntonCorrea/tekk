@@ -1547,3 +1547,68 @@ body {
   text-transform: uppercase;
   text-align: center;
 }
+
+/* Stage 3: the Privy card. Same skeleton as the placeholder, plus the two
+   pieces a real exchange needs -- an input, and a line that says what the
+   client is waiting on. */
+.login-status {
+  color: var(--ink-faint);
+  font-family: var(--condensed);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 13px;
+  border: 1px solid var(--hairline);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--ink);
+  font-family: var(--grotesk);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.login-input::placeholder {
+  color: var(--ink-faint);
+}
+
+.login-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.login-input[readonly] {
+  color: var(--ink-dim);
+}
+
+.login-submit {
+  justify-content: center;
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.login-submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.login-resume {
+  border-color: rgba(158, 199, 250, 0.5);
+}
+
+.login-error {
+  color: var(--loss, #ff8a8a);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+}

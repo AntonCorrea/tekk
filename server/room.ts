@@ -22,10 +22,12 @@
 import type { Client } from '@colyseus/core';
 import { Room } from '@colyseus/core';
 import type { RigidBody, World } from '@dimforge/rapier3d-compat';
+import type { Hex } from 'viem';
 
 import { CORE, FIXED_TIMESTEP, HUNT, PICKUP } from '../src/constants.ts';
 import type { Course, GameMode, Vec3 } from '../src/shared/course.ts';
 import { courseMode, isPlayableCourse } from '../src/shared/course.ts';
+import type { WalletProof } from '../src/shared/identity.ts';
 import { MoveInput, idleInput } from '../src/shared/input.ts';
 import type { MoveInputInstance } from '../src/shared/input.ts';
 import {
@@ -53,6 +55,7 @@ import { createPhysicsWorld, initPhysics } from '../src/physics/world.ts';
 import { DEFAULT_COURSE_PATH, loadCourse } from './course.ts';
 import { catalogEntry, loadCatalog, type CatalogEntry } from './catalog.ts';
 import { popcount, recordMatch, ZERO_WALLET } from './matchRecord.ts';
+import { verifyRacer } from './privy.ts';
 import {
   advancePhase,
   chooseStealer,
@@ -119,6 +122,15 @@ export interface RaceJoinOptions {
    */
   gears?: string[];
   gear?: string;
+  /**
+   * The signed wallet binding (Stage 3, see shared/identity.ts).
+   *
+   * Unlike the cosmetic claims above, this one is NOT trusted: it is a proof,
+   * and the server either verifies it (proving the joiner holds the key) or
+   * ignores it and seats the racer as a guest. A verified address is what the
+   * on-chain match record credits.
+   */
+  identity?: WalletProof;
 }
 
 /**
@@ -242,6 +254,17 @@ export class RaceRoom extends Room<RaceRoomOptions> {
   private clockState: PhaseClock = { phase: 'ready', ticks: 0 };
 
   private readonly racers = new Map<string, SimBody>();
+
+  /**
+   * Verified wallet per session (Stage 3).
+   *
+   * Populated only by a join that carried a valid, fresh, unused signature --
+   * see `server/privy.ts`. Read once per match, when the on-chain record is
+   * written; a session with no entry is a guest and records as the zero
+   * address. Deliberately not replicated state: the wire has no business
+   * carrying someone else's address, and the client already knows its own.
+   */
+  private readonly wallets = new Map<string, Hex>();
 
   override async onCreate(options?: RaceCreateOptions): Promise<void> {
     this.course = loadCourse(options?.coursePath);
@@ -429,7 +452,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     );
   }
 
-  override onJoin(client: Client, options?: RaceJoinOptions): void {
+  override async onJoin(client: Client, options?: RaceJoinOptions): Promise<void> {
     const sim = createSimBody(this.world, this.course, FIXED_TIMESTEP);
     this.racers.set(client.sessionId, sim);
 
@@ -484,6 +507,18 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     this.state.players.set(client.sessionId, state);
 
     log(`${state.name} joined (${this.state.players.size} racing)`);
+
+    // Stage 3: the wallet proof, checked last and deliberately after the racer
+    // is already seated. Verification is the only await in this handler, and
+    // putting it at the end means a slow signature recovery can delay this
+    // join's completion but can never delay the racer's arrival in the lobby.
+    // `onJoin` is async by contract (the base class awaits it), and a bad
+    // proof is a guest seat rather than a rejected join.
+    const verified = await verifyRacer(options?.identity);
+    if (verified) {
+      this.wallets.set(client.sessionId, verified.wallet);
+      log(`${state.name} signed in as ${verified.wallet}`);
+    }
   }
 
   override onLeave(client: Client): void {
@@ -499,6 +534,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     this.state.players.delete(client.sessionId);
     this.cosmetics.delete(client.sessionId);
     this.huntFound.delete(client.sessionId);
+    this.wallets.delete(client.sessionId);
 
     // The last racer out resets the match. Nobody is left to finish it, and the
     // next joiner should not land in the middle of somebody else's clock.
@@ -511,6 +547,7 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     this.racers.clear();
     this.cosmetics.clear();
     this.huntFound.clear();
+    this.wallets.clear();
   }
 
   // ------------------------------------------------------------ simulation
@@ -974,24 +1011,31 @@ export class RaceRoom extends Room<RaceRoomOptions> {
       log(`match over -- ${winner.name} wins in ${(winner.finishMs / 1000).toFixed(2)}s`);
     }
 
-    // On-chain record (Stage 1): one tx per finished match. Gated by
-    // MATCH_RECORD_ENABLED + MONAD_RPC_URL + MATCH_SIGNER_KEY +
-    // MATCH_RECORD_ADDRESS in tekk2/.env; without them this is a silent
-    // no-op, so local dev and the harness never touch the chain. Wallets are
-    // zeroed until Stage 3 (Privy) attaches real addresses.
-    const racers = [...this.state.players.values()];
+    // On-chain record: one tx per finished match. Gated by MATCH_RECORD_ENABLED
+    // + MONAD_RPC_URL + MATCH_SIGNER_KEY + MATCH_RECORD_ADDRESS in tekk2/.env;
+    // without them this is a silent no-op, so local dev and the harness never
+    // touch the chain.
+    //
+    // Stage 3: each racer's real address, when it proved one at join. A seat
+    // with no verified wallet stays at the zero address rather than holding the
+    // match back, and the winner slot is only filled for a wallet that signed:
+    // a zero address there would read as "somebody won", which is a worse lie
+    // than "nobody signed".
+    const racers = [...this.state.players.entries()];
     if (racers.length > 0) {
       recordMatch({
         courseId: this.course.id,
         mode: this.mode,
-        winner: null,
-        players: racers.map((p) => ({
-          wallet: ZERO_WALLET,
+        winner: this.wallets.get(standings.winnerId) ?? null,
+        players: racers.map(([id, p]) => ({
+          wallet: this.wallets.get(id) ?? ZERO_WALLET,
           holdMs: p.holdMs,
           finishMs: p.finishMs,
           coresFound: popcount(p.coreMask),
         })),
       });
+      const signed = racers.filter(([id]) => this.wallets.has(id)).length;
+      if (signed > 0) log(`on-chain record: ${signed}/${racers.length} wallets signed`);
     }
   }
 

@@ -25,6 +25,7 @@ import { FIXED_TIMESTEP } from '../constants.ts';
 import { parseCourse } from '../shared/course.ts';
 import type { Course } from '../shared/course.ts';
 import type { CosmeticIdentity } from '../shared/cosmetics.ts';
+import type { WalletProof } from '../shared/identity.ts';
 import { MoveInput, randomRacerName } from '../shared/input.ts';
 import type { MoveInputData } from '../shared/input.ts';
 import {
@@ -54,6 +55,13 @@ export interface SessionOptions {
    * sends against something it actually stored.
    */
   account?: CosmeticIdentity;
+  /**
+   * The signed wallet binding (see shared/identity.ts), when the racer logged
+   * in through Privy. The server verifies it and uses the address for the
+   * on-chain record; absent or unverifiable simply means a walletless seat,
+   * which is why the game does not wait on it here.
+   */
+  identity?: WalletProof;
 }
 
 export interface Session {
@@ -191,6 +199,10 @@ export async function connectSession(
     hat: options.account?.equippedHat,
     gears: options.account?.ownedGears,
     gear: options.account?.equippedGear,
+    // The wallet proof rides the join rather than a later message: the server
+    // needs the address before the match ends, and a join is the one roundtrip
+    // every racer already makes. Unverifiable input is dropped server-side.
+    identity: options.identity,
   });
 
   // --- wait for the authoritative course ---------------------------------
