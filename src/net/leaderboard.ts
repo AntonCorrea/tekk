@@ -14,7 +14,7 @@
 
 /** One settled match, as the lobby shows it. */
 export interface MatchRecordRow {
-  /** The match id the contract assigned, counting from 0. */
+  /** The match id the contract assigned, counting from 1. */
   matchId: number;
   /** Course id the match was played on, e.g. `takk-arena`. */
   courseId: string;
@@ -129,15 +129,29 @@ function parseRows(raw: unknown): MatchRecordRow[] | null {
     const players = toNumber(row['playerCount']);
     const endedAt = toNumber(row['endedAt']);
     const courseId = row['courseId'];
-    const mode = row['mode'];
+    const mode = modeName(row['mode']);
     const txHash = row['txHash'];
-    if (matchId === null || players === null || endedAt === null) continue;
-    if (typeof courseId !== 'string' || typeof mode !== 'string' || typeof txHash !== 'string') {
-      continue;
-    }
+    if (matchId === null || players === null || endedAt === null || mode === null) continue;
+    if (typeof courseId !== 'string' || typeof txHash !== 'string') continue;
     rows.push({ matchId, courseId, mode, players, endedAt, txHash });
   }
   return rows;
+}
+
+/**
+ * The contract's mode code as the panel names it.
+ *
+ * `mode` is an `Int` on chain — 0 hold, 1 reach, 2 hunt — which GraphQL hands
+ * back as a JSON number, not the name the panel renders. An unrecognised code is
+ * dropped rather than guessed at, so a match is never mislabelled.
+ */
+function modeName(code: unknown): string | null {
+  switch (toNumber(code)) {
+    case 0: return 'hold';
+    case 1: return 'reach';
+    case 2: return 'hunt';
+    default: return null;
+  }
 }
 
 /** A finite number from a JSON value that may be a number or a numeric string. */
