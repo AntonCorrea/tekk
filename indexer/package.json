@@ -10,7 +10,7 @@
     "start": "envio start",
     "deploy": "envio deploy"
   },
-  "devDependencies": {
+  "dependencies": {
     "envio": "3.13.0"
   }
 }
