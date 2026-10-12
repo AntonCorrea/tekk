@@ -6,17 +6,19 @@
  *   - No `VITE_PRIVY_APP_ID`: the placeholder. Nothing off-chain is verified, so
  *     every row "succeeds" and records a method; it exists so the step is
  *     visible and the boot flow has a door where auth will sit.
- *   - Privy configured: the real card. Email one-time code, or the session
- *     Privy already restored, then one signed statement that binds the wallet
- *     to the join (see `shared/identity.ts`). Signing is part of logging in
- *     here, so there is no second prompt later: one signature per visit.
+ *   - Privy configured: the real card. Three routes in -- a Google redirect, the
+ *     wallet the browser already has, or an emailed one-time code -- plus the
+ *     session Privy already restored. Whichever is used, the racer then signs
+ *     ONE statement that binds a wallet to the join (see `shared/identity.ts`).
+ *     Signing is part of logging in here, so there is no second prompt later:
+ *     one signature per visit.
  *
  * The card owns the whole exchange and resolves with an outcome, not a bare
  * method string, because the boot needs the signed proof too. Every failure --
- * Privy unreachable, a wrong code, a rejected signature -- degrades to the
- * guest row rather than to a dead end. A racer who cannot log in can still
- * race; they just arrive without a wallet, and their match goes on-chain with
- * the zero address.
+ * Privy unreachable, a wrong code, a rejected signature, a provider that refuses
+ * to return -- degrades to the guest row rather than to a dead end. A racer who
+ * cannot log in can still race; they just arrive without a wallet, and their
+ * match goes on-chain with the zero address.
  *
  * `guestName` names the off-chain account underneath and is offered as the
  * always-available path out.
@@ -24,13 +26,18 @@
 
 import type { LoginMethod } from '../net/account.ts';
 import {
+  beginGoogleLogin,
+  completeOAuthCallback,
   connect,
   currentUser,
+  externalWalletAvailable,
+  identityAddress,
+  isOAuthCallback,
   loginWithEmailCode,
+  loginWithExternalWallet,
   privyEnabled,
   sendEmailCode,
   signJoin,
-  walletAddress,
 } from '../net/privy.ts';
 import type { WalletProof } from '../shared/identity.ts';
 
@@ -126,12 +133,27 @@ function promptPlaceholder(container: HTMLElement, guestName: string): Promise<L
 async function promptPrivy(container: HTMLElement, guestName: string): Promise<LoginOutcome> {
   const overlay = document.createElement('div');
   overlay.className = 'login';
+  // Coming back from Google is not a fresh login: say so, so the card does not
+  // flash "log in" over a flow that is already half finished.
+  const returning = isOAuthCallback();
+
   overlay.innerHTML =
     `<div class="login-card">` +
     `<div class="login-brand">TEKK</div>` +
-    `<div class="login-title">log in</div>` +
+    `<div class="login-title">${returning ? 'finishing sign-in…' : 'log in'}</div>` +
     `<div class="login-status">starting privy…</div>` +
     `<button type="button" class="login-row login-resume" data-act="resume" hidden></button>` +
+    `<button type="button" class="login-row" data-act="google">` +
+    `<span class="login-dot" style="background:#4285f4"></span>` +
+    `<span class="login-label">continue with Google</span>` +
+    `</button>` +
+    // The wallet row is only honest when a wallet is actually there to sign.
+    (externalWalletAvailable()
+      ? `<button type="button" class="login-row" data-act="wallet">` +
+        `<span class="login-dot" style="background:#ff8a1f"></span>` +
+        `<span class="login-label">sign in with your own wallet</span>` +
+        `</button>`
+      : '') +
     `<form class="login-form">` +
     `<input class="login-input" type="email" name="email" placeholder="you@example.com" ` +
     `autocomplete="email" spellcheck="false" />` +
@@ -144,7 +166,7 @@ async function promptPrivy(container: HTMLElement, guestName: string): Promise<L
     `<span class="login-dot" style="background:var(--ink-dim)"></span>` +
     `<span class="login-label">continue as guest · ${escapeHtml(guestName)}</span>` +
     `</button>` +
-    `<div class="login-note">privy · embedded wallet · one signature binds it to the match record</div>` +
+    `<div class="login-note">privy · embedded or your own wallet · one signature binds it to the match record</div>` +
     `</div>`;
   container.appendChild(overlay);
 
@@ -155,6 +177,8 @@ async function promptPrivy(container: HTMLElement, guestName: string): Promise<L
   const submit = query<HTMLButtonElement>(overlay, '.login-submit');
   const resume = query<HTMLButtonElement>(overlay, '.login-resume');
   const guest = query<HTMLButtonElement>(overlay, '[data-act="guest"]');
+  const google = query<HTMLButtonElement>(overlay, '[data-act="google"]');
+  const walletButton = overlay.querySelector<HTMLButtonElement>('[data-act="wallet"]');
   const errorLine = query<HTMLElement>(overlay, '.login-error');
 
   return new Promise<LoginOutcome>((resolve) => {
@@ -183,25 +207,61 @@ async function promptPrivy(container: HTMLElement, guestName: string): Promise<L
       errorLine.textContent = '';
     };
 
-    /** Auth is done: bind the wallet to this seat and resolve. */
-    const signIn = async (): Promise<void> => {
+    /**
+     * Auth is done: bind the wallet to this seat and resolve.
+     *
+     * `method` is what the account records, and it follows the route actually
+     * taken rather than being assumed -- a Google login that recorded `email`
+     * would be a small lie in the one place this app is trying to be exact.
+     */
+    const signIn = async (method: LoginMethod): Promise<void> => {
       say('sign the join statement…');
       const proof = await signJoin();
       if (proof) {
-        finish({ method: 'email', proof, wallet: proof.address });
+        finish({ method, proof, wallet: proof.address });
         return;
       }
       // Signed in, but no wallet proof: a valid seat with no on-chain identity.
       // Worth saying out loud, because the record will carry the zero address.
       console.warn('TEKK login: authenticated, but no wallet signature — joining as a guest seat');
-      finish({ method: 'email', wallet: address ?? undefined });
+      finish({ method, wallet: address ?? undefined });
+    };
+
+    /** Shared shape for the two row-triggered routes that can fail. */
+    const runRoute = async (label: string, run: () => Promise<void>): Promise<void> => {
+      clearError();
+      say(label);
+      try {
+        await run();
+      } catch (error) {
+        complain(error instanceof Error ? error.message : String(error));
+        say('try another way in');
+      }
     };
 
     guest.addEventListener('click', () => finish({ method: 'guest' }));
 
     resume.addEventListener('click', () => {
       resume.disabled = true;
-      void signIn();
+      void signIn('email');
+    });
+
+    google.addEventListener('click', () => {
+      // Does not come back in the success case: the page navigates away, and
+      // the flow resumes at the top of `promptPrivy` on the return trip.
+      void runRoute('opening Google…', async () => {
+        google.disabled = true;
+        await beginGoogleLogin();
+      });
+    });
+
+    walletButton?.addEventListener('click', () => {
+      void runRoute('waiting for your wallet…', async () => {
+        walletButton.disabled = true;
+        const user = await loginWithExternalWallet();
+        address = identityAddress(user);
+        await signIn('wallet');
+      });
     });
 
     form.addEventListener('submit', (event) => {
@@ -234,8 +294,8 @@ async function promptPrivy(container: HTMLElement, guestName: string): Promise<L
           }
           say('checking the code…');
           const user = await loginWithEmailCode(emailInput.value.trim(), code);
-          address = walletAddress(user);
-          await signIn();
+          address = identityAddress(user);
+          await signIn('email');
         } catch (error) {
           // Privy's own message is the useful one (bad code, rate limit), so it
           // is shown as-is rather than replaced with something generic.
@@ -253,17 +313,66 @@ async function promptPrivy(container: HTMLElement, guestName: string): Promise<L
         form.hidden = true;
         return;
       }
+      if (settled) return;
+
+      // This page load may BE the return trip from Google. Rounds out the
+      // session and skips the card entirely -- there is nothing left to ask.
+      try {
+        const returned = await completeOAuthCallback();
+        if (returned) {
+          address = identityAddress(returned);
+          await signIn('google');
+          return;
+        }
+      } catch (error) {
+        complain(error instanceof Error ? error.message : String(error));
+        say('that sign-in did not complete — try again');
+      }
+      if (settled) return;
+
       // A restored session means no code and no waiting: Privy kept the login.
       const user = await currentUser();
       if (!user || settled) return;
-      address = walletAddress(user);
+      address = identityAddress(user);
       resume.hidden = false;
       resume.innerHTML =
         `<span class="login-dot" style="background:#9ec7fa"></span>` +
         `<span class="login-label">continue as ${escapeHtml(shortAddress(address))}</span>`;
-      say('signed in already — continue, or use another email');
+      say('signed in already — continue, or use another method');
     })();
   });
+}
+
+/**
+ * A small persistent "who is signed in" chip with a way out.
+ *
+ * The card is gone by the time the game is running, and without this there is
+ * no way to switch accounts short of clearing site data. The chip is the
+ * account switcher: signing out reloads into the card again, which is also the
+ * only honest way to re-run a login -- every module here caches a
+ * session-shaped assumption, and a fresh page load re-derives all of them.
+ */
+export function showIdentityChip(
+  container: HTMLElement,
+  identity: { method: LoginMethod; wallet: string | null },
+  onSignOut: () => void,
+): void {
+  const chip = document.createElement('div');
+  chip.className = 'identity-chip';
+  chip.innerHTML =
+    `<span class="identity-who">${escapeHtml(identity.method)}</span>` +
+    `<span class="identity-wallet">${escapeHtml(identity.wallet ? shortAddress(identity.wallet) : 'no wallet')}</span>`;
+
+  const out = document.createElement('button');
+  out.type = 'button';
+  out.className = 'identity-out';
+  out.textContent = 'sign out';
+  out.addEventListener('click', () => {
+    out.disabled = true;
+    onSignOut();
+  });
+  chip.appendChild(out);
+  container.appendChild(chip);
 }
 
 /** `0x1234…abcd`, or a stand-in when there is no address at all. */

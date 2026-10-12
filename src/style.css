@@ -1612,3 +1612,54 @@ body {
   letter-spacing: 0.06em;
   line-height: 1.5;
 }
+
+/* The signed-in chip (src/ui/login.ts). The card is modal and gone once the
+   game is running, so this is the only standing evidence of who is signed in
+   and the only way back out. Bottom-left, out of the HUD's way. */
+
+.identity-chip {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: 30; /* under the login card, over the stage */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 10px;
+  border: 1px solid var(--hairline);
+  background: rgba(16, 15, 19, 0.78);
+  font-family: var(--grotesk);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim, #9a97a3);
+}
+
+.identity-who {
+  color: var(--ink);
+}
+
+.identity-wallet {
+  color: var(--ink-dim, #9a97a3);
+}
+
+.identity-out {
+  padding: 3px 7px;
+  border: 1px solid var(--hairline);
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.identity-out:hover {
+  border-color: rgba(158, 199, 250, 0.5);
+  color: var(--ink);
+}
+
+.identity-out:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

@@ -27,7 +27,8 @@ import { createRacerVisuals } from './net/remotes.ts';
 import { loadAccount, grantOwned, recordPersonalBest, saveAccount } from './net/account.ts';
 import { createLeaderboard } from './net/leaderboard.ts';
 import { createHud, type ConnectionStatus } from './ui/hud.ts';
-import { promptLogin } from './ui/login.ts';
+import { promptLogin, showIdentityChip } from './ui/login.ts';
+import { privyEnabled, signOut } from './net/privy.ts';
 import {
   clearInput,
   getCameraMode,
@@ -158,6 +159,18 @@ async function boot(): Promise<void> {
   if (login.method !== account.loginMethod) {
     account.loginMethod = login.method;
     saveAccount(account);
+  }
+  // With Privy configured there is a real session to end, so offer the way out.
+  // Signing out reloads: the card comes back and this time any route can be
+  // taken, which is the whole of "switch account" as far as this app needs it.
+  if (privyEnabled()) {
+    showIdentityChip(
+      container,
+      { method: login.method, wallet: login.wallet ?? null },
+      () => {
+        void signOut().finally(() => globalThis.location.reload());
+      },
+    );
   }
 
   const session = await connectSession(world, {
