@@ -18,6 +18,7 @@ import type { GameStateInstance, PlayerStateInstance } from '../shared/state.ts'
 import type { SimBody } from '../shared/sim.ts';
 import type { GameMode } from '../shared/course.ts';
 import { TRAILS, BODY_COLORS, HATS, GEARS } from '../shared/cosmetics.ts';
+import type { MatchRecordRow } from '../net/leaderboard.ts';
 
 /** The slice of the predicted sim the HUD reads. */
 export type HudSim = Pick<SimBody, 'dashTicks' | 'dashCooldownTicks' | 'carrying'>;
@@ -131,6 +132,15 @@ export interface HudOptions {
    * is banked hold time.
    */
   personalBest?(courseId: string): number | undefined;
+
+  /**
+   * Rows for the records panel: matches already settled on Monad, read from
+   * the Envio indexer. Cross-origin data — like the wardrobe, not replicated
+   * state — so the HUD asks the caller rather than reading it off the wire.
+   * Empty when no indexer is configured; the panel then says so and the game
+   * is unaffected.
+   */
+  records?(): readonly MatchRecordRow[];
 }
 
 /** `gain` is good for you, `loss` is bad for you, `info` is someone else's moment. */
@@ -191,12 +201,13 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
   const status = new Slot(div('hud hud-status', container));
   const hold = new Slot(div('hud hud-hold', container));
   const banner = new Slot(div('banner', container));
-  // The lobby is two separate panels — customize avatar (name, trail, colour,
-  // hat, gear) and the map ballot — toggled by a button pair pinned to the top-right
-  // corner, one panel open at a time. The panels' skeletons are built once and
-  // only the card rows rewrite; the name field must survive re-renders whole
-  // (a rebuilt input would drop the caret mid-type), so its value is synced
-  // from the echoed server name only when it is not focused.
+  // The lobby is three separate panels — customize avatar (name, trail,
+  // colour, hat, gear), the map ballot, and the on-chain records — toggled by
+  // a button row pinned to the top-right corner, one panel open at a time.
+  // The panels' skeletons are built once and only the card rows rewrite; the
+  // name field must survive re-renders whole (a rebuilt input would drop the
+  // caret mid-type), so its value is synced from the echoed server name only
+  // when it is not focused.
   const lobby = div('lobby', container);
   const customizeToggle = button('lobby-toggle', 'customize', lobby);
   customizeToggle.setAttribute('data-panel', 'customize');
@@ -242,6 +253,27 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
   voteHead.textContent = 'vote the next map';
   const voteCards = new Slot(div('lobby-cards', votePanel));
   const voteHint = new Slot(div('lobby-hint', votePanel));
+
+  // The records panel — the on-chain leaderboard. Deliberately the third
+  // toggle: it is read-only, so it never competes with the ballot's primary
+  // action, and it is where a finished match stays visible after the results
+  // banner has gone. Its rows come from the caller (net/leaderboard.ts), which
+  // owns the indexer fetch; the HUD only draws them.
+  const recordsToggle = button('lobby-toggle', 'records', lobby);
+  recordsToggle.setAttribute('data-panel', 'records');
+  const recordsPanel = div('lobby-panel is-records', container);
+  recordsPanel.hidden = true;
+  const recordsHead = div('lobby-head', recordsPanel);
+  recordsHead.textContent = 'recent matches on monad';
+  const recordsClose = button('panel-close', '✕', recordsPanel);
+  recordsClose.setAttribute('data-close', 'records');
+  recordsClose.setAttribute('aria-label', 'close records panel');
+  recordsClose.title = 'close';
+  // Left-aligned like the results banner these rows mirror; the panel's own
+  // text-align is centred for its heading.
+  const recordsRows = new Slot(div('records-list', recordsPanel));
+  recordsRows.el.style.textAlign = 'left';
+  const recordsHint = new Slot(div('lobby-hint', recordsPanel));
 
   // Typing never reaches the game: keys staged for racing (Space jump, C
   // camera) would otherwise fire while the field is focused, and the field
@@ -289,7 +321,7 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
     // panel is open at a time; a tap on the open one's button closes it.
     const toggleBtn = el?.closest<HTMLElement>('[data-panel]');
     const panelId = toggleBtn?.dataset['panel'];
-    if (panelId === 'customize' || panelId === 'vote') {
+    if (panelId === 'customize' || panelId === 'vote' || panelId === 'records') {
       toggleBtn?.blur();
       openPanel = openPanel === panelId ? null : panelId;
       return;
@@ -380,7 +412,7 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
   let lastSentName = '';
   // Which lobby panel is open. 'vote' is the default — it is the lobby's
   // primary action — and a tap on the open panel's button closes it.
-  let openPanel: 'customize' | 'vote' | null = 'vote';
+  let openPanel: 'customize' | 'vote' | 'records' | null = 'vote';
 
   return {
     update(state, selfId, course, linkStatus, sim) {
@@ -535,8 +567,10 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
       // never hide.
       customizePanel.hidden = openPanel !== 'customize';
       votePanel.hidden = openPanel !== 'vote';
+      recordsPanel.hidden = openPanel !== 'records';
       customizeToggle.classList.toggle('is-on', openPanel === 'customize');
       voteToggle.classList.toggle('is-on', openPanel === 'vote');
+      recordsToggle.classList.toggle('is-on', openPanel === 'records');
       if (openPanel) {
         trailCards.html(trailCardsMarkup(state, selfId, options.ownedTrails?.() ?? []));
         colorCards.html(bodyColorCardsMarkup(state, selfId, options.ownedBodyColors?.() ?? []));
@@ -544,6 +578,13 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
         gearCards.html(gearCardsMarkup(state, selfId, options.ownedGears?.() ?? []));
         voteCards.html(voteCardsMarkup(state, course, selfId));
         voteHint.html(voteHintMarkup(state));
+        // The records panel is read-only off-chain data, so it renders only
+        // while it is the open panel: a closed panel never pays for the read.
+        if (openPanel === 'records') {
+          const records = options.records?.() ?? [];
+          recordsRows.html(recordsMarkup(records));
+          recordsHint.html(recordsHintMarkup(records));
+        }
 
         // The echoed server name is truth. It only writes back into the field
         // while the player is NOT typing — overwriting a focused field every
@@ -592,6 +633,7 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
         lobby,
         customizePanel,
         votePanel,
+        recordsPanel,
         connection,
         board.el,
         readout.el,
@@ -784,6 +826,43 @@ function voteHintMarkup(state: GameStateInstance): string {
     return 'votes settle the moment every player has voted — or when the window runs out';
   // Mid-match the cards are the change-map vote; re-picking your card withdraws.
   return 'pick a map to play next — a majority pick calls the match off and plays it';
+}
+
+/**
+ * The records panel: matches already settled on Monad, newest first, as the
+ * Envio indexer sees them.
+ *
+ * Reuses the results banner's row language — rank, name, time — so the board a
+ * player just raced on and the history behind it read as one thing. The id is
+ * the contract's match number; the tail is the three facts that survive the
+ * trip: mode, field size, and how long ago it ended.
+ */
+function recordsMarkup(rows: readonly MatchRecordRow[]): string {
+  return rows
+    .map(
+      (row) =>
+        `<div class="result-row"><span class="result-rank">#${row.matchId}</span>` +
+        `<span class="result-name">${escapeHtml(row.courseId)}</span>` +
+        `<span class="result-time">${MODE_NAMES[modeOf(row.mode)]} · ${row.players} ${row.players === 1 ? 'racer' : 'racers'} · ${formatAge(row.endedAt)}</span></div>`,
+    )
+    .join('');
+}
+
+/** The one line under the records list: how to read it, or why it is empty. */
+function recordsHintMarkup(rows: readonly MatchRecordRow[]): string {
+  if (rows.length === 0) return 'no matches indexed yet — finish a race to settle one on monad';
+  return 'every finished match is settled on monad testnet and indexed by envio';
+}
+
+/** How long ago a block time was, coarse enough that it never needs a timer. */
+function formatAge(endedAtSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - endedAtSeconds);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 /**

@@ -1,0 +1,16 @@
+{
+  "name": "tekk-match-record-indexer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Envio HyperIndex indexer for TEKK's MatchRecord events on Monad testnet.",
+  "scripts": {
+    "codegen": "envio codegen",
+    "dev": "envio dev",
+    "start": "envio start",
+    "deploy": "envio deploy"
+  },
+  "devDependencies": {
+    "envio": "3.13.0"
+  }
+}

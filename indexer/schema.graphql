@@ -1,0 +1,42 @@
+# MatchRecord entities (Stage 2).
+#
+# One `Match` per finished match and one `Player` per racer, linked. Stage 1
+# writes winner/wallet as the zero address (no on-chain identities yet), so the
+# lobby leaderboard reads these as match-centric records; Stage 3 (Privy) fills
+# in real wallets and the same rows become per-player.
+
+"""A finished TEKK match, one per `MatchRegistered` event."""
+type Match {
+  id: ID!
+  "Sequential match id from the contract."
+  matchId: BigInt!
+  "Course id, e.g. takk-arena."
+  courseId: String! @index
+  "0 = hold, 1 = reach, 2 = hunt."
+  mode: Int! @index
+  "Winner wallet (zero address until Stage 3)."
+  winner: String!
+  "Block timestamp at match end."
+  endedAt: BigInt!
+  "Racers present at match end."
+  playerCount: Int!
+  "Block the match was indexed in."
+  blockNumber: Int!
+  "The single registerMatch tx that recorded this match."
+  txHash: String!
+  players: [Player!]! @derivedFrom(field: "match")
+}
+
+"""One racer's result within a match, one per `PlayerScored` event."""
+type Player {
+  id: ID!
+  match: Match!
+  "Racer wallet (zero address until Stage 3)."
+  wallet: String!
+  "Banked hold time in ms (hold mode)."
+  holdMs: BigInt! @index
+  "Finish time in ms, or -1 when the racer never finished."
+  finishMs: BigInt! @index
+  "Hidden cores found (hunt mode)."
+  coresFound: Int!
+}

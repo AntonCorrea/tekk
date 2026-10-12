@@ -1,0 +1,23 @@
+# Envio HyperIndex config for TEKK (Stage 2).
+#
+# Indexes the two MatchRecord events on Monad testnet. HyperSync is the data
+# source (no RPC needed), and the contract is a recent deployment, so we start
+# at its deploy block rather than block 0.
+#
+# After editing this file or schema.graphql, run `npm run codegen`.
+# yaml-language-server: $schema=./node_modules/envio/evm.schema.json
+name: tekk-match-record
+description: TEKK finished matches from the MatchRecord contract on Monad testnet.
+
+contracts:
+  - name: MatchRecord
+    events:
+      - event: "MatchRegistered(uint256 indexed matchId, address indexed winner, string courseId, uint8 mode, uint64 endedAt, uint8 playerCount)"
+      - event: "PlayerScored(uint256 indexed matchId, address indexed wallet, uint64 holdMs, int64 finishMs, uint8 coresFound)"
+
+chains:
+  - id: 10143 # Monad Testnet
+    start_block: 70311917 # MatchRecord deployment block
+    contracts:
+      - name: MatchRecord
+        address: "0x9a1e7a4Cd75F7916b52C1D63aEC38E893852Da56"

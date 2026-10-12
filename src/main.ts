@@ -25,6 +25,7 @@ import { createPhysicsWorld, initPhysics } from './physics/world.ts';
 import { connectSession } from './net/session.ts';
 import { createRacerVisuals } from './net/remotes.ts';
 import { loadAccount, grantOwned, recordPersonalBest, saveAccount } from './net/account.ts';
+import { createLeaderboard } from './net/leaderboard.ts';
 import { createHud, type ConnectionStatus } from './ui/hud.ts';
 import { promptLogin } from './ui/login.ts';
 import {
@@ -267,6 +268,12 @@ async function boot(): Promise<void> {
     else if (kind === 'gear' && account.equippedGear === DEFAULT_GEAR) equipGear(itemId);
   };
 
+  // The on-chain reading half: matches the server has settled on Monad, as the
+  // Envio indexer sees them. Inert when VITE_LEADERBOARD_URL is unset, which is
+  // the normal case for a local build — the lobby just shows no records.
+  const leaderboard = createLeaderboard();
+  leaderboard.refresh();
+
   const hud = createHud(container, {
     // The card id comes from the catalog the server shipped; `sendVote` just
     // puts it on the wire, and the server checks it against the same list.
@@ -293,6 +300,9 @@ async function boot(): Promise<void> {
         saveAccount(account);
       }
     },
+    // The records panel reads the indexer's latest answer; the fetch itself is
+    // refreshed on phase edges (see the frame), never per render.
+    records: () => leaderboard.rows(),
   });
   const coreVisual = createCoreVisual(stage.scene);
   const coreMarkers = createCoreMarkers(stage.scene);
@@ -684,6 +694,10 @@ async function boot(): Promise<void> {
       if ((state.phase === 'ready' || state.phase === 'results') && document.pointerLockElement) {
         document.exitPointerLock();
       }
+      // A lobby window re-reads the on-chain records: the match that just
+      // ended is written on-chain by the server around now, so the panel picks
+      // it up when the lobby opens — no polling while a match is running.
+      if (state.phase === 'ready' || state.phase === 'results') leaderboard.refresh();
       // The lobby is a spectator view: no racers, the camera orbits the map.
       // Entering it saves the player's follow/drag choice and forces the
       // lobby rig; leaving — countdown, playing, results — restores it.
