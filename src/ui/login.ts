@@ -6,12 +6,12 @@
  *   - No `VITE_PRIVY_APP_ID`: the placeholder. Nothing off-chain is verified, so
  *     every row "succeeds" and records a method; it exists so the step is
  *     visible and the boot flow has a door where auth will sit.
- *   - Privy configured: the real card. Three routes in -- a Google redirect, the
- *     wallet the browser already has, or an emailed one-time code -- plus the
- *     session Privy already restored. Whichever is used, the racer then signs
- *     ONE statement that binds a wallet to the join (see `shared/identity.ts`).
- *     Signing is part of logging in here, so there is no second prompt later:
- *     one signature per visit.
+ *   - Privy configured: the real card. Four routes in -- a Google redirect, a
+ *     passkey, the wallet the browser already has, or an emailed one-time code
+ *     -- plus the session Privy already restored. Whichever is used, the racer
+ *     then signs ONE statement that binds a wallet to the join (see
+ *     `shared/identity.ts`). Signing is part of logging in here, so there is no
+ *     second prompt later: one signature per visit.
  *
  * The card owns the whole exchange and resolves with an outcome, not a bare
  * method string, because the boot needs the signed proof too. Every failure --
@@ -35,6 +35,8 @@ import {
   isOAuthCallback,
   loginWithEmailCode,
   loginWithExternalWallet,
+  loginWithPasskey,
+  passkeyAvailable,
   privyEnabled,
   sendEmailCode,
   signJoin,
@@ -147,6 +149,13 @@ async function promptPrivy(container: HTMLElement, guestName: string): Promise<L
     `<span class="login-dot" style="background:#4285f4"></span>` +
     `<span class="login-label">continue with Google</span>` +
     `</button>` +
+    // Offered only where the browser can run a WebAuthn ceremony at all.
+    (passkeyAvailable()
+      ? `<button type="button" class="login-row" data-act="passkey">` +
+        `<span class="login-dot" style="background:#f086b8"></span>` +
+        `<span class="login-label">continue with a passkey</span>` +
+        `</button>`
+      : '') +
     // The wallet row is only honest when a wallet is actually there to sign.
     (externalWalletAvailable()
       ? `<button type="button" class="login-row" data-act="wallet">` +
@@ -178,6 +187,7 @@ async function promptPrivy(container: HTMLElement, guestName: string): Promise<L
   const resume = query<HTMLButtonElement>(overlay, '.login-resume');
   const guest = query<HTMLButtonElement>(overlay, '[data-act="guest"]');
   const google = query<HTMLButtonElement>(overlay, '[data-act="google"]');
+  const passkeyButton = overlay.querySelector<HTMLButtonElement>('[data-act="passkey"]');
   const walletButton = overlay.querySelector<HTMLButtonElement>('[data-act="wallet"]');
   const errorLine = query<HTMLElement>(overlay, '.login-error');
 
@@ -261,6 +271,23 @@ async function promptPrivy(container: HTMLElement, guestName: string): Promise<L
         const user = await loginWithExternalWallet();
         address = identityAddress(user);
         await signIn('wallet');
+      });
+    });
+
+    passkeyButton?.addEventListener('click', () => {
+      void runRoute('waiting for your passkey…', async () => {
+        passkeyButton.disabled = true;
+        try {
+          const user = await loginWithPasskey();
+          address = identityAddress(user);
+          await signIn('passkey');
+        } catch (error) {
+          // Dismissing the prompt is the ordinary way this fails, and the row
+          // is the only way in that needs it -- so it goes back to being
+          // clickable, with the reason left on screen.
+          passkeyButton.disabled = false;
+          throw error;
+        }
       });
     });
 

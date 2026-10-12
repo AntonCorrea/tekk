@@ -5,10 +5,12 @@
  * client -- deliberately low-level, so this app owns the secure-context iframe,
  * the message plumbing, and the moment a wallet is asked to sign.
  *
- * Three ways in, one way out:
+ * Four ways in, one way out:
  *
  *   - email  : a one-time code. The account and its wallet are both new.
  *   - google : an OAuth redirect, finished at /login-callback on the way back.
+ *   - passkey: WebAuthn. A credential bound to the device, with no email to
+ *              wait on and no wallet to install; the browser runs the ceremony.
  *   - wallet : Sign-In With Ethereum against the wallet the browser already
  *              has. Their key, their address, no Privy wallet minted.
  *
@@ -343,6 +345,207 @@ export async function loginWithExternalWallet(): Promise<PrivyUser> {
   );
   externalWallet = wallet;
   return session.user;
+}
+
+// --- passkeys (WebAuthn) ---------------------------------------------------
+
+/** What the passkey init calls hand back, taken from the calls themselves. */
+type SignupOptions = Awaited<
+  ReturnType<PrivyInstance['auth']['passkey']['generateSignupOptions']>
+>;
+type AuthenticateOptions = Awaited<
+  ReturnType<PrivyInstance['auth']['passkey']['generateAuthenticationOptions']>
+>;
+
+/** The JSON form of a ceremony result, as the SDK expects it handed back. */
+type RegistrationJson = Parameters<PrivyInstance['auth']['passkey']['signupWithPasskey']>[0];
+type AuthenticationJson = Parameters<PrivyInstance['auth']['passkey']['loginWithPasskey']>[0];
+
+/**
+ * True when this browser can run a WebAuthn ceremony at all.
+ *
+ * `PublicKeyCredential` exists only in a secure context -- which `localhost`
+ * counts as -- so on a bare origin the passkey row is simply not offered, much
+ * as the wallet row is not offered without an injected provider.
+ */
+export function passkeyAvailable(): boolean {
+  return (
+    typeof globalThis.PublicKeyCredential === 'function' &&
+    typeof navigator.credentials?.create === 'function'
+  );
+}
+
+/**
+ * base64url text to the buffer a credential call takes.
+ *
+ * Privy's init responses are JSON, so challenges and credential ids arrive
+ * base64url-encoded and have to be decoded before the browser will look at
+ * them. Padding is optional in base64url and `atob` is not so forgiving, hence
+ * the restore. An `ArrayBuffer` is returned rather than a view because that is
+ * the `BufferSource` the WebAuthn dictionaries accept without a cast.
+ */
+function base64urlBuffer(value: string): ArrayBuffer {
+  const base64 = value.replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, '='));
+  const buffer = new ArrayBuffer(binary.length);
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return buffer;
+}
+
+/** A credential a ceremony may offer or refuse, in the browser's shape. */
+function descriptor(entry: {
+  id: string;
+  transports?: Array<string>;
+}): PublicKeyCredentialDescriptor {
+  return {
+    type: 'public-key',
+    id: base64urlBuffer(entry.id),
+    ...(entry.transports ? { transports: entry.transports as Array<AuthenticatorTransport> } : {}),
+  };
+}
+
+/**
+ * Privy's registration options in the shape `credentials.create` takes.
+ *
+ * Two translations, both mechanical: snake_case to the DOM's camelCase, and
+ * base64url to bytes. `authenticatorSelection` is the one part that is not
+ * cosmetic: it is what makes the credential discoverable, and a credential that
+ * is not discoverable cannot be found again by a later sign-in, which has no
+ * user name to look it up with. The ceremonies' optional `extensions` are not
+ * forwarded -- nothing in them is load-bearing here, and a wrong guess would be
+ * worse than their absence.
+ */
+function creationOptions(options: SignupOptions['options']): PublicKeyCredentialCreationOptions {
+  const selection = options.authenticator_selection;
+  return {
+    challenge: base64urlBuffer(options.challenge),
+    rp: { name: options.rp.name, ...(options.rp.id ? { id: options.rp.id } : {}) },
+    user: {
+      id: base64urlBuffer(options.user.id),
+      name: options.user.name,
+      displayName: options.user.display_name,
+    },
+    pubKeyCredParams: options.pub_key_cred_params.map((param) => ({
+      type: 'public-key' as const,
+      alg: param.alg,
+    })),
+    ...(options.timeout ? { timeout: options.timeout } : {}),
+    ...(options.attestation
+      ? { attestation: options.attestation as AttestationConveyancePreference }
+      : {}),
+    ...(selection
+      ? {
+          authenticatorSelection: {
+            ...(selection.authenticator_attachment
+              ? {
+                  authenticatorAttachment:
+                    selection.authenticator_attachment as AuthenticatorAttachment,
+                }
+              : {}),
+            ...(selection.resident_key
+              ? { residentKey: selection.resident_key as ResidentKeyRequirement }
+              : {}),
+            ...(selection.require_resident_key !== undefined
+              ? { requireResidentKey: selection.require_resident_key }
+              : {}),
+            ...(selection.user_verification
+              ? { userVerification: selection.user_verification as UserVerificationRequirement }
+              : {}),
+          },
+        }
+      : {}),
+    ...(options.exclude_credentials
+      ? { excludeCredentials: options.exclude_credentials.map(descriptor) }
+      : {}),
+  };
+}
+
+/** Privy's authentication options in the shape `credentials.get` takes. */
+function requestOptions(options: AuthenticateOptions['options']): PublicKeyCredentialRequestOptions {
+  return {
+    challenge: base64urlBuffer(options.challenge),
+    ...(options.rp_id ? { rpId: options.rp_id } : {}),
+    ...(options.timeout ? { timeout: options.timeout } : {}),
+    ...(options.user_verification
+      ? { userVerification: options.user_verification as UserVerificationRequirement }
+      : {}),
+    ...(options.allow_credentials
+      ? { allowCredentials: options.allow_credentials.map(descriptor) }
+      : {}),
+  };
+}
+
+/**
+ * The ceremony result in the JSON the SDK sends on.
+ *
+ * A credential's own `toJSON` is the browser's serialiser and emits exactly the
+ * camelCase, base64url shape the SDK's transforms read. Where it is missing the
+ * browser predates the passkey JSON forms, and saying so beats shipping a
+ * malformed attestation to the server.
+ */
+function credentialJson(credential: Credential): unknown {
+  const serializable = credential as Credential & { toJSON?: () => unknown };
+  if (typeof serializable.toJSON !== 'function') {
+    throw new Error('this browser cannot serialise a passkey credential');
+  }
+  return serializable.toJSON();
+}
+
+/** Whether a failure means "this device holds no passkey for the app yet". */
+function hasNoPasskey(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'NotAllowedError') return true;
+  const message = error instanceof Error ? error.message : '';
+  return message.includes('no_passkey_found_for_challenge');
+}
+
+/** Register a fresh passkey and sign in as the account it creates. */
+async function signUpWithPasskey(instance: PrivyInstance): Promise<PrivyUser> {
+  const { options, relying_party: relyingParty } =
+    await instance.auth.passkey.generateSignupOptions();
+  const created = await navigator.credentials.create({ publicKey: creationOptions(options) });
+  if (!created) throw new Error('the passkey prompt returned nothing');
+  const session = await instance.auth.passkey.signupWithPasskey(
+    credentialJson(created) as RegistrationJson,
+    relyingParty,
+  );
+  return session.user;
+}
+
+/**
+ * Sign in with a passkey, registering one for this device when there is none.
+ *
+ * One row rather than two. The browser cannot be asked whether it holds a
+ * passkey for an app without raising a prompt, so the prompt that goes up first
+ * is the sign-in one; if the device has nothing to offer it is dismissed, and
+ * the ceremony is run again as a registration. A dismissed sign-in cannot open
+ * an account by itself -- registering a credential demands the user verify
+ * themselves a second time -- which is what makes the fallback safe.
+ */
+export async function loginWithPasskey(): Promise<PrivyUser> {
+  const instance = client;
+  if (!instance) throw new Error('Privy is not available');
+  if (!passkeyAvailable()) throw new Error('this browser cannot use passkeys');
+
+  try {
+    const { options, relying_party: relyingParty } =
+      await instance.auth.passkey.generateAuthenticationOptions();
+    console.info(
+      `[privy] passkey sign-in, relying party ${relyingParty ?? 'the browser default'}`,
+    );
+    const assertion = await navigator.credentials.get({ publicKey: requestOptions(options) });
+    if (!assertion) throw new Error('the passkey prompt returned nothing');
+    const session = await instance.auth.passkey.loginWithPasskey(
+      credentialJson(assertion) as AuthenticationJson,
+      options.challenge,
+      relyingParty,
+    );
+    return session.user;
+  } catch (error) {
+    if (!hasNoPasskey(error)) throw error;
+    console.info('[privy] no passkey on this device, registering one instead');
+    return signUpWithPasskey(instance);
+  }
 }
 
 // --- identity --------------------------------------------------------------
