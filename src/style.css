@@ -1425,9 +1425,10 @@ body {
 }
 
 /* ---------------------------------------------------------------- login */
-/* The login placeholder (src/ui/login.ts). A card over the stage in the
-   game's own language, shaped like the Privy modal it will be swapped for:
-   centred, one row per method, a quiet footnote. */
+/* The login card (src/ui/login.ts). A card over the stage in the game's own
+   language: a glowing wordmark, three labelled groups of routes, and a quiet
+   attribution. Every route the app cannot actually run is absent rather than
+   disabled, so whatever is on screen is what the racer can really do. */
 
 .login {
   position: fixed;
@@ -1435,6 +1436,8 @@ body {
   z-index: 60; /* the card above HUD chrome and the map picker */
   display: grid;
   place-items: center;
+  align-items: safe center; /* keep the top reachable when the card is tall */
+  overflow-y: auto;
   padding: 20px;
   background: rgba(2, 2, 2, 0.72);
   backdrop-filter: blur(6px);
@@ -1442,11 +1445,16 @@ body {
   color: var(--ink);
 }
 
+/* `hidden` has to beat the `display` these elements set themselves. */
+.login [hidden] {
+  display: none;
+}
+
 .login-card {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  width: min(360px, 100%);
+  width: min(400px, 100%);
   box-sizing: border-box;
   padding: 26px 24px 20px;
   border: 1px solid var(--hairline);
@@ -1466,28 +1474,132 @@ body {
   }
 }
 
+/* The wordmark is the panel's title now, so it carries the light: three
+   stacked halos rather than one blur, and a slow breath so the glow reads as
+   alive. The indent cancels the trailing letter-space so the tracking stays
+   optically centred. */
 .login-brand {
+  margin-top: 2px;
   font-family: var(--condensed);
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: 0.22em;
+  font-size: 38px;
+  font-weight: 800;
+  letter-spacing: 0.26em;
+  text-indent: 0.26em;
+  text-align: center;
   text-transform: uppercase;
   color: var(--accent);
+  text-shadow:
+    0 0 6px rgba(198, 157, 250, 0.9),
+    0 0 22px rgba(198, 157, 250, 0.55),
+    0 0 48px rgba(198, 157, 250, 0.3);
 }
 
-.login-title {
-  margin-bottom: 4px;
+.login-tagline {
+  margin-bottom: 6px;
+  font-family: var(--condensed);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-indent: 0.18em;
+  text-align: center;
+  text-transform: uppercase;
+  color: rgba(230, 220, 255, 0.78);
+  text-shadow:
+    0 0 10px rgba(198, 157, 250, 0.5),
+    0 0 26px rgba(198, 157, 250, 0.22);
+}
+
+@keyframes login-glow {
+  0%,
+  100% {
+    opacity: 0.86;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .login-brand,
+  .login-tagline {
+    animation: login-glow 4s ease-in-out infinite;
+  }
+
+  .login-tagline {
+    animation-delay: 0.6s;
+  }
+}
+
+.login-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-group + .login-group {
+  margin-top: 6px;
+}
+
+/* The heading rule runs out to the card edge, so the three groups read as
+   sections rather than as rows that happen to have a label above them. */
+.login-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.login-head::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--hairline);
+}
+
+.login-head-label {
   color: var(--ink-faint);
   font-family: var(--condensed);
   font-size: 11px;
+  font-weight: 700;
   letter-spacing: 0.2em;
   text-transform: uppercase;
 }
 
-.login-methods {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+/* The ⓘ that explains a group. A real button, so it answers a tap and a
+   keyboard, not just a hovering mouse. */
+.login-hint {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-faint);
+  font-family: var(--grotesk);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.login-hint:hover,
+.login-hint[aria-expanded='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.login-hint-text {
+  margin: 0 0 2px;
+  color: var(--ink-faint);
+  font-size: 10.5px;
+  line-height: 1.55;
+  letter-spacing: 0.02em;
 }
 
 .login-row {
@@ -1604,6 +1716,18 @@ body {
 
 .login-resume {
   border-color: rgba(158, 199, 250, 0.5);
+}
+
+/* Away until a session actually exists: quieter than a live row, and dashed
+   so it reads as the placeholder it is rather than as a door that refuses. */
+.login-resume:disabled,
+.login-resume:disabled:hover {
+  border-style: dashed;
+  border-color: var(--hairline);
+  background: transparent;
+  color: var(--ink-dim);
+  cursor: default;
+  opacity: 0.75;
 }
 
 .login-error {

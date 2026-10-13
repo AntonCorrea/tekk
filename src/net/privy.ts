@@ -17,11 +17,15 @@
  * Whichever route is used, the racer then signs ONE join statement and that
  * proof is what the server credits (see `shared/identity.ts`).
  *
- * Which address gets credited is the one real decision this module makes: the
- * user's own wallet wins over Privy's, always. A wallet minted for you is a
- * convenience; a wallet you brought is the one you can actually spend from, and
- * "sign in with your wallet" would be a lie if the record named the other one.
- * `externalEthereumAddress` is where that choice is made.
+ * Which address gets credited is the one real decision this module makes, and
+ * the card's groups are the answer: the route the racer picked says which wallet
+ * it means. Mail, Google and passkey mean the wallet Privy mints for them; "your
+ * own wallet" means the one the browser injected, whose key never leaves it.
+ *
+ * A wallet linked to the account on some earlier visit is neither of those. It
+ * used to outrank the route -- so a racer who once signed in with MetaMask was
+ * sent back to MetaMask for every later email login, which is a prompt the card
+ * never asked for. `Signer` is where the route's answer is carried instead.
  *
  * Everything is fail-soft. Storage blocked, network down, no browser wallet, a
  * user who never finishes the code: each lands back in the caller's hands as
@@ -196,6 +200,9 @@ export async function sendEmailCode(email: string): Promise<void> {
  */
 export async function loginWithEmailCode(email: string, code: string): Promise<PrivyUser> {
   if (!client) throw new Error('Privy is not available');
+  // Same hazard as Google: with a session present this call links the email
+  // rather than logging in as it.
+  await forgetSession();
   const session = await client.auth.email.loginWithCode(email, code);
   return session.user;
 }
@@ -209,6 +216,10 @@ export async function loginWithEmailCode(email: string, code: string): Promise<P
  */
 export async function beginGoogleLogin(): Promise<void> {
   if (!client) throw new Error('Privy is not available');
+  // Privy reads a login started while signed in as a LINK, so the session in
+  // the way goes first: the racer picked "log in as this Google account", not
+  // "attach it to whoever is here".
+  await forgetSession();
   const redirectURI = `${globalThis.location.origin}${OAUTH_CALLBACK_PATH}`;
   const { url } = await client.auth.oauth.generateURL('google', redirectURI);
   globalThis.location.assign(url);
@@ -288,6 +299,9 @@ export function externalWalletAvailable(): boolean {
 export async function loginWithExternalWallet(): Promise<PrivyUser> {
   const instance = client;
   if (!instance) throw new Error('Privy is not available');
+  // SIWE is authenticated the same way, so it would link the wallet to the
+  // current user instead of signing in as it.
+  await forgetSession();
   const provider = injectedProvider();
   if (!provider) throw new Error('no browser wallet found');
 
@@ -526,6 +540,9 @@ export async function loginWithPasskey(): Promise<PrivyUser> {
   const instance = client;
   if (!instance) throw new Error('Privy is not available');
   if (!passkeyAvailable()) throw new Error('this browser cannot use passkeys');
+  // A passkey ceremony started while signed in would link the credential to
+  // the current user, which is not what the row says it does.
+  await forgetSession();
 
   try {
     const { options, relying_party: relyingParty } =
@@ -549,6 +566,20 @@ export async function loginWithPasskey(): Promise<PrivyUser> {
 }
 
 // --- identity --------------------------------------------------------------
+
+/**
+ * Which wallet a route means to sign with.
+ *
+ * `'embedded'` is the wallet Privy mints for the account -- created on the spot,
+ * silently, if this is the account's first join. `'own'` is the wallet the
+ * browser injected, which the racer has just connected. Leaving it out means "no
+ * route was picked", which is what a restored session is.
+ *
+ * The distinction exists because a wallet linked on an earlier visit is not a
+ * choice about THIS match. The card's groups name a wallet per route, so the
+ * signature has to come from the one that group names.
+ */
+export type Signer = 'embedded' | 'own';
 
 /**
  * The user's own (external) Ethereum wallet, or null.
@@ -582,12 +613,17 @@ function embeddedAddress(user: PrivyUser | null): string | null {
 }
 
 /**
- * The address this session should be credited with: theirs if they have one,
- * Privy's otherwise. Used for the label the card shows before a signature
- * exists; the signature itself is the authority.
+ * The address this session should be credited with, before any signature
+ * exists: the wallet the picked route means, or -- for a session that picked
+ * nothing -- the account's own Privy wallet, falling back to a linked one only
+ * when there is no Privy wallet to name.
+ *
+ * Used for the label the card shows; the signature itself is the authority.
  */
-export function identityAddress(user: PrivyUser | null): string | null {
-  return externalWallet?.address ?? externalEthereumAddress(user) ?? embeddedAddress(user);
+export function identityAddress(user: PrivyUser | null, signer?: Signer): string | null {
+  if (signer === 'own') return externalWallet?.address ?? externalEthereumAddress(user);
+  if (signer === 'embedded') return embeddedAddress(user);
+  return externalWallet?.address ?? embeddedAddress(user) ?? externalEthereumAddress(user);
 }
 
 // --- signing the join -----------------------------------------------------
@@ -693,7 +729,11 @@ async function signWithEmbeddedWallet(user: PrivyUser): Promise<WalletProof | nu
 }
 
 /**
- * Sign the join statement with whichever wallet owns this session.
+ * Sign the join statement with the wallet the picked route means.
+ *
+ * `signer` is that route's answer to "which wallet is this": `'embedded'` for
+ * mail, Google and passkey, `'own'` for the wallet row. Leaving it out means a
+ * restored session picked nothing, and it signs as whoever owns the session.
  *
  * Returns null -- never throws -- for every way this can fail: no session, no
  * wallet to sign with, no entropy to open one, or a rejected signature prompt.
@@ -702,16 +742,33 @@ async function signWithEmbeddedWallet(user: PrivyUser): Promise<WalletProof | nu
  * The proof is single-use and short-lived (see `shared/identity.ts`), so this
  * runs per join rather than once per page.
  */
-export async function signJoin(): Promise<WalletProof | null> {
+export async function signJoin(signer?: Signer): Promise<WalletProof | null> {
   if (!client) return null;
   try {
     const user = await currentUser();
     if (!user) return null;
 
-    const external = externalWallet?.address ?? externalEthereumAddress(user);
-    return external
-      ? await signWithExternalWallet(external)
-      : await signWithEmbeddedWallet(user);
+    // The wallet row, and only the wallet row.
+    if (signer === 'own') {
+      const own = externalWallet?.address ?? externalEthereumAddress(user);
+      const proof = own ? await signWithExternalWallet(own) : null;
+      // The injected wallet can be gone by now -- a different browser, or the
+      // extension removed. The account's Privy wallet is still a real identity,
+      // so fall back to it rather than losing the seat.
+      return proof ?? (await signWithEmbeddedWallet(user));
+    }
+
+    // Mail, Google and passkey. This mints the wallet when the account has
+    // never signed before, which is exactly what the group promises.
+    if (signer === 'embedded') return await signWithEmbeddedWallet(user);
+
+    // No route picked: a session Privy restored on its own. Whoever this
+    // session already is.
+    const connected = externalWallet?.address;
+    if (connected) return await signWithExternalWallet(connected);
+    if (embeddedAddress(user)) return await signWithEmbeddedWallet(user);
+    const linked = externalEthereumAddress(user);
+    return linked ? await signWithExternalWallet(linked) : await signWithEmbeddedWallet(user);
   } catch (error) {
     console.warn('[privy] could not sign the join statement:', error);
     return null;
@@ -719,6 +776,26 @@ export async function signJoin(): Promise<WalletProof | null> {
 }
 
 // --- signing out -----------------------------------------------------------
+
+/**
+ * End whatever session this device already has, just before starting a login.
+ *
+ * Privy attaches the current session to every call that BEGINS a login: in the
+ * default single-user mode there is no unauthenticated variant of those
+ * endpoints, so `fetchForLogin` falls through to the authenticated `fetch`. An
+ * already-signed-in browser picking "Login with Google" is therefore asking
+ * Privy to LINK that account to whoever is signed in -- and linking an email or
+ * a provider account that another user already holds is refused outright, as
+ * "another user has already linked an account with this email address".
+ *
+ * The card offers those rows as ways to sign in AS someone, so the session in
+ * the way is ended first. With no session -- the common case, and the demo case
+ * -- this is a no-op, and it is never reached from the "continue" row, which is
+ * the one route that means "keep this session".
+ */
+async function forgetSession(): Promise<void> {
+  if (await currentUser()) await signOut();
+}
 
 /**
  * End the session on this device.
