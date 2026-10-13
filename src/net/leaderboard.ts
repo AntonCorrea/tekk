@@ -53,8 +53,12 @@ export interface LevelBoard {
   rows: TopPlayerRow[];
 }
 
-/** How many matches the panel asks for. */
-const LIMIT = 8;
+/**
+ * How many matches the history panel asks for. Five, not a round ten: it sits
+ * under the level boards, and what a racer looks for there is the tail they
+ * just played.
+ */
+const LIMIT = 5;
 
 /**
  * How many rows each of the two player lists asks for.

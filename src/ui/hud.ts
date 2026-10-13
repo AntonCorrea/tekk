@@ -941,7 +941,7 @@ function recordsMarkup(rows: readonly MatchRecordRow[]): string {
 /** The one line under the records list: how to read it, or why it is empty. */
 function recordsHintMarkup(rows: readonly MatchRecordRow[]): string {
   if (rows.length === 0) return 'no matches indexed yet — finish a race to settle one on monad';
-  return 'every finished match is settled on monad testnet and indexed by envio';
+  return 'the latest finishes — every match settles on monad testnet and is indexed by envio';
 }
 
 /** How long ago a block time was, coarse enough that it never needs a timer. */
