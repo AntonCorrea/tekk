@@ -696,6 +696,39 @@ body {
   pointer-events: auto;
 }
 
+/* The records pair: two panels sharing the one fixed slot a single panel
+   would use. The wrapper takes the positioning and the scrolling, and the
+   panels inside become ordinary flex children -- so the two scroll together
+   instead of each scrolling inside itself. Only records has two; customize
+   and the ballot keep their own fixed positioning. */
+.lobby-stack {
+  position: fixed;
+  bottom: 96px;
+  left: 50%;
+  z-index: 35;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+  width: min(680px, calc(100vw - 48px));
+  max-height: calc(100vh - 208px);
+  overflow-y: auto;
+  pointer-events: auto;
+}
+
+.lobby-stack[hidden] {
+  display: none;
+}
+
+.lobby-stack .lobby-panel {
+  position: static;
+  transform: none;
+  width: 100%;
+  max-height: none;
+  overflow: visible;
+}
+
 .lobby-head {
   font-size: 10px;
   font-weight: 500;
@@ -871,6 +904,33 @@ body {
   color: var(--ink-faint);
 }
 
+/* A level's heading on the records board: quieter than a panel head, but in
+   the accent, so the sections separate at a glance. */
+.board-level {
+  margin-top: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* A level with nothing on it yet: one line where its rows would be. */
+.board-empty {
+  padding: 6px 4px 7px;
+  border-bottom: 1px solid var(--hairline);
+  font-family: var(--grotesk);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+}
+
+/* An address keeps its own casing; upper-casing the `0x` reads as a typo. The
+   row language is the results banner's, which only ever showed names. */
+.board-list .result-name {
+  text-transform: none;
+}
+
 /* Phones: lift the panel over the 132px stick (bottom 24) and the mute pill,
    and let map cards go two-up so a third map wraps instead of shrinking.
    The top-right toggles tuck closer to the corner, under the connection pill. */
@@ -878,6 +938,12 @@ body {
   .lobby {
     top: 44px;
     right: 16px;
+  }
+
+  .lobby-stack {
+    bottom: 172px;
+    width: calc(100vw - 32px);
+    max-height: calc(100vh - 240px);
   }
 
   .lobby-panel {

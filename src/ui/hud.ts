@@ -18,7 +18,7 @@ import type { GameStateInstance, PlayerStateInstance } from '../shared/state.ts'
 import type { SimBody } from '../shared/sim.ts';
 import type { GameMode } from '../shared/course.ts';
 import { TRAILS, BODY_COLORS, HATS, GEARS } from '../shared/cosmetics.ts';
-import type { MatchRecordRow } from '../net/leaderboard.ts';
+import type { LevelBoard, MatchRecordRow } from '../net/leaderboard.ts';
 
 /** The slice of the predicted sim the HUD reads. */
 export type HudSim = Pick<SimBody, 'dashTicks' | 'dashCooldownTicks' | 'carrying'>;
@@ -141,6 +141,13 @@ export interface HudOptions {
    * is unaffected.
    */
   records?(): readonly MatchRecordRow[];
+
+  /**
+   * The board above those rows: each level's best racers, from the same read.
+   * Also empty without an indexer — a level with nothing on it still gets its
+   * heading, so the panel says "nobody yet" rather than nothing at all.
+   */
+  topPlayers?(): readonly LevelBoard[];
 }
 
 /** `gain` is good for you, `loss` is bad for you, `info` is someone else's moment. */
@@ -254,23 +261,37 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
   const voteCards = new Slot(div('lobby-cards', votePanel));
   const voteHint = new Slot(div('lobby-hint', votePanel));
 
-  // The records panel — the on-chain leaderboard. Deliberately the third
-  // toggle: it is read-only, so it never competes with the ballot's primary
-  // action, and it is where a finished match stays visible after the results
-  // banner has gone. Its rows come from the caller (net/leaderboard.ts), which
-  // owns the indexer fetch; the HUD only draws them.
+  // The records toggle raises TWO panels, stacked: the level boards on top and
+  // the matches under them. They are one answer to "what has settled on chain",
+  // so they share the one toggle and one close button, and the wrapper takes
+  // the fixed slot a single panel would use — the pair then scroll together on
+  // a short screen instead of each scrolling inside itself.
+  //
+  // Deliberately the third toggle: it is read-only, so it never competes with
+  // the ballot's primary action, and it is where a finished match stays visible
+  // after the results banner has gone. Every row comes from the caller
+  // (net/leaderboard.ts), which owns the indexer fetch; the HUD only draws them.
   const recordsToggle = button('lobby-toggle', 'records', lobby);
   recordsToggle.setAttribute('data-panel', 'records');
-  const recordsPanel = div('lobby-panel is-records', container);
-  recordsPanel.hidden = true;
+  const recordsStack = div('lobby-stack', container);
+  recordsStack.hidden = true;
+
+  const levelsPanel = div('lobby-panel is-levels', recordsStack);
+  const levelsHead = div('lobby-head', levelsPanel);
+  levelsHead.textContent = 'top racers by level';
+  const levelsClose = button('panel-close', '✕', levelsPanel);
+  levelsClose.setAttribute('data-close', 'records');
+  levelsClose.setAttribute('aria-label', 'close records panels');
+  levelsClose.title = 'close';
+  // Left-aligned like the results rows below it; the panel's own text-align is
+  // centred for its heading.
+  const levelsRows = new Slot(div('board-list', levelsPanel));
+  levelsRows.el.style.textAlign = 'left';
+  const levelsHint = new Slot(div('lobby-hint', levelsPanel));
+
+  const recordsPanel = div('lobby-panel is-records', recordsStack);
   const recordsHead = div('lobby-head', recordsPanel);
   recordsHead.textContent = 'recent matches on monad';
-  const recordsClose = button('panel-close', '✕', recordsPanel);
-  recordsClose.setAttribute('data-close', 'records');
-  recordsClose.setAttribute('aria-label', 'close records panel');
-  recordsClose.title = 'close';
-  // Left-aligned like the results banner these rows mirror; the panel's own
-  // text-align is centred for its heading.
   const recordsRows = new Slot(div('records-list', recordsPanel));
   recordsRows.el.style.textAlign = 'left';
   const recordsHint = new Slot(div('lobby-hint', recordsPanel));
@@ -567,7 +588,7 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
       // never hide.
       customizePanel.hidden = openPanel !== 'customize';
       votePanel.hidden = openPanel !== 'vote';
-      recordsPanel.hidden = openPanel !== 'records';
+      recordsStack.hidden = openPanel !== 'records';
       customizeToggle.classList.toggle('is-on', openPanel === 'customize');
       voteToggle.classList.toggle('is-on', openPanel === 'vote');
       recordsToggle.classList.toggle('is-on', openPanel === 'records');
@@ -581,7 +602,10 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
         // The records panel is read-only off-chain data, so it renders only
         // while it is the open panel: a closed panel never pays for the read.
         if (openPanel === 'records') {
+          const boards = options.topPlayers?.() ?? [];
           const records = options.records?.() ?? [];
+          levelsRows.html(levelsMarkup(boards, state));
+          levelsHint.html(levelsHintMarkup(boards));
           recordsRows.html(recordsMarkup(records));
           recordsHint.html(recordsHintMarkup(records));
         }
@@ -633,7 +657,7 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
         lobby,
         customizePanel,
         votePanel,
-        recordsPanel,
+        recordsStack,
         connection,
         board.el,
         readout.el,
@@ -826,6 +850,72 @@ function voteHintMarkup(state: GameStateInstance): string {
     return 'votes settle the moment every player has voted — or when the window runs out';
   // Mid-match the cards are the change-map vote; re-picking your card withdraws.
   return 'pick a map to play next — a majority pick calls the match off and plays it';
+}
+
+/**
+ * The board above the history: the best racers on each level.
+ *
+ * Sections come from the catalog rather than the data, so a level nobody has
+ * signed in to race still appears — with a line saying so, rather than quietly
+ * missing. Rows carry an address and a score and nothing else, because an
+ * address is all the chain knows: there is no name on Monad to show.
+ *
+ * A board in a mode the catalog no longer gives its course keeps a section of
+ * its own at the end, named by its id, so results settled under an older mode
+ * are never ranked against a score they did not play for.
+ */
+function levelsMarkup(boards: readonly LevelBoard[], state: GameStateInstance): string {
+  const byKey = new Map(boards.map((board) => [boardKey(board.courseId, board.mode), board]));
+  const shown = new Set<string>();
+  const parts: string[] = [];
+
+  const section = (name: string, mode: GameMode, board: LevelBoard | undefined): string => {
+    const head = `<div class="board-level">${escapeHtml(name)} · ${MODE_NAMES[mode]}</div>`;
+    if (board === undefined) return head + `<div class="board-empty">no signed-in racers yet</div>`;
+    return (
+      head +
+      board.rows
+        .map(
+          (row, i) =>
+            `<div class="result-row"><span class="result-rank">${i + 1}</span>` +
+            `<span class="result-name">${escapeHtml(shortWallet(row.wallet))}</span>` +
+            `<span class="result-time">${formatHold(row.ms, true)}</span></div>`,
+        )
+        .join('')
+    );
+  };
+
+  for (const info of state.catalog) {
+    const mode = modeOf(info.mode);
+    const key = boardKey(info.id, mode);
+    shown.add(key);
+    parts.push(section(info.name, mode, byKey.get(key)));
+  }
+
+  for (const board of boards) {
+    if (shown.has(boardKey(board.courseId, board.mode))) continue;
+    parts.push(section(board.courseId, board.mode, board));
+  }
+
+  return parts.join('');
+}
+
+/** A level and its mode name: the pair a board is keyed by, on both sides. */
+function boardKey(courseId: string, mode: GameMode): string {
+  return `${courseId}|${mode}`;
+}
+
+/** `0x1234…abcd` for a racer whose only identity is an address. */
+function shortWallet(address: string): string {
+  return address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address;
+}
+
+/** The one line under the board: how to read it, or why nothing is on it. */
+function levelsHintMarkup(boards: readonly LevelBoard[]): string {
+  if (boards.every((board) => board.rows.length === 0)) {
+    return 'no signed-in racer has a result yet — sign in and finish a race';
+  }
+  return 'the best result per level, read straight off the on-chain record';
 }
 
 /**
