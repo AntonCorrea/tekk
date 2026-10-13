@@ -67,6 +67,18 @@ export interface Account extends CosmeticIdentity {
    * name the server last accepted. */
   name: string;
 
+  /**
+   * Whether that name is the racer's own choice.
+   *
+   * False while the name is still whatever was minted for them; a login only
+   * fills in a name out of its own login info while this is false, so signing in
+   * again can never overwrite a name the racer picked. Every way the name
+   * becomes theirs -- renaming in the lobby, and the login that filled it in --
+   * sets it. A store written before this field existed is read as true, so a
+   * name that is already on a device is never replaced.
+   */
+  namedSelf: boolean;
+
   /** The sign-in method that minted this account. `'guest'` until a provider is picked. */
   loginMethod: LoginMethod;
 
@@ -169,6 +181,10 @@ export function loadAccount(): Account {
         typeof stored.name === 'string' && stored.name.trim().length > 0
           ? stored.name
           : randomRacerName(),
+      // Absent means this store predates the field, and the honest reading of an
+      // unknown name is "the racer's": guessing the other way would overwrite a
+      // name someone chose.
+      namedSelf: stored.namedSelf ?? true,
       loginMethod: isLoginMethod(stored.loginMethod) ? stored.loginMethod : 'guest',
       ownedTrails: owned,
       equippedTrail: equipped,
@@ -185,6 +201,8 @@ export function loadAccount(): Account {
   const fresh: Account = {
     id: randomAccountId(),
     name: randomRacerName(),
+    // Minted, not chosen: the first login may name this racer after itself.
+    namedSelf: false,
     loginMethod: 'guest',
     ownedTrails: [...STARTER_TRAILS],
     equippedTrail: DEFAULT_EQUIPPED,

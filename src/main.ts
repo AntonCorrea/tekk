@@ -156,6 +156,15 @@ async function boot(): Promise<void> {
   // signed wallet proof alongside the method -- which then rides the join, so
   // the record for this match credits an address the server verified.
   const login = await promptLogin(container, account.name);
+  // The login may already know a name -- a Google display name, an email's
+  // local part. Adopt it only while the account has never been named: renaming
+  // yourself in the lobby is you claiming your name, and a later sign-in must
+  // never undo that (see `namedSelf` in `net/account.ts`).
+  if (!account.namedSelf && login.name) {
+    account.name = login.name;
+    account.namedSelf = true;
+    saveAccount(account);
+  }
   if (login.method !== account.loginMethod) {
     account.loginMethod = login.method;
     saveAccount(account);
@@ -311,6 +320,9 @@ async function boot(): Promise<void> {
       session.sendRename(name);
       if (name !== account.name) {
         account.name = name;
+        // The racer claimed this name, so no later login may fill in a
+        // different one over the top of it.
+        account.namedSelf = true;
         saveAccount(account);
       }
     },

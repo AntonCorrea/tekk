@@ -41,6 +41,7 @@ import {
   privyEnabled,
   sendEmailCode,
   signJoin,
+  suggestedName,
 } from '../net/privy.ts';
 import type { Signer } from '../net/privy.ts';
 import type { WalletProof } from '../shared/identity.ts';
@@ -49,6 +50,12 @@ import type { WalletProof } from '../shared/identity.ts';
 export interface LoginOutcome {
   /** The method the account records. `'guest'` when nothing was verified. */
   method: LoginMethod;
+  /**
+   * A racer name the login itself already knows -- a Google display name, an
+   * email's local part -- for the boot to adopt if the account has never been
+   * named. Absent for the guest seat and for routes that carry no name.
+   */
+  name?: string;
   /**
    * The signed join statement, when a wallet produced one. Absent means the
    * racer joins walletless -- a valid seat, with a zero address on-chain.
@@ -290,14 +297,18 @@ async function promptPrivy(container: HTMLElement): Promise<LoginOutcome> {
     const signIn = async (method: LoginMethod, signer: Signer): Promise<void> => {
       say('sign the join statement…');
       const proof = await signJoin(signer);
+      // What the login itself knows about this racer's name, for the boot to
+      // adopt if this account has never had one. Null on the passkey and wallet
+      // routes, which carry no name, and null without Privy.
+      const name = (await suggestedName()) ?? undefined;
       if (proof) {
-        finish({ method, proof, wallet: proof.address });
+        finish({ method, name, proof, wallet: proof.address });
         return;
       }
       // Signed in, but no wallet proof: a valid seat with no on-chain identity.
       // Worth saying out loud, because the record will carry the zero address.
       console.warn('TEKK login: authenticated, but no wallet signature — joining as a guest seat');
-      finish({ method, wallet: address ?? undefined });
+      finish({ method, name, wallet: address ?? undefined });
     };
 
     /** Shared shape for the two row-triggered routes that can fail. */
