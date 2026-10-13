@@ -1,8 +1,13 @@
 # Envio HyperIndex config for TEKK (Stage 2).
 #
 # Indexes the two MatchRecord events on Monad testnet. HyperSync is the data
-# source (no RPC needed), and the contract is a recent deployment, so we start
-# at its deploy block rather than block 0.
+# source (no RPC needed), so we start at the first block worth reading rather
+# than block 0.
+#
+# `start_block` is also the floor of what the lobby can ever show: every
+# deployment re-indexes from it, so raising it wipes the records without
+# touching the contract -- which is append-only and cannot be rewound. See the
+# chain block below.
 #
 # After editing this file or schema.graphql, run `npm run codegen`.
 # yaml-language-server: $schema=./node_modules/envio/evm.schema.json
@@ -17,7 +22,13 @@ contracts:
 
 chains:
   - id: 10143 # Monad Testnet
-    start_block: 70311917 # MatchRecord deployment block
+    # Raised from the deploy block (70311917) to just above the Monad head on
+    # 13 Oct 2026, to clear the pre-demo history: those matches stay on chain
+    # but are never read again. Matches from this block on index normally, so
+    # the board refills with real play. The ~1000-block lead over the head
+    # (~5 minutes of Monad's 300ms blocks) is deliberate slack, so matches that
+    # settle while the new deployment is still building are cleared too.
+    start_block: 70807305
     contracts:
       - name: MatchRecord
         address: "0x9a1e7a4Cd75F7916b52C1D63aEC38E893852Da56"
