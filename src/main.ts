@@ -326,9 +326,11 @@ async function boot(): Promise<void> {
         saveAccount(account);
       }
     },
-    // The records panel reads the indexer's latest answer; the fetch itself is
-    // refreshed on phase edges (see the frame), never per render.
+    // The records panels read the indexer's latest answer; the fetch itself is
+    // refreshed on phase edges (see the frame), never per render. Both halves
+    // come out of that one read: the level boards and the match history.
     records: () => leaderboard.rows(),
+    topPlayers: () => leaderboard.topPlayers(),
   });
   const coreVisual = createCoreVisual(stage.scene);
   const coreMarkers = createCoreMarkers(stage.scene);
