@@ -111,6 +111,29 @@ const transport = http(cfg.rpcUrl ?? 'https://testnet-rpc.monad.xyz');
 const walletClient = createWalletClient({ account, chain: monadTestnet, transport });
 const publicClient = createPublicClient({ chain: monadTestnet, transport });
 
+/**
+ * One line for the server's boot banner: whether finished matches will reach
+ * Monad, and which variables are missing if they will not.
+ *
+ * The hook is silent by design -- a missing variable makes `recordMatch` a
+ * no-op, and a match with no record looks exactly like a match with no record
+ * for any other reason. Nothing distinguishes "the chain did not get it" from
+ * "the chain was never asked" except the environment, which is invisible from
+ * outside the process. So the answer is printed once, at boot, where it costs
+ * one line and answers the first question anyone asks.
+ */
+export function matchRecordingStatus(): string {
+  if (matchRecordingEnabled) {
+    return `enabled (recording to ${contractAddress} as ${account?.address})`;
+  }
+  const missing: string[] = [];
+  if (!cfg.enabled) missing.push('MATCH_RECORD_ENABLED=1');
+  if (!cfg.rpcUrl) missing.push('MONAD_RPC_URL');
+  if (!cfg.signerKey) missing.push('MATCH_SIGNER_KEY');
+  if (!contractAddress) missing.push('MATCH_RECORD_ADDRESS');
+  return `disabled (missing ${missing.join(', ')})`;
+}
+
 /** One racer's result, ready to encode. */
 export interface PlayerRecord {
   wallet: Hex;

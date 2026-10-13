@@ -190,17 +190,66 @@ build time.
 | Build | `npm ci && npm run build:server` |
 | Start | `npm start` |
 
+| Env | What it is for |
+|---|---|
+| `MATCH_RECORD_ENABLED=1` | gates the on-chain hook; without it a finished match is never written |
+| `MONAD_RPC_URL` | the chain to write to; `https://testnet-rpc.monad.xyz` |
+| `MATCH_RECORD_ADDRESS` | the deployed `MatchRecord` contract |
+| `MATCH_SIGNER_KEY` | the registrar's key — the only key the contract will accept. Server-only, never a `VITE_*` name |
+| `PRIVY_APP_ID` | verifies the access token each join carries |
+| `PRIVY_APP_SECRET` | the other half of that check. Server-only, never a `VITE_*` name |
+
+The first four are all-or-nothing: `matchRecordingEnabled` is false unless every
+one of them is present, and a half-configured pair of Privy variables counts as
+none.
+
 **Client** (Static Site)
 
 | | |
 |---|---|
 | Build | `npm ci && npm run build` |
 | Publish directory | `dist` |
-| Env | `VITE_SERVER_URL` = the game server URL |
+
+| Env | What it is for |
+|---|---|
+| `VITE_SERVER_URL` | the game server URL; `resolveEndpoint()` throws at boot without it |
+| `VITE_LEADERBOARD_URL` | the Envio indexer endpoint, which lights up the lobby's records panel |
+| `VITE_PRIVY_APP_ID` | draws the real login card instead of the placeholder |
+| `VITE_PRIVY_CLIENT_ID` | the other half of that card. Both are public by design and ship in the bundle |
 
 Order matters. `VITE_SERVER_URL` is read at build time and baked into the
 bundle, so building the client before the server exists produces a build whose
 `resolveEndpoint()` throws at boot.
+
+The two lists are mirror images, and mixing them up is silent. Every `VITE_*`
+value is compiled into the client at build time, so changing one means
+rebuilding the static site. The game server's variables are read once, when the
+module loads (`server/matchRecord.ts`, `server/privy.ts`), so changing one means
+restarting the service — a redeploy without the variables changes nothing. The
+server says which it found on its own boot line:
+
+```
+TEKK on-chain records: enabled (recording to 0x9a1e…Da56 as 0xED35…C09a)
+TEKK on-chain records: disabled (missing MATCH_SIGNER_KEY)
+```
+
+That line is the fastest way to tell a misconfigured server from a broken one.
+
+### Two settings that are not in this repo
+
+Google sign-in needs both. Either one missing is a login that starts and cannot
+finish.
+
+1. **Privy dashboard → Configuration → App settings → Advanced → allowed OAuth
+   redirect URLs.** Add the exact callback URL for each origin, e.g.
+   `https://tekk-1.onrender.com/login-callback`. This is a different list from
+   "allowed domains", and it wants an exact match — no trailing slash, no query.
+   Without the entry, Google returns to a page that cannot complete the login.
+2. **Render → static site → Settings → Redirects/Rewrites.** Source `/*`,
+   destination `/index.html`, action **Rewrite**. A static site has no SPA
+   fallback, so `/login-callback` 404s and the app never boots. It has to be a
+   rewrite rather than a redirect, because the client reads the OAuth code out
+   of the URL and the path must stay `/login-callback`.
 
 ### Why the server is compiled
 

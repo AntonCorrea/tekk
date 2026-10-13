@@ -18,6 +18,7 @@ import { loadCourse, resolveCoursePath } from './course.ts';
 import { loadCatalog } from './catalog.ts';
 import { RaceRoom } from './room.ts';
 import { DEFAULT_TIMINGS, type MatchTimings } from './rules.ts';
+import { matchRecordingStatus } from './matchRecord.ts';
 
 // Every PlayerState now carries the wall-run counters and normal. The default
 // 8KB encode buffer overflows on that state (it printed a warning in the
@@ -150,6 +151,12 @@ if (isEntryPoint) {
       `${catalog.length} maps in the vote [${catalog.map((entry) => entry.id).join(', ')}], ` +
       `node ${process.version})`,
   );
+
+  // Whether finished matches will actually reach Monad, and the names of the
+  // variables that are missing if they will not. Without this line a
+  // misconfigured server is indistinguishable from a quiet one: the hook no-ops
+  // and the match simply has no record.
+  console.info(`TEKK on-chain records: ${matchRecordingStatus()}`);
 
   installShutdownHandlers(gameServer);
 }
