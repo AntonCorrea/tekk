@@ -857,8 +857,8 @@ function voteHintMarkup(state: GameStateInstance): string {
  *
  * Sections come from the catalog rather than the data, so a level nobody has
  * signed in to race still appears — with a line saying so, rather than quietly
- * missing. Rows carry an address and a score and nothing else, because an
- * address is all the chain knows: there is no name on Monad to show.
+ * missing. Rows carry a name and a score: the chain knows only the address, so
+ * the name comes from the room's registry (see `racerName`).
  *
  * A board in a mode the catalog no longer gives its course keeps a section of
  * its own at the end, named by its id, so results settled under an older mode
@@ -878,7 +878,7 @@ function levelsMarkup(boards: readonly LevelBoard[], state: GameStateInstance): 
         .map(
           (row, i) =>
             `<div class="result-row"><span class="result-rank">${i + 1}</span>` +
-            `<span class="result-name">${escapeHtml(shortWallet(row.wallet))}</span>` +
+            `<span class="result-name">${escapeHtml(racerName(row.wallet, state))}</span>` +
             `<span class="result-time">${formatHold(row.ms, true)}</span></div>`,
         )
         .join('')
@@ -908,6 +908,23 @@ function boardKey(courseId: string, mode: GameMode): string {
 /** `0x1234…abcd` for a racer whose only identity is an address. */
 function shortWallet(address: string): string {
   return address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address;
+}
+
+/**
+ * What to call a wallet.
+ *
+ * The name comes from the room's registry, which the server fills from the
+ * signed join and every rename since (see `server/racerNames.ts`). No entry
+ * means the racer has not joined since names started being kept — a wallet that
+ * only ever played before this shipped, or before the last restart — so the
+ * short address stands in rather than the row going nameless.
+ *
+ * The optional chain covers the one window the shared-schema convention does
+ * not: a new bundle can be served before its matching server restart lands, and
+ * a server that predates the field never sends it at all.
+ */
+function racerName(wallet: string, state: GameStateInstance): string {
+  return state.names?.get(wallet.toLowerCase()) ?? shortWallet(wallet);
 }
 
 /** The one line under the board: how to read it, or why nothing is on it. */

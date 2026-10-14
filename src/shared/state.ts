@@ -265,6 +265,23 @@ export const GameState = schema(
      */
     catalog: t.array(MapInfo),
 
+    /**
+     * Racer names by wallet, lower-cased.
+     *
+     * A name is off-chain, so the chain record and the indexer behind it have
+     * none to give: without this the records panel could only ever draw the
+     * address. The server learns the pair at join, where one signed payload
+     * carries both a verified wallet and a name (see `server/racerNames.ts`),
+     * keeps it across sessions and copies the whole registry here.
+     *
+     * Both halves are already public -- the panel fetches exactly these
+     * addresses from the indexer and draws them -- so this adds nothing that
+     * was not already on screen. An address with no entry is one whose racer
+     * has not joined since names started being kept; the panel falls back to
+     * the short address.
+     */
+    names: t.map('string'),
+
     /** sessionId of whoever holds the Core, or '' when it is free. */
     carrierId: t.string().default(''),
     /**

@@ -13,6 +13,10 @@ dist-ssr
 dist-server
 *.local
 
+# Runtime state the server writes (the racer-name registry, see
+# server/racerNames.ts). Never source: a deploy starts without it.
+data/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

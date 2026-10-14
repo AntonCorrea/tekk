@@ -55,6 +55,7 @@ import { createPhysicsWorld, initPhysics } from '../src/physics/world.ts';
 import { DEFAULT_COURSE_PATH, loadCourse } from './course.ts';
 import { catalogEntry, loadCatalog, type CatalogEntry } from './catalog.ts';
 import { popcount, recordMatch, ZERO_WALLET } from './matchRecord.ts';
+import { loadRacerNames, racerNames, rememberRacerName } from './racerNames.ts';
 import { verifyRacer } from './privy.ts';
 import {
   advancePhase,
@@ -289,6 +290,12 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     this.setState(new GameState());
     this.state.mode = this.mode;
 
+    // The names earlier sessions left behind, so the records panel can name a
+    // wallet that is not in the room this time. Read once per process; a room
+    // created later copies whatever the first one loaded (see racerNames.ts).
+    loadRacerNames();
+    for (const [wallet, name] of racerNames()) this.state.names.set(wallet, name);
+
     // The course definition. The client parses and validates it with the
     // same `parseCourse` the server used, then builds identical colliders
     // from it via the shared builder. Rewritten on a map swap, and that
@@ -423,7 +430,10 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     // this is legal in every phase. The server keeps owning the value — a
     // rename passes through the same `sanitiseName` that sanitised the join —
     // so a racer can pick a name it likes, but never one that breaks the
-    // standings board's rendering.
+    // standings board's rendering. It is also the second of the two moments
+    // that touch the name registry (the first being a signed join), because the
+    // records panel resolves names at read time: one rename there renames every
+    // match the racer is already in.
     this.onMessage('rename', (client, message: unknown) => {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
@@ -432,6 +442,13 @@ export class RaceRoom extends Room<RaceRoomOptions> {
       const next = sanitiseName(name);
       if (next === player.name) return;
       player.name = next;
+      // A rename has to land on the registry too, or the records panel would
+      // keep drawing the name a racer just stopped using.
+      const wallet = this.wallets.get(client.sessionId);
+      if (wallet) {
+        this.state.names.set(wallet.toLowerCase(), next);
+        rememberRacerName(wallet, next);
+      }
       log(`${player.name} renamed themselves`);
     });
 
@@ -517,6 +534,14 @@ export class RaceRoom extends Room<RaceRoomOptions> {
     const verified = await verifyRacer(options?.identity);
     if (verified) {
       this.wallets.set(client.sessionId, verified.wallet);
+      // The join is the only moment a verified wallet and a name arrive
+      // together, so it is where the name registry learns the pair. Read the
+      // name back off the seat rather than use the join copy: a rename is legal
+      // while the signature is still being recovered, and it must win.
+      const wallet = verified.wallet.toLowerCase();
+      const name = this.state.players.get(client.sessionId)?.name ?? state.name;
+      this.state.names.set(wallet, name);
+      rememberRacerName(wallet, name);
       log(`${state.name} signed in as ${verified.wallet}`);
     }
   }

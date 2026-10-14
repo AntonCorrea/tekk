@@ -198,6 +198,7 @@ build time.
 | `MATCH_SIGNER_KEY` | the registrar's key — the only key the contract will accept. Server-only, never a `VITE_*` name |
 | `PRIVY_APP_ID` | verifies the access token each join carries |
 | `PRIVY_APP_SECRET` | the other half of that check. Server-only, never a `VITE_*` name |
+| `RACER_NAMES_FILE` | where the address → name registry is written (default `data/racer-names.json`) |
 
 The first four are all-or-nothing: `matchRecordingEnabled` is false unless every
 one of them is present, and a half-configured pair of Privy variables counts as
@@ -234,6 +235,20 @@ TEKK on-chain records: disabled (missing MATCH_SIGNER_KEY)
 ```
 
 That line is the fastest way to tell a misconfigured server from a broken one.
+
+### Where a racer's name lives
+
+A name is off-chain and display-only, so the chain record and the indexer behind
+it carry only an address. The server keeps the pairs it learns — from each
+signed join, and again on every rename (`server/racerNames.ts`) — copies them
+into the room state, and the lobby's records panel resolves each wallet against
+them. That is why a rename shows up on every match the racer is already in.
+
+The file is best-effort: a host with an ephemeral filesystem starts without it,
+and the names come back as racers sign in again. Wallets that have not signed in
+since then keep showing their short address. The server must be deployed before
+the client rebuild that expects the field; until then the panel falls back to
+addresses rather than breaking.
 
 ### Two settings that are not in this repo
 

@@ -925,8 +925,9 @@ body {
   color: var(--ink-faint);
 }
 
-/* An address keeps its own casing; upper-casing the `0x` reads as a typo. The
-   row language is the results banner's, which only ever showed names. */
+/* Names keep their own casing, and so do addresses -- upper-casing `Swift
+   Comet` shouts, and upper-casing the `0x` of a wallet reads as a typo. The row
+   language is the results banner's, which only ever showed names. */
 .board-list .result-name {
   text-transform: none;
 }
