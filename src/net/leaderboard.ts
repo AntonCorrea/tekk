@@ -28,6 +28,13 @@ export interface MatchRecordRow {
   endedAt: number;
   /** The tx that recorded it, for a receipt link. */
   txHash: string;
+  /**
+   * The winning wallet, for the panel to resolve to a name -- the room's name
+   * registry is the only place that knows one, so the row carries the address
+   * and the panel does the lookup. Empty when the match's winner slot is the
+   * zero address, which is what the contract writes when no signed racer won.
+   */
+  winner: string;
 }
 
 /** One racer's best result on one level. */
@@ -119,6 +126,7 @@ const QUERY = `query LobbyRecords {
     playerCount
     endedAt
     txHash
+    winner
   }
   held: Player(limit: ${BOARD_LIMIT}, order_by: { holdMs: desc }, where: { holdMs: { _gt: 0 }, wallet: { _neq: "${ZERO_ADDRESS}" }, match: { endedAt: { _gte: ${HISTORY_FROM} } } }) {
     wallet
@@ -225,7 +233,13 @@ function parseRows(raw: unknown): MatchRecordRow[] | null {
     const txHash = row['txHash'];
     if (matchId === null || players === null || endedAt === null || mode === null) continue;
     if (typeof courseId !== 'string' || typeof txHash !== 'string') continue;
-    rows.push({ matchId, courseId, mode, players, endedAt, txHash });
+    // The zero address is not a winner: it is the seat of a racer who never
+    // proved a wallet, and the contract writes it when no signed racer won --
+    // so the panel gets '' here rather than a row it cannot name.
+    const rawWinner = row['winner'];
+    const winner =
+      typeof rawWinner === 'string' && rawWinner.toLowerCase() !== ZERO_ADDRESS ? rawWinner : '';
+    rows.push({ matchId, courseId, mode, players, endedAt, txHash, winner });
   }
   return rows;
 }

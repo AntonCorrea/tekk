@@ -606,7 +606,7 @@ export function createHud(container: HTMLElement, options: HudOptions = {}): Hud
           const records = options.records?.() ?? [];
           levelsRows.html(levelsMarkup(boards, state));
           levelsHint.html(levelsHintMarkup(boards));
-          recordsRows.html(recordsMarkup(records));
+          recordsRows.html(recordsMarkup(records, state));
           recordsHint.html(recordsHintMarkup(records));
         }
 
@@ -941,17 +941,25 @@ function levelsHintMarkup(boards: readonly LevelBoard[]): string {
  *
  * Reuses the results banner's row language — rank, name, time — so the board a
  * player just raced on and the history behind it read as one thing. The id is
- * the contract's match number; the tail is the three facts that survive the
- * trip: mode, field size, and how long ago it ended.
+ * the contract's match number, the winner is the name the room's registry knows
+ * for that wallet, and the tail is the three facts that survive the trip: mode,
+ * field size, and how long ago it ended.
+ *
+ * A winner slot at the zero address means no signed racer won -- a match nobody
+ * scored still records its guest seats -- so those rows say so rather than
+ * inventing a name for nobody.
  */
-function recordsMarkup(rows: readonly MatchRecordRow[]): string {
+function recordsMarkup(rows: readonly MatchRecordRow[], state: GameStateInstance): string {
   return rows
-    .map(
-      (row) =>
+    .map((row) => {
+      const winner = row.winner === '' ? 'no signer' : racerName(row.winner, state);
+      return (
         `<div class="result-row"><span class="result-rank">#${row.matchId}</span>` +
         `<span class="result-name">${escapeHtml(row.courseId)}</span>` +
-        `<span class="result-time">${MODE_NAMES[modeOf(row.mode)]} · ${row.players} ${row.players === 1 ? 'racer' : 'racers'} · ${formatAge(row.endedAt)}</span></div>`,
-    )
+        `<span class="result-winner">${escapeHtml(winner)}</span>` +
+        `<span class="result-time">${MODE_NAMES[modeOf(row.mode)]} · ${row.players} ${row.players === 1 ? 'racer' : 'racers'} · ${formatAge(row.endedAt)}</span></div>`
+      );
+    })
     .join('');
 }
 

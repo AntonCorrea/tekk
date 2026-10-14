@@ -932,6 +932,17 @@ body {
   text-transform: none;
 }
 
+/* The winner of a settled match, resolved from the room's name registry (the
+   chain only knows the address). Shares the row with the course the way the
+   board's name cell does, and keeps its own casing for the same reason. */
+.records-list .result-winner {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+}
+
 /* Phones: lift the panel over the 132px stick (bottom 24) and the mute pill,
    and let map cards go two-up so a third map wraps instead of shrinking.
    The top-right toggles tuck closer to the corner, under the connection pill. */
