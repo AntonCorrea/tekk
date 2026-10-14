@@ -79,6 +79,21 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 const TIMEOUT_MS = 4000;
 
 /**
+ * The moment the lobby starts counting: a row settled before this is left out.
+ *
+ * The clean slate is a read, not a wipe. `MatchRecord` is append-only with no
+ * reset, and an indexer row cannot be deleted through its API, so the only
+ * honest lever is the query -- the chain and the indexer keep every row they
+ * have, and the panel simply starts here. Set it to 0 to show the full history
+ * again, which is the whole revert.
+ *
+ * Minutes ahead of the write-up on purpose: matches still settling while the
+ * static site rebuilds are cleared too, so the panel comes up empty instead of
+ * clean-but-for-the-last-few. 14 Oct 2026, 00:30 UTC.
+ */
+const HISTORY_FROM = Date.UTC(2026, 9, 14, 0, 30) / 1000;
+
+/**
  * Recent matches, newest first. Ordered by `matchId` rather than `endedAt`
  * because it is the sequence the contract assigns, so two matches in one block
  * still order exactly.
@@ -89,9 +104,13 @@ const TIMEOUT_MS = 4000;
  * `server/rules.ts`). One list cannot be sorted by both, and GraphQL aliases
  * keep it a single round trip -- which is what the in-flight guard and the
  * timeout below are sized for.
+ *
+ * All three lists are floored at `HISTORY_FROM`. The boards filter through
+ * their `match` relation because a score only means something alongside the
+ * match it was settled in.
  */
 const QUERY = `query LobbyRecords {
-  Match(limit: ${LIMIT}, order_by: { matchId: desc }) {
+  Match(limit: ${LIMIT}, order_by: { matchId: desc }, where: { endedAt: { _gte: ${HISTORY_FROM} } }) {
     matchId
     courseId
     mode
@@ -99,12 +118,12 @@ const QUERY = `query LobbyRecords {
     endedAt
     txHash
   }
-  held: Player(limit: ${BOARD_LIMIT}, order_by: { holdMs: desc }, where: { holdMs: { _gt: 0 }, wallet: { _neq: "${ZERO_ADDRESS}" } }) {
+  held: Player(limit: ${BOARD_LIMIT}, order_by: { holdMs: desc }, where: { holdMs: { _gt: 0 }, wallet: { _neq: "${ZERO_ADDRESS}" }, match: { endedAt: { _gte: ${HISTORY_FROM} } } }) {
     wallet
     holdMs
     match { courseId mode }
   }
-  finished: Player(limit: ${BOARD_LIMIT}, order_by: { finishMs: asc }, where: { finishMs: { _gte: 0 }, wallet: { _neq: "${ZERO_ADDRESS}" } }) {
+  finished: Player(limit: ${BOARD_LIMIT}, order_by: { finishMs: asc }, where: { finishMs: { _gte: 0 }, wallet: { _neq: "${ZERO_ADDRESS}" }, match: { endedAt: { _gte: ${HISTORY_FROM} } } }) {
     wallet
     finishMs
     match { courseId mode }
