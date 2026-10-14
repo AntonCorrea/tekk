@@ -172,7 +172,7 @@ function safeFileName(id: string): string {
   return `${cleaned || 'course'}.json`;
 }
 
-/** `../courses/takk-arena.json` → `takk-arena`. */
+/** `../courses/takk-climb.json` → `takk-climb`. */
 function baseName(path: string): string {
   const file = path.slice(path.lastIndexOf('/') + 1);
   return file.endsWith('.json') ? file.slice(0, -5) : file;
@@ -1753,8 +1753,10 @@ export async function bootEditor(container: HTMLElement): Promise<void> {
 
   // --- first document -----------------------------------------------------
 
+  // Prefer the shipped reach course, so the editor opens the same map on every
+  // checkout rather than whichever file the glob happens to return first.
   const firstPath =
-    Object.keys(bundled).find((path) => baseName(path) === 'takk-arena') ??
+    Object.keys(bundled).find((path) => baseName(path) === 'takk-climb') ??
     Object.keys(bundled)[0];
   if (firstPath !== undefined) {
     try {

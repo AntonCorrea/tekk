@@ -64,6 +64,19 @@ import { parseCourse, courseMode, isPlayableCourse, type Vec3 } from '../src/sha
 
 type Course = ReturnType<typeof loadCourse>;
 
+/**
+ * Harness-only course fixtures.
+ *
+ * The suites below are pinned to specific geometry: the determinism and
+ * rollback scripts fly "the open lane", the wire suite walks Arena 01's spawn
+ * to Core line, and the mode suite needs a hunt map. Those files live here
+ * rather than in `src/courses/`, which is the SHIPPED catalog -- `loadCatalog()`
+ * lists that directory, so a fixture kept there would turn up in the lobby
+ * ballot. Same files, same geometry the scripts were tuned to, and the shipped
+ * maps can come and go without moving what these tests assert.
+ */
+const FIXTURE_DIR = join(dirname(DEFAULT_COURSE_PATH), '..', '..', 'scripts', 'courses');
+
 let pass = 0;
 let fail = 0;
 let skipped = 0;
@@ -941,10 +954,11 @@ function testRules(course: Course) {
         isPlayableCourse(parse({ coreSpawn: [0, 1, 0] })) &&
         !isPlayableCourse(parse({})));
 
-    // The two shipped mode maps parse and are playable as declared.
+    // The shipped reach map and the hunt fixture parse and are playable as
+    // declared.
     const dir = dirname(DEFAULT_COURSE_PATH);
-    const huntMap = loadCourse(join(dir, 'takk-test.json'));
-    check('course: the shipped hunt map is playable and hides cores',
+    const huntMap = loadCourse(join(FIXTURE_DIR, 'takk-test.json'));
+    check('course: the harness hunt fixture is playable and hides cores',
       courseMode(huntMap) === 'hunt' && isPlayableCourse(huntMap) && (huntMap.cores?.length ?? 0) >= 3,
       `${huntMap.cores?.length ?? 0} cores`);
     const reachMap = loadCourse(join(dir, 'takk-climb.json'));
@@ -981,7 +995,7 @@ async function testWire(course: Course) {
   // the smoke test's production-room check.
   const { gameServer } = createGameServer({
     matchTimings: WIRE_TIMINGS,
-    coursePath: join(dirname(DEFAULT_COURSE_PATH), 'takk-arena.json'),
+    coursePath: join(FIXTURE_DIR, 'takk-arena.json'),
   });
   await gameServer.listen(PORT, '127.0.0.1');
 
@@ -1334,7 +1348,7 @@ async function testMapVote(): Promise<void> {
   // from, so every swap below reads as `courseJson` changing id.
   const { gameServer } = createGameServer({
     matchTimings: VOTE_TIMINGS,
-    coursePath: join(dirname(DEFAULT_COURSE_PATH), 'takk-arena.json'),
+    coursePath: join(FIXTURE_DIR, 'takk-arena.json'),
   });
   await gameServer.listen(PORT, '127.0.0.1');
   check('vote suite: server boots and listens', true, `port ${PORT}`);
@@ -1413,8 +1427,8 @@ async function testMapVote(): Promise<void> {
   check('catalog cards carry the counts the lobby shows',
     cards.every((card) => card.name.length > 0 && card.solids > 0 && card.pads >= 0),
     cards.map((card) => `${card.id}:${card.solids}s/${card.pads}p`).join(' '));
-  const laneId = loadCourse(join(dirname(DEFAULT_COURSE_PATH), 'tekk-01.json')).id;
-  check('the catalog lists only playable courses (no coreSpawn/cores, no ballot)',
+  const laneId = loadCourse(join(FIXTURE_DIR, 'tekk-01.json')).id;
+  check('the catalog holds the shipped maps only (a fixture never reaches the ballot)',
     !ids.includes(laneId), `${laneId} ${ids.includes(laneId) ? 'present' : 'absent'}`);
 
   const startId = currentId();
@@ -1647,7 +1661,7 @@ async function testModeWire(): Promise<void> {
   // Pinned to the hunt map, so the room's mode comes from a real course file.
   const { gameServer } = createGameServer({
     matchTimings: VOTE_TIMINGS,
-    coursePath: join(dirname(DEFAULT_COURSE_PATH), 'takk-test.json'),
+    coursePath: join(FIXTURE_DIR, 'takk-test.json'),
   });
   await gameServer.listen(PORT, '127.0.0.1');
   check('mode suite: server boots and listens', true, `port ${PORT}`);
@@ -2369,7 +2383,7 @@ async function main(): Promise<void> {
   // Suites A and B were written against the original lane -- "the open lane",
   // "the start pad's right rail" -- so they stay pinned to it rather than
   // silently testing nothing when the production map changes.
-  const lane = loadCourse(join(dirname(DEFAULT_COURSE_PATH), 'tekk-01.json'));
+  const lane = loadCourse(join(FIXTURE_DIR, 'tekk-01.json'));
 
   console.log(`\nTEKK Day 3 harness - course "${course.id}" (${course.name}), ` +
     `${course.solids.length} solids, step ${(FIXED_TIMESTEP * 1000).toFixed(2)}ms`);
@@ -2385,7 +2399,7 @@ async function main(): Promise<void> {
   testRules(course);
   try {
     // The wire suite runs against Arena 01 (see createGameServer in testWire).
-    await testWire(loadCourse(join(dirname(DEFAULT_COURSE_PATH), 'takk-arena.json')));
+    await testWire(loadCourse(join(FIXTURE_DIR, 'takk-arena.json')));
   } catch (err) {
     check('wire suite ran to completion', false, `crashed: ${String(err).slice(0, 160)}`);
   }

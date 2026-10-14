@@ -50,7 +50,7 @@ const EDGE_GAIN = POST.edgeGain;
  * Fallback edge hue for a solid with no `color` in the course JSON.
  *
  * Light blue from the ramp. Only reachable if a future course omits the field,
- * since every solid in `tekk-01.json` sets one.
+ * since every solid in the shipped courses sets one.
  */
 const DEFAULT_SOLID_COLOR = '#9ec7fa';
 

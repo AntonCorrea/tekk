@@ -290,17 +290,21 @@ always was.
 
 ## Course
 
-Five courses ship in `src/courses/`. The server loads and validates the one
-it is pointed at at boot, so a typo in the JSON fails loudly at startup rather
-than producing a collider in the wrong place.
+Two courses ship in `src/courses/`. The server loads and validates the one it
+is pointed at at boot, so a typo in the JSON fails loudly at startup rather
+than producing a collider in the wrong place. That directory is also the
+catalog the lobby votes over, so a file dropped in it joins the ballot.
 
 | File | Mode | Solids | |
 |---|---|---|---|
 | `takk-newyork.json` | `hold` | 52 | **The default.** Manhattan's street grid over the void, Times Square with the Core, Central Park, four skyscrapers to run around, rooftops reached by pad and ramp, and the Brooklyn Bridge's two opposed boost lanes to Brooklyn. |
-| `takk-arena.json` | `hold` | 16 | Compact Core Rush ring, one screen wide. |
 | `takk-climb.json` | `reach` | 75 | Neon Ascent: a long climb to a Core that never moves. Race to the summit. |
-| `takk-test.json` | `hunt` | 11 | Test Lab: five hidden checkpoint Cores to find. |
-| `tekk-01.json` | — | 8 | The original race course. Kept for reference; the room never offers it (no `coreSpawn`, no `cores`). |
+
+Three more courses live in `scripts/courses/`: the open lane the determinism and
+rollback suites fly, Arena 01's spawn-to-Core ring for the wire suite, and a hunt
+map for the mode suite. They are fixtures for the harness rather than shipped
+maps -- deliberately outside `src/courses/` so the ballot never offers them --
+and the harness reads them by path.
 
 A course's mode is cross-checked against the layout it needs: a `reach` (or an
 explicit `hold`) course must carry `coreSpawn`, a `hunt` course must carry a
@@ -340,13 +344,13 @@ src/
   render/     scene, camera rig, racer, city, the Core, palette, skyline
   physics/    world setup, pose reading
   course/     course meshes and neon edges
-  courses/    the three course JSON files
+  courses/    the two shipped course JSON files
   game/       time formatting
   ui/         the HUD
   audio/      generated techno
   main.ts     boot and frame wiring
 server/       authoritative room, pure rules, course loading, bootstrap
-scripts/      harness, smoke test, build asset copy
+scripts/      harness (and its course fixtures), smoke test, build asset copy
 ```
 
 Camera yaw is deliberately **client-only**. It rotates the camera and the input

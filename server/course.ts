@@ -26,8 +26,8 @@ export const DEFAULT_COURSE_PATH = resolve(here, '..', 'src', 'courses', 'takk-n
  *
  * `COURSE` swaps the map without editing code:
  *
- *     COURSE=takk-test npm run dev:server        bare id, src/courses/<id>.json
- *     COURSE=src/courses/takk-test.json npm ...  path, relative to the cwd
+ *     COURSE=takk-climb npm run dev:server       bare id, src/courses/<id>.json
+ *     COURSE=src/courses/takk-climb.json npm ... path, relative to the cwd
  *
  * Unset or empty falls back to `DEFAULT_COURSE_PATH`. The value is resolved
  * here but never parsed -- `loadCourse` does that, and its error names the
