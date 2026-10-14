@@ -174,27 +174,42 @@ export const GEARS: Record<string, GearDef> = {
 export const DEFAULT_GEAR = 'gear-stock';
 
 /**
- * What a brand-new off-chain account "acquires" for free.
+ * Every id a catalog ships, with that slot's stock default first.
  *
- * Deliberately lean: just the stock default of each slot, nothing more. A
- * fresh account can equip and the picker has something to show — but the rest
- * of the catalog is only earned by collecting world pickups, which is what
- * makes the collection loop meaningful. A real build would seed this from the
- * account's DB/chain record instead.
+ * The stock id leads on purpose. Both the account and the room fall back to
+ * `owned[0]` when the equipped id is not in the set, and that has always meant
+ * "the stock entry of this slot", so keeping it first leaves both call sites
+ * exactly as they were.
  */
-export const STARTER_TRAILS: readonly string[] = [DEFAULT_TRAIL];
+function wholeCatalog(catalog: Record<string, unknown>, stock: string): readonly string[] {
+  return [stock, ...Object.keys(catalog).filter((id) => id !== stock)];
+}
 
-/** What a brand-new off-chain account "acquires" for free. Same stand-in as
- * `STARTER_TRAILS`; see that comment for the real-build replacement. */
-export const STARTER_BODY_COLORS: readonly string[] = [DEFAULT_BODY_COLOR];
+/**
+ * What an off-chain account owns from its first boot: the whole catalog.
+ *
+ * A demo build, and the whole catalog is the point — a visitor with a minute
+ * to spare should be wearing the crown, not hunting the pickup ball that
+ * grants it. The collection loop is switched off rather than deleted: the
+ * pickups, the parser and `isAcquirableItem` are untouched, so a map that
+ * carries them still plays and a racer who runs one hears "already have".
+ * Point these four back at a lean set to switch the loop on again.
+ *
+ * A real build would seed this from the account's DB/chain record instead.
+ */
+export const STARTER_TRAILS: readonly string[] = wholeCatalog(TRAILS, DEFAULT_TRAIL);
 
-/** What a brand-new off-chain account "acquires" for free. Same stand-in as
+/** What an off-chain account owns from its first boot. Same choice as
  * `STARTER_TRAILS`; see that comment for the real-build replacement. */
-export const STARTER_HATS: readonly string[] = [DEFAULT_HAT];
+export const STARTER_BODY_COLORS: readonly string[] = wholeCatalog(BODY_COLORS, DEFAULT_BODY_COLOR);
 
-/** What a brand-new off-chain account "acquires" for free. Same stand-in as
+/** What an off-chain account owns from its first boot. Same choice as
  * `STARTER_TRAILS`; see that comment for the real-build replacement. */
-export const STARTER_GEARS: readonly string[] = [DEFAULT_GEAR];
+export const STARTER_HATS: readonly string[] = wholeCatalog(HATS, DEFAULT_HAT);
+
+/** What an off-chain account owns from its first boot. Same choice as
+ * `STARTER_TRAILS`; see that comment for the real-build replacement. */
+export const STARTER_GEARS: readonly string[] = wholeCatalog(GEARS, DEFAULT_GEAR);
 
 /** The identity a client presents to the server (off-chain prototype). */
 export interface CosmeticIdentity {

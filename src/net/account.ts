@@ -299,30 +299,32 @@ function readStore(): Partial<Account> | null {
   }
 }
 
-/** Keep only ids the current catalog still ships; seed a fresh set if empty. */
+/**
+ * Every id the account owns, as the picker and the join claim see it: what the
+ * catalog hands every racer, plus anything the store already claimed, filtered
+ * to ids the current build still ships. The starter ids lead, so `owned[0]`
+ * stays the slot's stock id -- and so a store written before a catalog entry
+ * existed picks that entry up on the next boot.
+ */
 function normaliseOwned(raw: unknown): string[] {
-  const owned = Array.isArray(raw) ? raw.filter(isTrail) : [];
-  if (owned.length === 0) owned.push(...STARTER_TRAILS);
-  return [...new Set(owned)];
+  const claimed = Array.isArray(raw) ? raw.filter(isTrail) : [];
+  return [...new Set([...STARTER_TRAILS, ...claimed])];
 }
 
-/** Keep only ids the current catalog still ships; seed a fresh set if empty. */
+/** Same rule as the trail set above. */
 function normaliseOwnedColors(raw: unknown): string[] {
-  const owned = Array.isArray(raw) ? raw.filter(isBodyColor) : [];
-  if (owned.length === 0) owned.push(...STARTER_BODY_COLORS);
-  return [...new Set(owned)];
+  const claimed = Array.isArray(raw) ? raw.filter(isBodyColor) : [];
+  return [...new Set([...STARTER_BODY_COLORS, ...claimed])];
 }
 
-/** Keep only ids the current catalog still ships; seed a fresh set if empty. */
+/** Same rule as the trail set above. */
 function normaliseOwnedHats(raw: unknown): string[] {
-  const owned = Array.isArray(raw) ? raw.filter(isHat) : [];
-  if (owned.length === 0) owned.push(...STARTER_HATS);
-  return [...new Set(owned)];
+  const claimed = Array.isArray(raw) ? raw.filter(isHat) : [];
+  return [...new Set([...STARTER_HATS, ...claimed])];
 }
 
-/** Keep only ids the current catalog still ships; seed a fresh set if empty. */
+/** Same rule as the trail set above. */
 function normaliseOwnedGears(raw: unknown): string[] {
-  const owned = Array.isArray(raw) ? raw.filter(isGear) : [];
-  if (owned.length === 0) owned.push(...STARTER_GEARS);
-  return [...new Set(owned)];
+  const claimed = Array.isArray(raw) ? raw.filter(isGear) : [];
+  return [...new Set([...STARTER_GEARS, ...claimed])];
 }
