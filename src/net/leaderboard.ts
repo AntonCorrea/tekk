@@ -107,10 +107,12 @@ const HISTORY_FROM = Date.UTC(2026, 9, 14, 0, 30) / 1000;
  *
  * All three lists are floored at `HISTORY_FROM`. The boards filter through
  * their `match` relation because a score only means something alongside the
- * match it was settled in.
+ * match it was settled in, and the history list asks for a racer with a wallet:
+ * a match of nothing but guest seats has no identity to show, which is how the
+ * boards already read.
  */
 const QUERY = `query LobbyRecords {
-  Match(limit: ${LIMIT}, order_by: { matchId: desc }, where: { endedAt: { _gte: ${HISTORY_FROM} } }) {
+  Match(limit: ${LIMIT}, order_by: { matchId: desc }, where: { endedAt: { _gte: ${HISTORY_FROM} }, players: { wallet: { _neq: "${ZERO_ADDRESS}" } } }) {
     matchId
     courseId
     mode
