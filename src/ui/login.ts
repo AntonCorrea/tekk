@@ -41,9 +41,9 @@ import {
   privyEnabled,
   sendEmailCode,
   signJoin,
-  suggestedName,
 } from '../net/privy.ts';
 import type { Signer } from '../net/privy.ts';
+import { randomRacerName } from '../shared/input.ts';
 import type { WalletProof } from '../shared/identity.ts';
 
 /** What the boot does with the card's answer. */
@@ -51,9 +51,10 @@ export interface LoginOutcome {
   /** The method the account records. `'guest'` when nothing was verified. */
   method: LoginMethod;
   /**
-   * A racer name the login itself already knows -- a Google display name, an
-   * email's local part -- for the boot to adopt if the account has never been
-   * named. Absent for the guest seat and for routes that carry no name.
+   * A fresh random racer handle, for the boot to adopt if the account has never
+   * named itself. A name is off-chain and public, so it is minted rather than
+   * lifted out of the email address or the Google account -- the standings show
+   * it to everyone. Absent for the guest seat.
    */
   name?: string;
   /**
@@ -297,10 +298,11 @@ async function promptPrivy(container: HTMLElement): Promise<LoginOutcome> {
     const signIn = async (method: LoginMethod, signer: Signer): Promise<void> => {
       say('sign the join statement…');
       const proof = await signJoin(signer);
-      // What the login itself knows about this racer's name, for the boot to
-      // adopt if this account has never had one. Null on the passkey and wallet
-      // routes, which carry no name, and null without Privy.
-      const name = (await suggestedName()) ?? undefined;
+      // A fresh handle for this racer, for the boot to adopt if the account has
+      // never named itself. Minted here, never read off the login: a Google
+      // display name or an email local part is the racer's to publish, and the
+      // board shows this to everyone.
+      const name = randomRacerName();
       if (proof) {
         finish({ method, name, proof, wallet: proof.address });
         return;

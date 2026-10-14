@@ -71,11 +71,11 @@ export interface Account extends CosmeticIdentity {
    * Whether that name is the racer's own choice.
    *
    * False while the name is still whatever was minted for them; a login only
-   * fills in a name out of its own login info while this is false, so signing in
-   * again can never overwrite a name the racer picked. Every way the name
-   * becomes theirs -- renaming in the lobby, and the login that filled it in --
-   * sets it. A store written before this field existed is read as true, so a
-   * name that is already on a device is never replaced.
+   * fills in the handle it mints while this is false, so signing in again can
+   * never overwrite a name the racer picked. Every way the name becomes theirs
+   * -- renaming in the lobby, and the login that filled it in -- sets it. A
+   * store written before this field existed is read as true, so a name that is
+   * already on a device is never replaced.
    */
   namedSelf: boolean;
 
